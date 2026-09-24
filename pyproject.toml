@@ -39,6 +39,9 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["wallpapi", "tests"]
+
 [tool.pyright]
 include = ["src", "tests"]
 venvPath = "."
