@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wallpapi</title>
+  </head>
+  <body>
+    <main>
+      {% if batch %}
+        <ul class="batch">
+          {% for wallpaper in batch.wallpapers %}
+            <li class="tile" data-wallpaper-id="{{ wallpaper.id }}">
+              <img
+                src="/thumb/{{ wallpaper.id }}"
+                alt=""
+                loading="lazy"
+                width="{{ wallpaper.width }}"
+                height="{{ wallpaper.height }}"
+              />
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="unavailable">No batch is available right now ({{ unavailable.reason }}).</p>
+      {% endif %}
+    </main>
+  </body>
+</html>
