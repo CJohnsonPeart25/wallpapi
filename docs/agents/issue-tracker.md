@@ -2,6 +2,22 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
+## GitHub account for this repo
+
+The machine's global `gh` account is `CJohnsonPeartMagna` (work). This repo is personal and owned by
+`CJohnsonPeart25`, which has no write access under the work account — `gh` writes fail with `HTTP 404`.
+
+**Don't run `gh auth switch`** — that changes the global default for every repo. Instead prefix each `gh`
+command in this repo with the personal account's token:
+
+```bash
+GH_TOKEN=$(gh auth token --user CJohnsonPeart25) gh issue create --title "..." --body "..."
+```
+
+Both accounts are already authenticated, so `gh auth token --user` resolves without a prompt and no token
+is written to disk. `git` push and pull need no prefix: `credential.https://github.com.username` is set to
+`CJohnsonPeart25` in this repo's local config, and Git Credential Manager picks the account from it.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
