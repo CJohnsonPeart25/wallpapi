@@ -6,8 +6,8 @@
 
 Issues live as GitHub issues in `CJohnsonPeart25/wallpapi`, managed via the `gh` CLI. This repo needs the
 personal GitHub account, not the machine's global one — prefix `gh` commands with
-`GH_TOKEN=$(gh auth token --user CJohnsonPeart25)` rather than running `gh auth switch`. See
-`docs/agents/issue-tracker.md`.
+`GH_TOKEN=$(gh auth token --user CJohnsonPeart25)` rather than running `gh auth switch`. Commit identity
+is pinned to that account in this repo's local git config. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

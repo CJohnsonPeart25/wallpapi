@@ -18,6 +18,28 @@ Both accounts are already authenticated, so `gh auth token --user` resolves with
 is written to disk. `git` push and pull need no prefix: `credential.https://github.com.username` is set to
 `CJohnsonPeart25` in this repo's local config, and Git Credential Manager picks the account from it.
 
+### Commit identity
+
+The global `user.email` is the work address. This repo overrides it locally, so commits made here are
+attributed to the personal GitHub account:
+
+```
+user.name   Cameron Johnson-Peart
+user.email  89163342+CJohnsonPeart25@users.noreply.github.com
+```
+
+Both values live in `.git/config` and apply automatically — never pass `--author`, and never change the
+global config. If a commit does go out on the work address, the fix is to rewrite it rather than leave it:
+
+```bash
+git rebase --root --exec 'git commit --amend --no-edit --reset-author'
+git push --force-with-lease origin main
+```
+
+Check with `git log --format='%h %an <%ae>'` — every line should carry the `users.noreply.github.com`
+address. Note that a fresh clone of this repo won't have the local config, so set it before the first
+commit.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
