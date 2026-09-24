@@ -21,3 +21,14 @@ class SimilarityProvider(Protocol):
     def similarities(self, pool_ids: Sequence[str], decided_ids: Sequence[str]) -> NDArray[np.float32]:
         """A `len(pool_ids)` x `len(decided_ids)` matrix of distances."""
         ...
+
+
+class UnbuiltSimilarityProvider:
+    """Stands in until the real provider arrives at #9.
+
+    Unreachable at #2: nothing derives a **Score** yet. It raises rather than returning zeros, which would
+    quietly make every **Wallpaper** an **Unknown** and look like a working system.
+    """
+
+    def similarities(self, pool_ids: Sequence[str], decided_ids: Sequence[str]) -> NDArray[np.float32]:
+        raise NotImplementedError("the Similarity provider arrives at #9")

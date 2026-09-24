@@ -46,17 +46,26 @@ def catalogue_of(count: int, *, prefix: str = "wp") -> tuple[Wallpaper, ...]:
     return tuple(wallpaper(f"{prefix}{n:04d}") for n in range(count))
 
 
+THUMBNAIL_BYTES = b"\xff\xd8\xff\xe0 fake thumbnail"
+"""What the fake serves for any thumbnail. A JPEG magic number, because Wallhaven's thumbs are `.jpg`."""
+
+
 class FakeWallhavenClient:
-    """An in-memory catalogue. Records the search parameters it was called with."""
+    """An in-memory catalogue. Records the search parameters and the thumbnail URLs it was called with."""
 
     def __init__(self, catalogue: Sequence[Wallpaper] = (), *, seed: str | None = None) -> None:
         self.catalogue: list[Wallpaper] = list(catalogue)
         self.seed = seed
         self.searches: list[dict[str, object]] = []
+        self.thumbnail_fetches: list[str] = []
 
     def search(self, *, sorting: str, purity: str, page: int = 1) -> SearchPage:
         self.searches.append({"sorting": sorting, "purity": purity, "page": page})
         return SearchPage(wallpapers=tuple(self.catalogue), seed=self.seed)
+
+    def fetch_thumbnail(self, url: str) -> bytes:
+        self.thumbnail_fetches.append(url)
+        return THUMBNAIL_BYTES
 
 
 class FakeLibraryWriter:

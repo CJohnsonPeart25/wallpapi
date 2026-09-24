@@ -21,3 +21,18 @@ class LibraryWriter(Protocol):
     def remove(self, path: Path) -> None:
         """Delete a path wallpapi itself recorded. Tolerates the file already being gone."""
         ...
+
+
+class UnbuiltLibraryWriter:
+    """Stands in until the real writer arrives at #5.
+
+    Unreachable at #2: **Favourites** need a **Draft Batch**, which is #3, so every submitted **Batch** is
+    all **Ignores**. It raises rather than quietly doing nothing, because a **Favourite** that silently
+    fails to download is worse than a crash.
+    """
+
+    def write(self, wallpaper_id: str, source_url: str, destination: Path) -> Path:
+        raise NotImplementedError("the Library writer arrives at #5")
+
+    def remove(self, path: Path) -> None:
+        raise NotImplementedError("the Library writer arrives at #5")

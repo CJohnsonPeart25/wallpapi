@@ -7,13 +7,15 @@ Storage lives here too: SQLite is an in-process detail of the Core service, not 
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sqlite3
 import threading
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from wallpapi.clock import Clock
@@ -21,7 +23,7 @@ from wallpapi.library import LibraryWriter
 from wallpapi.model import DecisionEntry, Verdict, Wallpaper
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import SimilarityProvider
-from wallpapi.wallhaven import WallhavenSearcher
+from wallpapi.wallhaven import Wallhaven
 
 SCHEMA_VERSION = 1
 
@@ -72,7 +74,7 @@ class CoreService:
         self,
         *,
         db_path: Path,
-        wallhaven: WallhavenSearcher,
+        wallhaven: Wallhaven,
         library: LibraryWriter,
         similarity: SimilarityProvider,
         random_source: SeededRandom,
@@ -208,6 +210,38 @@ class CoreService:
 
         return self.get_next_batch()
 
+    # -- thumbnails ------------------------------------------------------------------------------------
+
+    @property
+    def thumbnail_dir(self) -> Path:
+        """The **Thumbnail cache** directory. Deliberately separate from the **Library**, which is
+        favourites-only and write-only."""
+        return self._db_path.parent / "thumbnails"
+
+    def get_thumbnail(self, wallpaper_id: str) -> Path | None:
+        """The cached thumbnail for a **Wallpaper**, fetching it the first time and never again.
+
+        `None` for a **Wallpaper** this database has never seen. Nothing is evicted at #2; eviction is #7,
+        where **History** renders a thumbnail for every past **Verdict**.
+        """
+        row = (
+            self._connect()
+            .execute("SELECT thumbnail_url FROM wallpapers WHERE id = ?", (wallpaper_id,))
+            .fetchone()
+        )
+        if row is None:
+            return None
+
+        source_url = str(row["thumbnail_url"])
+        destination = self.thumbnail_dir / f"{wallpaper_id}{_url_suffix(source_url)}"
+        if destination.exists():
+            return destination
+
+        data = self._wallhaven.fetch_thumbnail(source_url)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomically(destination, data)
+        return destination
+
     # -- history ---------------------------------------------------------------------------------------
 
     def list_history(self) -> list[DecisionEntry]:
@@ -229,6 +263,25 @@ class CoreService:
             )
             for row in rows
         ]
+
+
+def _url_suffix(url: str, *, default: str = ".jpg") -> str:
+    """The file extension of a URL's path, ignoring any query string."""
+    return PurePosixPath(urlsplit(url).path).suffix or default
+
+
+def _write_atomically(destination: Path, data: bytes) -> None:
+    """Write via a temp file in the same directory, then `os.replace`.
+
+    The temp file must be a sibling: `os.replace` is only atomic within one filesystem and raises across
+    drives on Windows. A half-written file must never be servable.
+    """
+    temporary = destination.with_name(f"{destination.name}.{uuid4().hex}.part")
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _distinct(wallpapers: Sequence[Wallpaper]) -> list[Wallpaper]:
