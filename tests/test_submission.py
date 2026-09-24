@@ -29,6 +29,20 @@ def test_empty_submission_records_an_ignore_for_every_wallpaper_in_the_batch(har
     assert harness.library.written == []
 
 
+def test_a_batch_that_is_never_submitted_records_nothing(harness: Harness) -> None:
+    """Being shown is not a **Verdict**.
+
+    A **Batch** sitting on screen, refreshed past or abandoned, must leave the **Decision log** untouched.
+    **Scores** derive from the **Decision log** and nothing else, so a **Wallpaper** must never be written
+    off merely for having appeared. Only submitting appends.
+    """
+    first = harness.core.get_next_batch()
+    harness.core.get_next_batch()
+
+    assert isinstance(first, Batch)
+    assert harness.core.list_history() == []
+
+
 def test_submitting_returns_a_fresh_batch(harness: Harness) -> None:
     """Acceptance criterion: submitting returns a new Batch, so the user keeps going without a reload."""
     first = harness.core.get_next_batch()
