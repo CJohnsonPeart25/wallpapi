@@ -159,3 +159,5 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | Refill thread supervision, restart and a visible indicator | #6 | #2 has no **Pool**, so no refill thread. Clean shutdown arrives with the thread. |
 | Offline / Wallhaven-down behaviour | #6 | Falls out of the "**Batch** unavailable" result once **Batches** come from the **Pool**. |
 | **Decision log** backup procedure | later | Cheap because the database is a single file at a known path: `VACUUM INTO`. |
+| `set_draft_verdict` and the `draft_batch` table | #3 | #2 submits a **Batch** as all **Ignores**, so there is nothing to draft against yet. Needs its own numbered migration step. Setting a tile to none deletes the row — see invariant 6. |
+| Bulk **Draft Batch** writes — select-all and select-none | #8 | One post rewriting the whole **Draft Batch** in one transaction, not one post per tile. |
