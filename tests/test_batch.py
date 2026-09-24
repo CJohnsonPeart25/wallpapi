@@ -100,19 +100,21 @@ def test_batch_is_unavailable_when_wallhaven_returns_nothing(db_path: Path) -> N
     assert result.reason
 
 
-def test_two_batches_in_a_row_each_come_from_their_own_search(harness: Harness) -> None:
-    """At #2 there is no Pool, so every Batch is an independent live search.
+def test_asking_again_returns_the_live_batch_rather_than_minting_another(harness: Harness) -> None:
+    """Loading the page twice must not change what is stored, and must not reroll the Wallpapers.
 
-    Consecutive Batches may therefore repeat Wallpapers. That is a property of #2, not a defect: the
-    no-repeats-across-Batches behaviour arrives with the Pool at #6.
+    A **Batch** is only worth storing once it can be decided on, and a refresh is not a decision. Minting
+    one per page load leaves a **Batch** and its rows behind for ever, and silently swaps out the
+    **Wallpapers** the user was looking at. There is at most one unsubmitted **Batch** at a time.
     """
     first = harness.core.get_next_batch()
     second = harness.core.get_next_batch()
 
     assert isinstance(first, Batch)
     assert isinstance(second, Batch)
-    assert first.id != second.id
-    assert len(harness.wallhaven.searches) == 2
+    assert second.id == first.id
+    assert [w.id for w in second.wallpapers] == [w.id for w in first.wallpapers]
+    assert len(harness.wallhaven.searches) == 1
 
 
 def test_a_batch_of_a_different_size_is_honoured(db_path: Path) -> None:

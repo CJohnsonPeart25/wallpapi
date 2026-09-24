@@ -38,6 +38,22 @@ def test_posting_the_form_records_the_batch_and_renders_the_next_one(db_path: Pa
     assert batch_id_of(response.text) != shown
 
 
+def test_the_next_page_says_what_the_submission_recorded(db_path: Path) -> None:
+    """Without this, submitting and refreshing look identical — a new grid either way.
+
+    The count comes from the **Decision log** rather than from the form, so it says what was actually
+    appended rather than what the page claimed to be showing.
+    """
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        shown = batch_id_of(client.get("/").text)
+        response = client.post("/submit", data={"batch_id": shown})
+
+    assert "Recorded 8 ignores" in response.text
+
+
 def test_posting_the_same_batch_twice_is_refused_rather_than_silently_ignored(db_path: Path) -> None:
     """Invariant 7. Two browser tabs is a real case, and the second must be told why nothing happened.
 

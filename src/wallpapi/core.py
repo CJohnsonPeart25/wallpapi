@@ -154,10 +154,16 @@ class CoreService:
     # -- batches ---------------------------------------------------------------------------------------
 
     def get_next_batch(self) -> Batch | BatchUnavailable:
-        """Build a **Batch** from a live Wallhaven random, SFW search.
+        """The **Batch** waiting to be decided on, minting one from Wallhaven only if there isn't one.
 
-        There is no **Pool** at #2, so every **Batch** is its own search and consecutive ones may repeat.
+        At most one unsubmitted **Batch** exists at a time. Asking again — a page load, a refresh — hands
+        back the same one rather than rerolling it, so nothing is stored until there is something to
+        decide on. There is no **Pool** at #2, so each new **Batch** is its own live search.
         """
+        live = self._live_batch()
+        if live is not None:
+            return live
+
         page = self._wallhaven.search(sorting="random", purity=SFW_PURITY, page=1)
         candidates = _distinct(page.wallpapers)
         if not candidates:
@@ -169,6 +175,12 @@ class CoreService:
         batch_id = uuid4().hex
 
         with self._write() as write:
+            # Re-read under the write lock: two tabs opened at once must not each mint a Batch, and the
+            # search above deliberately happened outside the transaction rather than holding the lock
+            # across a network call.
+            contended = _load_live_batch(write)
+            if contended is not None:
+                return contended
             write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in chosen])
             write.execute(
                 "INSERT INTO batches (id, created_at, size) VALUES (?, ?, ?)",
@@ -180,6 +192,10 @@ class CoreService:
             )
 
         return Batch(id=batch_id, size=len(chosen), created_at=created_at, wallpapers=tuple(chosen))
+
+    def _live_batch(self) -> Batch | None:
+        """The unsubmitted **Batch**, if there is one."""
+        return _load_live_batch(self._connect())
 
     def submit_batch(self, batch_id: str) -> Batch | BatchUnavailable | SubmissionRefused:
         """Append the **Batch**'s **Verdicts** to the **Decision log**, then hand back the next **Batch**.
@@ -244,15 +260,18 @@ class CoreService:
 
     # -- history ---------------------------------------------------------------------------------------
 
-    def list_history(self) -> list[DecisionEntry]:
-        """The **Decision log** in sequence order — the order **Verdict resolution** depends on."""
-        rows = (
-            self._connect()
-            .execute(
-                "SELECT seq, wallpaper_id, batch_id, verdict, recorded_at FROM decision_log ORDER BY seq"
-            )
-            .fetchall()
-        )
+    def list_history(self, *, batch_id: str | None = None) -> list[DecisionEntry]:
+        """The **Decision log** in sequence order — the order **Verdict resolution** depends on.
+
+        `batch_id` narrows it to one submission. **History** proper is #7; this is the same query with a
+        filter, not a second store.
+        """
+        query = "SELECT seq, wallpaper_id, batch_id, verdict, recorded_at FROM decision_log"
+        parameters: tuple[str, ...] = ()
+        if batch_id is not None:
+            query += " WHERE batch_id = ?"
+            parameters = (batch_id,)
+        rows = self._connect().execute(f"{query} ORDER BY seq", parameters).fetchall()
         return [
             DecisionEntry(
                 seq=int(row["seq"]),
@@ -263,6 +282,38 @@ class CoreService:
             )
             for row in rows
         ]
+
+
+def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
+    """The most recent unsubmitted **Batch**, rebuilt from storage, or `None`."""
+    batch = connection.execute(
+        "SELECT id, created_at, size FROM batches WHERE submitted_at IS NULL ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    if batch is None:
+        return None
+    rows = connection.execute(_SELECT_BATCH_WALLPAPERS, (batch["id"],)).fetchall()
+    return Batch(
+        id=str(batch["id"]),
+        size=int(batch["size"]),
+        created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
+        wallpapers=tuple(_wallpaper_from_row(row) for row in rows),
+    )
+
+
+def _wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
+    return Wallpaper(
+        id=str(row["id"]),
+        width=int(row["width"]),
+        height=int(row["height"]),
+        ratio=str(row["ratio"]),
+        category=str(row["category"]),
+        purity=str(row["purity"]),
+        favourites=int(row["favourites"]),
+        colours=tuple(str(row["colours"]).split(",")) if row["colours"] else (),
+        thumbnail_url=str(row["thumbnail_url"]),
+        full_url=str(row["full_url"]),
+        page_url=str(row["page_url"]),
+    )
 
 
 def _url_suffix(url: str, *, default: str = ".jpg") -> str:
@@ -314,6 +365,14 @@ def _wallpaper_row(wallpaper: Wallpaper) -> tuple[str | int, ...]:
         wallpaper.page_url,
     )
 
+
+_SELECT_BATCH_WALLPAPERS = """
+SELECT w.*
+FROM batch_wallpapers AS bw
+JOIN wallpapers AS w ON w.id = bw.wallpaper_id
+WHERE bw.batch_id = ?
+ORDER BY bw.position
+"""
 
 _UPSERT_WALLPAPER = """
 INSERT INTO wallpapers

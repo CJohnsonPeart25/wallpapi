@@ -7,6 +7,9 @@
   </head>
   <body>
     <main>
+      {% if recorded %}
+        <p class="recorded">Recorded {{ recorded }} ignore{{ "" if recorded == 1 else "s" }}.</p>
+      {% endif %}
       {% if batch %}
         <form method="post" action="/submit">
           <input type="hidden" name="batch_id" value="{{ batch.id }}" />

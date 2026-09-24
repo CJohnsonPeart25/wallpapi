@@ -25,10 +25,15 @@ def create_app(core: CoreService) -> FastAPI:
     app = FastAPI(title="wallpapi")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-    def render(request: Request, result: Batch | BatchUnavailable | SubmissionRefused) -> HTMLResponse:
+    def render(
+        request: Request,
+        result: Batch | BatchUnavailable | SubmissionRefused,
+        *,
+        recorded: int | None = None,
+    ) -> HTMLResponse:
         """One template and one status code per outcome, so both routes answer the same way."""
         if isinstance(result, Batch):
-            return templates.TemplateResponse(request, "batch.html", {"batch": result})
+            return templates.TemplateResponse(request, "batch.html", {"batch": result, "recorded": recorded})
         if isinstance(result, SubmissionRefused):
             already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
             return templates.TemplateResponse(
@@ -54,7 +59,12 @@ def create_app(core: CoreService) -> FastAPI:
         No post-redirect-get either — a refresh that resubmits is refused outright rather than silently
         absorbed, which is the better answer to the two-tabs case.
         """
-        return render(request, core.submit_batch(batch_id))
+        result = core.submit_batch(batch_id)
+        if not isinstance(result, Batch):
+            return render(request, result)
+        # Counted from the Decision log, not from the form: the page reports what was appended rather
+        # than what the browser claimed to be showing.
+        return render(request, result, recorded=len(core.list_history(batch_id=batch_id)))
 
     @app.get("/thumb/{wallpaper_id}")
     def thumbnail(wallpaper_id: str) -> FileResponse:
