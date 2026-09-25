@@ -48,6 +48,10 @@ _Avoid_: skip, pass, no-op
 The strongest negative verdict. The wallpaper is never shown again, and its weight spreads to similar wallpapers.
 _Avoid_: block, hide, reject, dislike
 
+**Draft Batch**:
+The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log.
+_Avoid_: pending verdicts, staged verdicts, selection, basket
+
 **Verdict resolution**:
 The rule that turns a wallpaper's verdicts into one value: the latest explicit verdict wins outright and all its ignores are disregarded; without one, ignores stack.
 _Avoid_: aggregation, tallying
@@ -55,6 +59,10 @@ _Avoid_: aggregation, tallying
 **Decision log**:
 The append-only record of every verdict, history edit and clearance. It is the single source of truth.
 _Avoid_: history table, audit log, events
+
+**Clearance**:
+The decision log entry that removes a wallpaper's explicit verdict, after which its ignores stack again. A clearance is an entry in its own right, not a verdict.
+_Avoid_: undo, reset, delete, revert
 
 **History**:
 The view listing past verdicts, where any verdict can be changed or cleared. A view over the decision log, not a second store.
@@ -67,7 +75,7 @@ A wallpaper's derived value, calculated from the decision log with each resolved
 _Avoid_: rating, weight, rank, affinity
 
 **Similarity provider**:
-The component that measures how alike two wallpapers are. Its method is deliberately left open.
+The component that measures how alike wallpapers are. Its method is deliberately left open.
 _Avoid_: embedder, model, comparator
 
 **Zone**:
@@ -113,6 +121,10 @@ _Avoid_: cooldown, decay, penalty
 **Library**:
 The output folder of favourites, written one way only and never read back. Windows' own personalisation settings handle rotation from it.
 _Avoid_: downloads, collection, gallery, output dir
+
+**Thumbnail cache**:
+The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails for any wallpaper that has been shown or decided, not full-resolution favourites.
+_Avoid_: image cache, thumbs, local store, static files
 
 **Core service**:
 The single interface between the UI and everything else, and the only seam tests enter through.
