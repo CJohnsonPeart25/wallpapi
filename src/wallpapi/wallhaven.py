@@ -1,8 +1,8 @@
 """The Wallhaven client seam and the shape of a search result.
 
 `meta.seed` is carried here because Wallhaven returns one on `sorting=random` and it is what keeps a walk
-across pages from repeating itself. Nothing at #2 pages — a **Batch** is one live search — so it is recorded
-and not yet used.
+across pages from repeating itself. **Batch** building walks pages when **Bans** leave it short, so the seed
+is passed back in rather than only recorded.
 """
 
 from __future__ import annotations
@@ -33,8 +33,11 @@ class SearchPage:
 class Wallhaven(Protocol):
     """What the Core service needs of Wallhaven."""
 
-    def search(self, *, sorting: str, purity: str, page: int = 1) -> SearchPage:
-        """One page of results. `purity` is Wallhaven's three-bit mask, so SFW-only is `"100"`."""
+    def search(self, *, sorting: str, purity: str, page: int = 1, seed: str | None = None) -> SearchPage:
+        """One page of results. `purity` is Wallhaven's three-bit mask, so SFW-only is `"100"`.
+
+        `seed` carries a previous page's `meta.seed` so a walk across pages does not repeat itself.
+        """
         ...
 
     def fetch_thumbnail(self, url: str) -> bytes:
@@ -91,8 +94,9 @@ def _to_wallpaper(item: _SearchItem) -> Wallpaper:
 class WallhavenClient:
     """The only module that knows Wallhaven.
 
-    Thin on purpose: #2 needs one random SFW search and the thumbnail bytes behind it. **Filters** —
-    `atleast`, `ratios`, minimum **Favourites** — and paging on `meta.seed` arrive with the **Pool** at #6.
+    Thin on purpose: one random SFW search, the page after it, and the thumbnail bytes behind them.
+    **Filters** — `atleast`, `ratios`, minimum **Favourites** — arrive with the **Pool** at #6. Paging on
+    `meta.seed` was pencilled in for #6 too, but **Batch** building needs it at #3 to walk past **Bans**.
 
     No API key: NSFW is what requires one, and purity is fixed to SFW.
     """
@@ -100,15 +104,19 @@ class WallhavenClient:
     def __init__(self, client: httpx2.Client | None = None) -> None:
         self._client = httpx2.Client(timeout=REQUEST_TIMEOUT) if client is None else client
 
-    def search(self, *, sorting: str, purity: str, page: int = 1) -> SearchPage:
+    def search(self, *, sorting: str, purity: str, page: int = 1, seed: str | None = None) -> SearchPage:
         """One page of results — 24 **Wallpapers**, per Wallhaven's listing size.
 
         This is an **API call**, and the only method here that is. Whatever enforces the documented
         45-per-minute limit at #6 wraps this one and not `fetch_thumbnail`.
+
+        `seed` is omitted from the query when it is `None`, so the first call of a walk asks for a fresh
+        one and later calls carry back what Wallhaven returned.
         """
-        response = self._client.get(
-            API_SEARCH_URL, params={"sorting": sorting, "purity": purity, "page": page}
-        )
+        parameters: dict[str, str | int] = {"sorting": sorting, "purity": purity, "page": page}
+        if seed is not None:
+            parameters["seed"] = seed
+        response = self._client.get(API_SEARCH_URL, params=parameters)
         response.raise_for_status()
         payload = _SearchResponse.model_validate(response.json())
         return SearchPage(
