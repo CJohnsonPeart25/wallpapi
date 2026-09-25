@@ -10,7 +10,7 @@ import datetime as dt
 import os
 import sqlite3
 import threading
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -25,20 +25,34 @@ from wallpapi.rng import SeededRandom
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import Wallhaven
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off."""
 
+MAX_SEARCHES_PER_BATCH = 4
+"""How many **API calls** one **Batch** may cost while somebody waits for the page.
+
+A bound on page load latency, not a rate limiter: four calls at the client's ten second timeout is already
+the worst case worth making a user sit through. Spending the documented 45 per minute is the background
+refill's job at #6.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class Batch:
-    """The `size` **Wallpapers** shown at once, with the identity the submission will quote back."""
+    """The `size` **Wallpapers** shown at once, with the identity the submission will quote back.
+
+    `drafts` carries the **Draft Batch** alongside the **Wallpapers**, keyed by **Wallpaper** ID and holding
+    only the ones actually marked — absence is an **Ignore**, so there is nothing to store for the rest. It
+    is what the page renders its controls from, so a load after a partial draft shows the marks already set.
+    """
 
     id: str
     size: int
     created_at: dt.datetime
     wallpapers: tuple[Wallpaper, ...]
+    drafts: Mapping[str, Verdict]
 
 
 @dataclass(frozen=True)
@@ -49,6 +63,19 @@ class BatchUnavailable:
         NO_RESULTS = "no_results"
 
     reason: Reason
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedVerdict:
+    """What one **Wallpaper**'s **Decision log** entries come to.
+
+    Both fields because the callers want different halves: #9 sums `value` across a whole **Pool**, and #7
+    renders the `verdict` itself. Never called a **Score** — a **Score** is this spread to similar
+    **Wallpapers**, which is #9 and not here.
+    """
+
+    verdict: Verdict | None
+    value: int
 
 
 @dataclass(frozen=True)
@@ -131,6 +158,9 @@ class CoreService:
             if applied < 1:
                 for statement in _MIGRATION_1:
                     write.execute(statement)
+            if applied < 2:
+                for statement in _MIGRATION_2:
+                    write.execute(statement)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -164,12 +194,11 @@ class CoreService:
         if live is not None:
             return live
 
-        page = self._wallhaven.search(sorting="random", purity=SFW_PURITY, page=1)
-        candidates = _distinct(page.wallpapers)
+        size = int(self.get_setting("batch_size"))
+        candidates = self._gather_candidates(size)
         if not candidates:
             return BatchUnavailable(reason=BatchUnavailable.Reason.NO_RESULTS)
 
-        size = int(self.get_setting("batch_size"))
         chosen = self._random.sample(candidates, min(size, len(candidates)))
         created_at = self._clock.now()
         batch_id = uuid4().hex
@@ -191,17 +220,108 @@ class CoreService:
                 [(batch_id, w.id, position) for position, w in enumerate(chosen)],
             )
 
-        return Batch(id=batch_id, size=len(chosen), created_at=created_at, wallpapers=tuple(chosen))
+        # A freshly minted **Batch** has nothing marked on it yet.
+        return Batch(
+            id=batch_id,
+            size=len(chosen),
+            created_at=created_at,
+            wallpapers=tuple(chosen),
+            drafts={},
+        )
+
+    def _gather_candidates(self, size: int) -> list[Wallpaper]:
+        """Enough un-**Banned** **Wallpapers** for a **Batch**, walking pages until there are.
+
+        **Banned Wallpapers** are excluded permanently, which can leave a page short of `size`. Rather than
+        ship a **Batch** thinned by past **Bans**, walk on to the next page carrying Wallhaven's returned
+        `meta.seed` — random sorting reshuffles on every call without it, so page two would be as likely to
+        repeat page one as to bring anything new.
+
+        A walk that ends still short ships what it has: a smaller **Batch** is an acceptable outcome, and
+        only finding nothing at all is a **Batch unavailable**.
+
+        Temporary by design. When the **Pool** lands at #6, **Batch** building reads locally stored
+        **Wallpapers** that a background thread has already topped up, no **API call** happens on the page
+        load path, and this method is deleted rather than unpicked.
+        """
+        gathered: list[Wallpaper] = []
+        seen: set[str] = set()
+        seed: str | None = None
+        for call in range(1, MAX_SEARCHES_PER_BATCH + 1):
+            if call == 1:
+                # Deliberately not guarded. A transport failure on the first call is issue #15, and
+                # widening the rescue below to cover it would close that ticket by accident.
+                page = self._wallhaven.search(sorting="random", purity=SFW_PURITY, page=call)
+            else:
+                try:
+                    page = self._wallhaven.search(sorting="random", purity=SFW_PURITY, page=call, seed=seed)
+                except Exception:
+                    # The pages already gathered are worth more than the one that failed: end the walk and
+                    # ship them rather than losing a **Batch** that was nearly built. The protocol declares
+                    # no error type, so there is nothing narrower to catch from this side of the seam.
+                    break
+            seed = page.seed or seed
+            if not page.wallpapers:
+                break
+            fresh = [w for w in _distinct(page.wallpapers) if w.id not in seen]
+            seen.update(w.id for w in fresh)
+            gathered.extend(self._without_bans(fresh))
+            if len(gathered) >= size:
+                break
+        return gathered
+
+    def _without_bans(self, wallpapers: Sequence[Wallpaper]) -> list[Wallpaper]:
+        """Drop the **Wallpapers** whose resolved **Verdict** is **Ban**.
+
+        Resolved rather than merely recorded: a **Ban** that a later **Explicit Verdict** replaces is no
+        longer a **Ban**, which is what #7 makes reachable when a past **Verdict** can be changed.
+        """
+        resolved = self.resolve_verdicts([w.id for w in wallpapers])
+        return [w for w in wallpapers if resolved[w.id].verdict is not Verdict.BAN]
 
     def _live_batch(self) -> Batch | None:
         """The unsubmitted **Batch**, if there is one."""
         return _load_live_batch(self._connect())
 
+    def set_draft_verdict(
+        self, batch_id: str, wallpaper_id: str, verdict: Verdict | None
+    ) -> SubmissionRefused | None:
+        """Mark one tile of the **Draft Batch**, or clear it with `None`.
+
+        Sets rather than toggles (invariant 6): a replayed or duplicated click writes the same row twice
+        rather than flipping the state the wrong way round. Clearing deletes the row, because absence
+        already means **Ignore** and a stored "none" would be a second way to say the same thing.
+
+        Writes nothing to the **Decision log** — a **Draft Batch** is not the **Decision log**. Drafting
+        against an unknown or already submitted **Batch** is refused for the same two reasons submitting
+        already uses, so the UI keeps one error branch rather than growing a second.
+        """
+        refusal: SubmissionRefused | None = None
+        with self._write() as write:
+            batch = write.execute("SELECT submitted_at FROM batches WHERE id = ?", (batch_id,)).fetchone()
+            if batch is None:
+                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
+            elif batch["submitted_at"] is not None:
+                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
+            elif verdict is None:
+                write.execute(
+                    "DELETE FROM draft_batch WHERE batch_id = ? AND wallpaper_id = ?",
+                    (batch_id, wallpaper_id),
+                )
+            else:
+                write.execute(
+                    "INSERT INTO draft_batch (batch_id, wallpaper_id, verdict) VALUES (?, ?, ?)"
+                    " ON CONFLICT (batch_id, wallpaper_id) DO UPDATE SET verdict = excluded.verdict",
+                    (batch_id, wallpaper_id, verdict.value),
+                )
+        return refusal
+
     def submit_batch(self, batch_id: str) -> Batch | BatchUnavailable | SubmissionRefused:
         """Append the **Batch**'s **Verdicts** to the **Decision log**, then hand back the next **Batch**.
 
-        Nothing is picked at #2 — **Draft Batches** arrive at #3 — so every **Wallpaper** shown is an
-        **Ignore**. Returning the next **Batch** is what lets the user keep going without a reload.
+        The **Draft Batch** supplies the **Explicit Verdicts**; every **Wallpaper** shown and not marked is
+        an **Ignore**, derived here rather than stored, because absence already means **Ignore**. Returning
+        the next **Batch** is what lets the user keep going without a reload.
 
         One transaction, and the **Batch** is claimed inside it: the check and the append cannot be split
         by a second browser tab, because `BEGIN IMMEDIATE` takes the write lock before the read.
@@ -218,10 +338,22 @@ class CoreService:
                 "SELECT wallpaper_id FROM batch_wallpapers WHERE batch_id = ? ORDER BY position",
                 (batch_id,),
             ).fetchall()
+            drafted = _load_drafts(write, batch_id)
             write.executemany(
                 "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, ?, ?, ?)",
-                [(row["wallpaper_id"], batch_id, Verdict.IGNORE.value, recorded_at) for row in shown],
+                [
+                    (
+                        row["wallpaper_id"],
+                        batch_id,
+                        drafted.get(str(row["wallpaper_id"]), Verdict.IGNORE).value,
+                        recorded_at,
+                    )
+                    for row in shown
+                ],
             )
+            # Discarded with the submission that consumed it. Left behind, these rows would accumulate
+            # against **Batches** that can never be drafted against again (invariant 6).
+            write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
             write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at, batch_id))
 
         return self.get_next_batch()
@@ -258,6 +390,30 @@ class CoreService:
         _write_atomically(destination, data)
         return destination
 
+    # -- verdict resolution ----------------------------------------------------------------------------
+
+    def resolve_verdicts(self, wallpaper_ids: Sequence[str]) -> dict[str, ResolvedVerdict]:
+        """**Verdict resolution** for many **Wallpapers** at once, derived and never stored.
+
+        Plural because #9 scores a whole **Pool** in one go, and a per-**Wallpaper** call would force a
+        Python loop over 10k rows. Derived on every call because **Scores** are never stored (invariant 2).
+
+        A **Wallpaper** with no entries, or one this database has never seen, resolves to absent and zero.
+        """
+        requested = list(dict.fromkeys(wallpaper_ids))
+        resolved = dict.fromkeys(requested, _ABSENT)
+        if not requested:
+            return resolved
+        # One query rather than one per **Wallpaper**. SQLite's parameter limit is 32,766 here, well above
+        # the 10k **Pool** #9 will hand in.
+        placeholders = ",".join("?" * len(requested))
+        rows = (
+            self._connect().execute(_RESOLVE_VERDICTS.format(placeholders=placeholders), requested).fetchall()
+        )
+        for row in rows:
+            resolved[str(row["wallpaper_id"])] = _resolved_from(row["latest_explicit"], int(row["ignores"]))
+        return resolved
+
     # -- history ---------------------------------------------------------------------------------------
 
     def list_history(self, *, batch_id: str | None = None) -> list[DecisionEntry]:
@@ -284,6 +440,50 @@ class CoreService:
         ]
 
 
+_ABSENT = ResolvedVerdict(verdict=None, value=0)
+"""A **Wallpaper** with no **Decision log** entries at all."""
+
+_EXPLICIT_VALUES = {Verdict.FAVOURITE: 100, Verdict.LIKE: 50, Verdict.BAN: -100}
+"""What each **Explicit Verdict** resolves to. An **Ignore** is not here — it stacks instead."""
+
+_IGNORE_VALUE = -10
+"""One **Ignore**. They stack, but only while the **Wallpaper** has no **Explicit Verdict**."""
+
+
+def _resolved_from(latest_explicit: object, ignores: int) -> ResolvedVerdict:
+    """The resolution rule itself, over one **Wallpaper**'s aggregated entries.
+
+    The latest **Explicit Verdict** wins outright and every **Ignore** on that **Wallpaper** is disregarded,
+    before it and after it alike. Only without one do the **Ignores** stack.
+    """
+    if latest_explicit is not None:
+        verdict = Verdict(str(latest_explicit))
+        return ResolvedVerdict(verdict=verdict, value=_EXPLICIT_VALUES[verdict])
+    if ignores:
+        return ResolvedVerdict(verdict=Verdict.IGNORE, value=_IGNORE_VALUE * ignores)
+    return _ABSENT
+
+
+_RESOLVE_VERDICTS = f"""
+SELECT
+    wallpaper_id,
+    (
+        SELECT latest.verdict
+        FROM decision_log AS latest
+        WHERE latest.wallpaper_id = decision_log.wallpaper_id
+          AND latest.verdict != '{Verdict.IGNORE.value}'
+        ORDER BY latest.seq DESC
+        LIMIT 1
+    ) AS latest_explicit,
+    COUNT(*) FILTER (WHERE verdict = '{Verdict.IGNORE.value}') AS ignores
+FROM decision_log
+WHERE wallpaper_id IN ({{placeholders}})
+GROUP BY wallpaper_id
+"""
+"""Ordered by `seq` and never by `recorded_at` (invariant 4): every entry from one submit transaction
+shares a timestamp, so "the latest **Explicit Verdict**" is only well defined against the sequence."""
+
+
 def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
     """The most recent unsubmitted **Batch**, rebuilt from storage, or `None`."""
     batch = connection.execute(
@@ -297,7 +497,16 @@ def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
         size=int(batch["size"]),
         created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
         wallpapers=tuple(_wallpaper_from_row(row) for row in rows),
+        drafts=_load_drafts(connection, str(batch["id"])),
     )
+
+
+def _load_drafts(connection: sqlite3.Connection, batch_id: str) -> dict[str, Verdict]:
+    """The **Draft Batch**: only the **Wallpapers** actually marked, because absence means **Ignore**."""
+    rows = connection.execute(
+        "SELECT wallpaper_id, verdict FROM draft_batch WHERE batch_id = ?", (batch_id,)
+    ).fetchall()
+    return {str(row["wallpaper_id"]): Verdict(str(row["verdict"])) for row in rows}
 
 
 def _wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
@@ -444,4 +653,21 @@ CREATE TABLE settings (
 
 Not an `executescript`: that commits any transaction already open before it runs, which would take the
 migration out of the `BEGIN IMMEDIATE` it is supposed to be inside.
+"""
+
+
+_MIGRATION_2 = (
+    """
+CREATE TABLE draft_batch (
+    batch_id     TEXT NOT NULL REFERENCES batches (id),
+    wallpaper_id TEXT NOT NULL REFERENCES wallpapers (id),
+    verdict      TEXT NOT NULL,
+    PRIMARY KEY (batch_id, wallpaper_id)
+)
+""",
+)
+"""Migration 2, the **Draft Batch** table.
+
+Keyed `(batch_id, wallpaper_id)`, which enforces one **Verdict** per **Wallpaper** per submission for free.
+A separate step rather than an edit to migration 1: that one is already applied to live databases.
 """

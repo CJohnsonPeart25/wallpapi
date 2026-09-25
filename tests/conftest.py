@@ -45,13 +45,21 @@ def make_harness(
     catalogue: Sequence[Wallpaper] | None = None,
     now: dt.datetime = FIXED_NOW,
     seed: int = 1,
+    search_seed: str | None = None,
+    page_size: int = 24,
+    fail_from_call: int | None = None,
 ) -> Harness:
     """Build a Core service over `db_path`.
 
     Called twice with the same path to prove the Decision log survives a restart, so it must run migrations
     idempotently rather than assuming an empty database.
     """
-    wallhaven = FakeWallhavenClient(catalogue_of(24) if catalogue is None else catalogue)
+    wallhaven = FakeWallhavenClient(
+        catalogue_of(24) if catalogue is None else catalogue,
+        seed=search_seed,
+        page_size=page_size,
+        fail_from_call=fail_from_call,
+    )
     library = FakeLibraryWriter()
     similarity = FakeSimilarityProvider()
     clock = FakeClock(now)

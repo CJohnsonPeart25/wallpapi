@@ -4,28 +4,35 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wallpapi</title>
+    {# Vendored, never a third-party script tag: this page renders the **Decision log**, and a personal
+       tool should not stop working because somebody else's host is unreachable. #}
+    <script src="/static/htmx.min.js" defer></script>
   </head>
   <body>
     <main>
       {% if recorded %}
-        <p class="recorded">Recorded {{ recorded }} ignore{{ "" if recorded == 1 else "s" }}.</p>
+        {# Said as it was recorded: calling three Favourites "ignores" because most of the Batch was
+           unmarked would be a plain lie about what went into the Decision log. #}
+        <p class="recorded">
+          {% if recorded == ignored %}
+            Recorded {{ ignored }} ignore{{ "" if ignored == 1 else "s" }}.
+          {% else %}
+            Recorded {{ recorded - ignored }} verdict{{ "" if recorded - ignored == 1 else "s" }}
+            and {{ ignored }} ignore{{ "" if ignored == 1 else "s" }}.
+          {% endif %}
+        </p>
       {% endif %}
       {% if batch %}
+        <ul class="batch">
+          {% for wallpaper in batch.wallpapers %}
+            {% set draft = batch.drafts.get(wallpaper.id) %}
+            {% include "tile.html" %}
+          {% endfor %}
+        </ul>
+        {# The grid sits outside this form: the tiles post to /draft on their own, and submitting is the
+           one plain form post left. A refresh that resubmits is refused rather than silently absorbed. #}
         <form method="post" action="/submit">
           <input type="hidden" name="batch_id" value="{{ batch.id }}" />
-          <ul class="batch">
-            {% for wallpaper in batch.wallpapers %}
-              <li class="tile" data-wallpaper-id="{{ wallpaper.id }}">
-                <img
-                  src="/thumb/{{ wallpaper.id }}"
-                  alt=""
-                  loading="lazy"
-                  width="{{ wallpaper.width }}"
-                  height="{{ wallpaper.height }}"
-                />
-              </li>
-            {% endfor %}
-          </ul>
           <button type="submit">Submit batch</button>
         </form>
       {% elif refused %}
