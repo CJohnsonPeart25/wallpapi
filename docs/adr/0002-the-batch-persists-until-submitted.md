@@ -40,6 +40,25 @@ Consequences that follow and are not optional:
   so a **Wallpaper** is never written off for having merely appeared. `test_a_batch_that_is_never_submitted_records_nothing` pins this.
 - One **API call** per **Batch**, not per page load.
 
+  **Amended at issue #3, and no longer one call.** **Banned Wallpapers** are excluded from the candidates a
+  **Batch** is built from, and enough past **Bans** leave a page short of the batch size. Rather than ship a
+  **Batch** thinned by decisions already made, **Batch** building walks on to the next page carrying
+  Wallhaven's returned `meta.seed`, up to a cap of **four API calls per Batch minted**.
+
+  The cap is there to bound how long a page load blocks, not to protect the 45 per minute budget: the walk
+  happens while somebody waits for the page, and four calls at the client's ten second timeout is already
+  the worst case worth making a user sit through. Spending the rest of the budget is the background
+  refill's job at #6.
+
+  What the original consequence was actually protecting is intact: the cost is still per **Batch** minted
+  and not per page load, because a refresh hands back the live **Batch** without searching at all. A walk
+  that ends still short ships the smaller **Batch**; only one that finds nothing at all is a **Batch
+  unavailable**.
+
+  This is temporary. When the **Pool** lands at #6, **Batch** building draws from locally stored
+  **Wallpapers** a background thread has already topped up, and the page load path costs zero **API
+  calls** — at which point the walk is deleted rather than unpicked.
+
 ## Consequences
 
 Closing a tab and coming back resumes where you were rather than throwing the **Batch** away, which is the
