@@ -78,12 +78,15 @@ def test_wallhaven_is_searched_with_random_sorting_and_sfw_purity(harness: Harne
 
     This asserts against the fake's recorded call rather than an outcome, which is normally an
     anti-pattern. It is justified here because the Wallhaven client is a pre-agreed injected seam rather
-    than an internal collaborator, and "random, SFW" has no other observable at #2. Filters — atleast,
-    ratios, minimum favourites — are #6 and must not appear yet.
+    than an internal collaborator, and "random, SFW" has no other observable. Filters — atleast, ratios,
+    minimum favourites — are #6 and must not appear yet.
+
+    The first call of a walk carries no seed: it is the call that asks Wallhaven for one. Later pages
+    carrying it back is test_the_walk_carries_the_seed_wallhaven_returned.
     """
     harness.core.get_next_batch()
 
-    assert harness.wallhaven.searches == [{"sorting": "random", "purity": "100", "page": 1}]
+    assert harness.wallhaven.searches == [{"sorting": "random", "purity": "100", "page": 1, "seed": None}]
 
 
 def test_batch_is_unavailable_when_wallhaven_returns_nothing(db_path: Path) -> None:
