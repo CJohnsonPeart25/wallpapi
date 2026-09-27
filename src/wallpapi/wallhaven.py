@@ -20,7 +20,14 @@ from pydantic import BaseModel
 from wallpapi.model import Wallpaper
 
 API_SEARCH_URL = "https://wallhaven.cc/api/v1/search"
-"""The documented 45-calls-per-minute limit applies to `wallhaven.cc/api` — this URL and no other."""
+"""The documented 45-calls-per-minute limit applies to `wallhaven.cc/api` — this URL and the next."""
+
+API_WALLPAPER_URL = "https://wallhaven.cc/api/v1/w/{wallpaper_id}"
+"""The single-**Wallpaper** endpoint, the only place Wallhaven returns tags (#14).
+
+A search listing carries colours, dimensions and category but no tags at all, so tags cost one **API call**
+per **Wallpaper**, out of the same 45 a minute the **Pool** refill is spending on searches.
+"""
 
 REQUEST_TIMEOUT = 10.0
 """Seconds. Must stay below the shutdown join timeout, so shutdown cannot hang mid-request (invariant 12)."""
@@ -61,6 +68,19 @@ class SearchPage:
 
     wallpapers: tuple[Wallpaper, ...]
     seed: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Tag:
+    """One of Wallhaven's own labels on a **Wallpaper**, as the single-**Wallpaper** endpoint returns it.
+
+    Wallhaven's concept and so Wallhaven's module, next to `SearchPage`. The id is what #14's tag
+    **Similarity provider** computes overlap on — names are typed by people and come with aliases, the id
+    does not — and the name is carried so a cached tag set can be read by a human.
+    """
+
+    id: int
+    name: str
 
 
 class Wallhaven(Protocol):
@@ -127,6 +147,21 @@ class _SearchMeta(BaseModel):
 class _SearchResponse(BaseModel):
     data: list[_SearchItem]
     meta: _SearchMeta
+
+
+class _TagItem(BaseModel):
+    id: int
+    name: str
+
+
+class _WallpaperDetail(BaseModel):
+    """The single-**Wallpaper** payload, narrowed to the one field the search listing does not carry."""
+
+    tags: list[_TagItem] = []
+
+
+class _WallpaperResponse(BaseModel):
+    data: _WallpaperDetail
 
 
 def _to_wallpaper(item: _SearchItem) -> Wallpaper:
@@ -202,6 +237,25 @@ class WallhavenClient:
         return SearchPage(
             wallpapers=tuple(_to_wallpaper(item) for item in payload.data), seed=payload.meta.seed
         )
+
+    def fetch_tags(self, wallpaper_id: str) -> tuple[Tag, ...]:
+        """One **Wallpaper**'s tags. An **API call**, and #14's alone.
+
+        Deliberately not on the `Wallhaven` protocol above. The protocol is what the Core service needs,
+        and the Core service needs nothing of this: the refill does not fetch tags and must not start,
+        since one call per **Wallpaper** would eat the same 45 a minute that stock the **Pool**. #14's
+        **Similarity provider** holds the real client directly and fills its cache from a step somebody
+        runs on purpose. Putting it on the protocol would also make every fake implement a method no
+        behaviour test can reach — and the spike is meant to be disposable.
+
+        A 429 becomes `RateLimited`, as everywhere else on `wallhaven.cc/api`.
+        """
+        response = self._client.get(API_WALLPAPER_URL.format(wallpaper_id=wallpaper_id))
+        if response.status_code == TOO_MANY_REQUESTS:
+            raise RateLimited(_retry_after_seconds(response.headers.get("Retry-After")))
+        response.raise_for_status()
+        payload = _WallpaperResponse.model_validate(response.json())
+        return tuple(Tag(id=item.id, name=item.name) for item in payload.data.tags)
 
     def fetch_thumbnail(self, url: str) -> bytes:
         """The bytes behind a `thumbs.small` URL.
