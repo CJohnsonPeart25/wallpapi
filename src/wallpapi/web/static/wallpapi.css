@@ -219,6 +219,10 @@ body:has(#batch-grid) .refill {
 .tile img {
   display: block;
   width: 100%;
+  /* `height: auto` is load-bearing. The tile markup carries width and height attributes, and those are
+     presentational hints: without this, the hint sets a 2160px height and the aspect ratio below never
+     gets a say. */
+  height: auto;
   aspect-ratio: var(--tile-aspect, 16 / 10);
   object-fit: cover;
   border-radius: var(--radius);
