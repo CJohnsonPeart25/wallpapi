@@ -19,15 +19,23 @@ The hard rules a wallpaper must satisfy before it enters the pool: minimum resol
 _Avoid_: criteria, constraints, preferences
 
 **Refill**:
-The background work that keeps the pool stocked: random Wallhaven searches, filtered, at up to 45 API calls a minute while the pool is below its target size. A thread, started with the app and stopped with it, and the only thing in wallpapi that searches Wallhaven.
+The background work that keeps the pool stocked: Wallhaven searches, filtered, at up to 45 API calls a minute while the pool is below its target size. A thread, started with the app and stopped with it, and the only thing in wallpapi that searches Wallhaven.
 _Avoid_: fetcher, crawler, scraper, sync
+
+**Refill strategy**:
+Which search a refill step makes, and so how a pool member got there: random, or lookalikes. The two take strict turns while both have work, so neither starves the other.
+_Avoid_: mode, channel, feed, phase
+
+**Lookalike search**:
+A search for the wallpapers Wallhaven considers similar to one favourite. The refill strategy that grows the banger zone, as against the random one that stocks the unknown zone. Wallhaven spells it `like:` and its results are few, so a walk through them is capped.
+_Avoid_: similar search, related, recommendations, more like this
 
 **Pool target size**:
 How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. A setting.
 _Avoid_: quota, capacity, limit, threshold
 
 **Walk**:
-One continuous sweep of random search pages, carrying the seed Wallhaven returned so the pages do not repeat each other. A walk ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed.
+One continuous sweep of search pages for one refill strategy. A random walk carries the seed Wallhaven returned so its pages do not repeat each other, and ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed. A lookalike walk is about one favourite and ends at an empty page or its page cap, after which the next favourite has its turn. The two walks keep their places separately.
 _Avoid_: crawl, scan, sweep, pass
 
 **Batch**:
