@@ -41,6 +41,8 @@ two disagree, issue #1 is the spec and wins.
 
 "No JavaScript build step" does not mean no JavaScript. Hover-to-enlarge and fullscreen preview (#8) are client
 concerns htmx does nothing for, and a small amount of vendored vanilla JS there is not a stack violation.
+As built at #8, hover-to-enlarge needed none of it — it is a CSS rule — and the preview is one delegated
+listener in `web/static/wallpapi.js`. Every asset the page loads is served from `/static`.
 
 Run the app **single-worker**. `uvicorn --workers N` would give N background refill threads and N writers
 against one SQLite file.
@@ -156,10 +158,10 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | --- | --- | --- |
 | Absolute **Library** file path column | #5 | Not in migration 1. Needs its own numbered migration step alongside the **Library** writer. |
 | Verdict-aware thumbnail eviction and size cap | #7 | #2 ships the serving seam and an unevicted directory. |
+| Caching full-resolution images | never | #8's fullscreen preview loads `full_url` straight from Wallhaven on demand. The only full-resolution files wallpapi keeps are **Favourites** in the **Library** (#5). See `docs/adr/0003-the-preview-loads-full-resolution-from-wallhaven.md`. |
 | Refill thread supervision, restart and a visible indicator | #6 | #2 has no **Pool**, so no refill thread. Clean shutdown arrives with the thread. |
 | Offline / Wallhaven-down behaviour | #6 | Falls out of the "**Batch** unavailable" result once **Batches** come from the **Pool**. |
 | **Decision log** backup procedure | later | Cheap because the database is a single file at a known path: `VACUUM INTO`. |
 | Sweeping up **Batches** abandoned before **Batch** reuse existed | #7 | `get_next_batch` hands back the unsubmitted **Batch** rather than minting one per page load, so from #2 onwards at most one exists and every stored **Wallpaper** either has a **Verdict** or is in it. Databases written before that change still hold **Batches** that can never be submitted, **Wallpapers** with neither, and the thumbnails those **Wallpapers** left in the cache. Eviction at #7 is where it gets swept up. See `docs/adr/0002-the-batch-persists-until-submitted.md`. |
-| Bulk **Draft Batch** writes — select-all and select-none | #8 | One post rewriting the whole **Draft Batch** in one transaction, not one post per tile. |
 | The page walk in **Batch** building | #6 | #3 walks up to four pages carrying `meta.seed` when **Bans** leave a page short. Once the **Pool** exists the page load path makes no **API call** at all, so `_gather_candidates` is deleted whole rather than unpicked. See `docs/adr/0002-the-batch-persists-until-submitted.md`. |
 | Transport failure on the first **API call** of a **Batch** | #15 | #3 rescues a failure *part way* through the walk by shipping the pages already gathered. A failure on the first call still propagates, deliberately — widening the rescue would close #15 by accident with a page nobody designed. |
