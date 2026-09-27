@@ -316,6 +316,37 @@ class CoreService:
                 )
         return refusal
 
+    def set_all_draft_verdicts(self, batch_id: str, verdict: Verdict | None) -> SubmissionRefused | None:
+        """Rewrite the whole **Draft Batch** in one transaction: select-all, or select-none with `None`.
+
+        One operation rather than one per tile (invariant 6). At a **Batch** size of 32 the per-tile
+        version is 32 posts and 32 transactions for one click, and it can interleave with an in-flight
+        single-tile post and leave the **Draft Batch** half-changed. Here the old rows go and the new ones
+        arrive inside one `BEGIN IMMEDIATE`, so nothing can read the **Batch** part-marked.
+
+        The rows are built from what the **Batch** *shows*, not from what is already drafted: "all" means
+        every tile on screen, including the ones with no mark yet. `None` deletes every row rather than
+        writing explicit nothings, because absence already means **Ignore**.
+
+        Refused for an unknown or already submitted **Batch**, with the reasons a single mark already
+        uses. **Ignore** is refused at the web edge exactly as it is for a single mark, so the **Verdict**
+        never reaches this method.
+        """
+        refusal: SubmissionRefused | None = None
+        with self._write() as write:
+            batch = write.execute("SELECT submitted_at FROM batches WHERE id = ?", (batch_id,)).fetchone()
+            if batch is None:
+                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
+            elif batch["submitted_at"] is not None:
+                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
+            else:
+                # Scoped to this **Batch**. An unscoped delete reads the same on a database holding one
+                # **Draft Batch** and is a silent data loss on any that holds two.
+                write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
+                if verdict is not None:
+                    write.execute(_MARK_WHOLE_BATCH, (verdict.value, batch_id))
+        return refusal
+
     def submit_batch(self, batch_id: str) -> Batch | BatchUnavailable | SubmissionRefused:
         """Append the **Batch**'s **Verdicts** to the **Decision log**, then hand back the next **Batch**.
 
@@ -581,6 +612,19 @@ FROM batch_wallpapers AS bw
 JOIN wallpapers AS w ON w.id = bw.wallpaper_id
 WHERE bw.batch_id = ?
 ORDER BY bw.position
+"""
+
+_MARK_WHOLE_BATCH = """
+INSERT INTO draft_batch (batch_id, wallpaper_id, verdict)
+SELECT batch_id, wallpaper_id, ?
+FROM batch_wallpapers
+WHERE batch_id = ?
+"""
+"""Select-all as one statement: the **Draft Batch** is built from the rows the **Batch** shows.
+
+Reading `batch_wallpapers` inside the same transaction as the delete is what makes the rewrite atomic. A
+Python round trip per **Wallpaper** would be 32 statements for one click and would have to be handed a
+list of IDs the caller had read separately, outside the write lock.
 """
 
 _UPSERT_WALLPAPER = """
