@@ -125,8 +125,12 @@ _Avoid_: new, unseen, undecided
 ### Building a batch
 
 **Mix**:
-The zone percentages used to build a batch.
+The zone percentages used to build a batch. Three whole numbers summing to a hundred, under a name. Stored rather than written into the code, so they can be edited and added to.
 _Avoid_: ratio, blend, profile, strategy
+
+**Active mix**:
+The mix the next batch will be built from. A setting, read when a batch is minted, so switching applies to the next batch rather than the one on screen.
+_Avoid_: current mix, selected mix, mode
 
 **Explore**:
 The default mix for casting a wide net — mostly unknowns.
@@ -139,6 +143,14 @@ _Avoid_: focus mode, exploit mode
 **Allocation**:
 Turning a mix into slots for a batch: whole-number slots are guaranteed, and leftover slots are rolled by the fractional remainders.
 _Avoid_: distribution, sampling, apportioning
+
+**Slot**:
+One place in a batch, allocated to a zone before anything is drawn into it. A slot has a zone it was meant for; the wallpaper that ends up in it may have come from another.
+_Avoid_: seat, position, pick
+
+**Shortfall**:
+The slots a zone was allocated and cannot fill, because it holds fewer eligible wallpapers than it was asked for. They are filled from unknown, then banger, then dud — so a decision log with no favourites in it yet gives an all-unknown batch. A shortfall is ordinary, not an error: the tile still shows the zone its wallpaper came from, never the zone its slot wanted.
+_Avoid_: deficit, underfill, fallback
 
 **Revisit weight**:
 The setting that reduces how often a wallpaper with an explicit verdict reappears in a batch.
@@ -165,7 +177,7 @@ _Avoid_: engine, manager, API, backend
 ### Configuration
 
 **Settings**:
-Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size and the similarity radius and decay today; mixes and the revisit weight join them later.
+Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, and the active mix today; the revisit weight joins them later. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
 _Avoid_: config, preferences, options
 
 **Batch size**:
