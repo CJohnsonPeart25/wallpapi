@@ -124,7 +124,7 @@ def test_a_write_that_fails_leaves_the_decision_log_intact_and_is_retried(
     harness.core.submit_batch(batch.id)
 
     assert harness.library.written == []
-    assert [e.verdict for e in harness.core.list_history(batch_id=batch.id)] == [Verdict.FAVOURITE]
+    assert [e.entry for e in harness.core.list_history(batch_id=batch.id)] == [Verdict.FAVOURITE]
     assert harness.core.resolve_verdicts([shown])[shown].verdict is Verdict.FAVOURITE
 
     harness.library.fail_for.clear()
