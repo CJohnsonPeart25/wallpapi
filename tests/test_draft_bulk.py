@@ -82,7 +82,7 @@ def test_select_all_then_one_changed_tile_submits_exactly_what_the_screen_showed
 
     harness.core.submit_batch(batch.id)
 
-    recorded = {entry.wallpaper_id: entry.verdict for entry in harness.core.list_history(batch_id=batch.id)}
+    recorded = {entry.wallpaper_id: entry.entry for entry in harness.core.list_history(batch_id=batch.id)}
     assert recorded == {
         wallpaper.id: (Verdict.BAN if wallpaper.id == changed else Verdict.LIKE)
         for wallpaper in batch.wallpapers
@@ -104,7 +104,7 @@ def test_select_none_then_submit_records_an_ignore_for_every_tile(harness: Harne
 
     recorded = harness.core.list_history(batch_id=batch.id)
     assert len(recorded) == len(batch.wallpapers)
-    assert all(entry.verdict is Verdict.IGNORE for entry in recorded)
+    assert all(entry.entry is Verdict.IGNORE for entry in recorded)
 
 
 def test_bulk_marking_an_unknown_batch_is_refused(harness: Harness) -> None:

@@ -172,7 +172,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         # Counted from the Decision log, not from the form: the page reports what was appended rather
         # than what the browser claimed to be showing.
         appended = core.list_history(batch_id=batch_id)
-        ignored = sum(1 for entry in appended if entry.verdict is Verdict.IGNORE)
+        ignored = sum(1 for entry in appended if entry.entry is Verdict.IGNORE)
         return render(request, result, recorded=len(appended), ignored=ignored)
 
     @app.post("/draft", response_class=HTMLResponse)

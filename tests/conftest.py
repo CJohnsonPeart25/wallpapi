@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from tests.fakes import (
+    THUMBNAIL_BYTES,
     FakeClock,
     FakeLibraryWriter,
     FakeSimilarityProvider,
@@ -58,6 +59,7 @@ def make_harness(
     seed: int = 1,
     search_seed: str | None = None,
     page_size: int = 24,
+    thumbnail_bytes: bytes = THUMBNAIL_BYTES,
     fail_from_call: int | None = None,
     rate_limited_calls: int = 0,
     retry_after: float | None = None,
@@ -82,6 +84,7 @@ def make_harness(
         catalogue_of(24) if catalogue is None else catalogue,
         seed=search_seed,
         page_size=page_size,
+        thumbnail_bytes=thumbnail_bytes,
         fail_from_call=fail_from_call,
         rate_limited_calls=rate_limited_calls,
         retry_after=retry_after,

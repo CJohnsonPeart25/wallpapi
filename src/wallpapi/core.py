@@ -22,7 +22,7 @@ from uuid import uuid4
 from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
-from wallpapi.model import DecisionEntry, Verdict, Wallpaper, Zone
+from wallpapi.model import Clearance, DecisionEntry, Verdict, Wallpaper, Zone
 from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
@@ -159,6 +159,27 @@ MAX_SIMILARITY_DECAY = 50.0
 """The largest decay worth accepting. `exp(-50 * d)` is already under `1e-21` at a hundredth of the range,
 so anything above it is a **Pool** of **Unknowns** with nothing on the page to explain why."""
 
+DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
+"""The **Thumbnail cache**'s size cap, as a backstop behind verdict-aware eviction (invariant 8).
+
+Five hundred megabytes is thousands of Wallhaven thumbnails — a **Pool** of 2000 plus a **History** of
+**Explicit Verdicts** does not approach it — so in normal running the cap never fires and eviction is
+decided entirely by **Verdict**. It exists for the case eviction cannot reach: a **Pool** target raised a
+long way, or a machine that has been judging **Wallpapers** for a year.
+"""
+
+BYTES_IN_A_MEGABYTE = 1024 * 1024
+"""Mebibytes, spelled the way a file manager spells megabytes. The setting is a rough ceiling on a cache,
+not an accounting figure, and matching what Explorer shows matters more than matching SI."""
+
+HISTORY_PAGE_SIZE = 100
+"""Rows on one page of **History**.
+
+Fixed rather than a setting. **History** grows an entry per **Wallpaper** per **Batch**, so it is thousands
+of **Ignores** within a week of ordinary use; the page needs *a* bound far more than it needs a
+configurable one, and a hundred rows is a scroll rather than a wall.
+"""
+
 WALLHAVEN_RATIOS = frozenset(
     {"16x9", "16x10", "21x9", "32x9", "48x9", "9x16", "10x16", "9x18", "1x1", "3x2", "4x3", "5x4"}
 )
@@ -187,6 +208,7 @@ _ALLOWED_RATIOS = "allowed_ratios"
 _MIN_FAVOURITES = "min_favourites"
 _SIMILARITY_RADIUS = "similarity_radius"
 _SIMILARITY_DECAY = "similarity_decay"
+_THUMBNAIL_CACHE_MAX_MB = "thumbnail_cache_max_mb"
 """The `settings` keys. One row per key, with `Settings` as the typed view over them."""
 
 
@@ -216,6 +238,7 @@ def _defaults() -> dict[str, str]:
         _MIN_FAVOURITES: str(DEFAULT_MIN_FAVOURITES),
         _SIMILARITY_RADIUS: str(DEFAULT_SIMILARITY_RADIUS),
         _SIMILARITY_DECAY: str(DEFAULT_SIMILARITY_DECAY),
+        _THUMBNAIL_CACHE_MAX_MB: str(DEFAULT_THUMBNAIL_CACHE_MAX_MB),
     }
 
 
@@ -237,6 +260,7 @@ class Settings:
     min_favourites: int
     similarity_radius: float
     similarity_decay: float
+    thumbnail_cache_max_mb: int
 
     @property
     def atleast(self) -> str:
@@ -276,6 +300,9 @@ class SettingsRefused:
         have the same one-sentence answer — the sentence that names the accepted shape — so a second reason
         would be a second branch on the page saying the same thing.
         """
+
+        THUMBNAIL_CACHE_MAX_MB_INVALID = "thumbnail_cache_max_mb_invalid"
+        """The **Thumbnail cache** cap, on the same one-reason-per-field rule as the **Filters**."""
 
     reason: Reason
 
@@ -406,6 +433,105 @@ class LibraryReconciliation:
     written: tuple[str, ...]
     removed: tuple[str, ...]
     failed: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRow:
+    """One **Wallpaper**'s line in **History**: what it comes to now, and when it was last judged.
+
+    A **Wallpaper** and not an entry. The **Decision log** holds one entry per **Wallpaper** per **Batch**,
+    so a listing of entries would show the same image a dozen times over and offer a dozen places to change
+    a **Verdict** that has only one current value. **History** is a view over the log, not a print-out of
+    it: one row per **Wallpaper** that has ever been judged, carrying its resolved **Verdict**.
+
+    `latest_at` is the `recorded_at` of its latest entry. Display-only, as every timestamp is; the ordering
+    it appears to express is really `seq`'s (invariant 4).
+    """
+
+    wallpaper: Wallpaper
+    resolved: ResolvedVerdict
+    latest_at: dt.datetime
+
+    @property
+    def clearable(self) -> bool:
+        """Whether there is an **Explicit Verdict** here for a **Clearance** to withdraw.
+
+        A row resolving to **Ignore**, or to nothing at all, has none — the page renders no clear control
+        for it, and `clear_verdict` refuses one if a hand-made post arrives anyway.
+        """
+        return self.resolved.verdict is not None and self.resolved.verdict is not Verdict.IGNORE
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryPage:
+    """One page of **History**, with enough about the rest of it to render the paging.
+
+    `total` counts the rows the filter matches, not the rows on this page, because "1 to 100 of 4,312" is
+    the only thing that tells the user that paging is happening at all.
+    """
+
+    rows: tuple[HistoryRow, ...]
+    page: int
+    pages: int
+    total: int
+    verdict: Verdict | None
+
+    @property
+    def previous_page(self) -> int | None:
+        return self.page - 1 if self.page > 1 else None
+
+    @property
+    def next_page(self) -> int | None:
+        return self.page + 1 if self.page < self.pages else None
+
+
+@dataclass(frozen=True)
+class HistoryRefused:
+    """A **History** edit did not happen, and this is why.
+
+    A result rather than an exception, in the shape `SubmissionRefused` and `SettingsRefused` already use,
+    so the page has one error branch. Every reason here is either a hand-made post or a second tab: the
+    controls **History** renders cannot produce any of them.
+    """
+
+    class Reason(StrEnum):
+        UNKNOWN_WALLPAPER = "unknown_wallpaper"
+        """No such **Wallpaper** in this database, so there is nothing to append an entry against."""
+
+        IGNORE_NOT_CHOOSABLE = "ignore_not_choosable"
+        """An **Ignore** is derived for everything unmarked at submit; it is never chosen. Choosing one
+        from **History** would be a second way to say what a **Clearance** already says, and the two would
+        resolve differently — a stored **Ignore** stacks, a **Clearance** lets the earlier ones stack."""
+
+        NOTHING_TO_CLEAR = "nothing_to_clear"
+        """The **Wallpaper** has no **Explicit Verdict** standing. Appending a **Clearance** anyway would
+        put an entry in an append-only log that changes nothing and means nothing."""
+
+    reason: Reason
+
+
+@dataclass(frozen=True, slots=True)
+class ThumbnailEviction:
+    """What one pass of **Thumbnail cache** eviction did.
+
+    A result rather than nothing for the same reason `LibraryReconciliation` is one: this runs at the tail
+    of `submit_batch` where nothing can be raised, and `over_cap` is the only way to tell "under the cap"
+    from "over it and not allowed to do anything about it".
+    """
+
+    evicted: tuple[str, ...]
+    remaining_bytes: int
+    over_cap: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedThumbnail:
+    """One file in the **Thumbnail cache**, stat-ed once."""
+
+    wallpaper_id: str
+    path: Path
+    size: int
+    modified_at: float
 
 
 @dataclass(frozen=True)
@@ -588,6 +714,10 @@ class CoreService:
             similarity_decay=or_default(
                 _validated_similarity_decay(stored_or_seeded(_SIMILARITY_DECAY)), DEFAULT_SIMILARITY_DECAY
             ),
+            thumbnail_cache_max_mb=or_default(
+                _validated_thumbnail_cache_max_mb(stored_or_seeded(_THUMBNAIL_CACHE_MAX_MB)),
+                DEFAULT_THUMBNAIL_CACHE_MAX_MB,
+            ),
         )
 
     def update_settings(
@@ -602,6 +732,7 @@ class CoreService:
         min_favourites: int | str | None = None,
         similarity_radius: float | str | None = None,
         similarity_decay: float | str | None = None,
+        thumbnail_cache_max_mb: int | str | None = None,
     ) -> Settings | SettingsRefused:
         """Validate and persist the settings named, in one write transaction.
 
@@ -669,6 +800,11 @@ class CoreService:
             if isinstance(validated_decay, SettingsRefused.Reason):
                 return SettingsRefused(reason=validated_decay)
             changes.append((_SIMILARITY_DECAY, str(validated_decay)))
+        if thumbnail_cache_max_mb is not None:
+            validated_cap = _validated_thumbnail_cache_max_mb(thumbnail_cache_max_mb)
+            if isinstance(validated_cap, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_cap)
+            changes.append((_THUMBNAIL_CACHE_MAX_MB, str(validated_cap)))
 
         with self._write() as write:
             write.executemany(_UPSERT_SETTING, changes)
@@ -1230,6 +1366,12 @@ class CoreService:
         # about a download succeeding, so nothing the **Library** does may roll the **Decision log** back.
         # The reconciliation is idempotent, so a failure here is picked up by the next submission.
         self.reconcile_library()
+        # And then the **Thumbnail cache**, which is where a submission changes what may be evicted: every
+        # **Wallpaper** just shown now has a **Verdict**, and the ones that resolve to an **Ignore** and
+        # have left the **Pool** will never be asked for again. Before `get_next_batch`, so the **Batch**
+        # about to be minted is not being drawn while its **Wallpapers** are counted as evictable — they
+        # are **Pool** members either way, but the ordering says so rather than relying on it.
+        self.evict_thumbnails()
         return self.get_next_batch()
 
     # -- library ---------------------------------------------------------------------------------------
@@ -1314,8 +1456,9 @@ class CoreService:
     def get_thumbnail(self, wallpaper_id: str) -> Path | None:
         """The cached thumbnail for a **Wallpaper**, fetching it the first time and never again.
 
-        `None` for a **Wallpaper** this database has never seen. Nothing is evicted at #2; eviction is #7,
-        where **History** renders a thumbnail for every past **Verdict**.
+        `None` for a **Wallpaper** this database has never seen. An evicted thumbnail is fetched again
+        here, which is what makes eviction safe to be aggressive about: the cost of getting it wrong is one
+        request to `th.wallhaven.cc`, not a broken page.
         """
         row = (
             self._connect()
@@ -1334,6 +1477,85 @@ class CoreService:
         write_atomically(destination, data)
         return destination
 
+    def evict_thumbnails(self) -> ThumbnailEviction:
+        """Clear out the **Thumbnail cache**, by **Verdict** first and by size only as a backstop.
+
+        Invariant 8. Eviction is *not* "when it leaves the **Pool**": **History** renders a thumbnail for
+        every past **Verdict**, and a **Banned Wallpaper** leaves every **Zone** immediately and
+        permanently while still needing a picture on the page where the **Ban** can be undone.
+
+        Two passes, and the order matters.
+
+        The first deletes every cached thumbnail whose **Wallpaper** has no **Explicit Verdict** standing,
+        is not in the **Pool** and is not in the live **Batch**. That is exactly the set nothing will ever
+        ask for again: it is not going to be shown, and it is not in **History** as anything but an
+        **Ignore**. It also sweeps the leftovers of **Batches** abandoned before ADR 0002 — their
+        **Wallpapers** have neither a **Verdict** nor a place in the **Pool**, so their thumbnails go, and
+        so do files whose `wallpapers` row was never written at all.
+
+        The second is the size cap, and it exists because the first pass cannot see the common case of a
+        cache that is simply large: a **Pool** of thousands of undecided **Wallpapers**, every one of them
+        still waiting to be shown. Over `thumbnail_cache_max_mb`, the oldest-modified of *those* go until
+        the cache is under it — each costs one re-fetch when it is next asked for.
+
+        **A thumbnail whose Wallpaper has an Explicit Verdict is never evicted by either pass.** That is
+        the rule invariant 8 states and the cap does not get to break it, which means a cache that is over
+        the cap on **Favourites** alone stays over it. `over_cap` says so rather than hiding it.
+
+        Called at the tail of `submit_batch`, and cheap when there is nothing to do: an empty or absent
+        directory returns immediately, and in ordinary running every file belongs to a **Pool** member or a
+        decided **Wallpaper**, so the first pass deletes nothing and the second never runs.
+        """
+        directory = self.thumbnail_dir
+        if not directory.is_dir():
+            return _NOTHING_EVICTED
+        cached = _cached_thumbnails(directory)
+        if not cached:
+            return _NOTHING_EVICTED
+
+        decided = self._explicitly_decided()
+        awaiting = self._awaiting_a_verdict()
+        evicted: list[str] = []
+        capped: list[_CachedThumbnail] = []
+        remaining = 0
+        for thumbnail in cached:
+            if thumbnail.wallpaper_id in decided:
+                remaining += thumbnail.size
+            elif thumbnail.wallpaper_id in awaiting:
+                # Still to be shown, so kept unless the cap says otherwise.
+                capped.append(thumbnail)
+                remaining += thumbnail.size
+            else:
+                thumbnail.path.unlink(missing_ok=True)
+                evicted.append(thumbnail.wallpaper_id)
+
+        cap = self.get_settings().thumbnail_cache_max_mb * BYTES_IN_A_MEGABYTE
+        # Oldest modified first, with the name as the tie-break: two files written in the same frozen
+        # second must not be evicted in whatever order the directory happened to list them.
+        for thumbnail in sorted(capped, key=lambda cached: (cached.modified_at, cached.path.name)):
+            if remaining <= cap:
+                break
+            thumbnail.path.unlink(missing_ok=True)
+            evicted.append(thumbnail.wallpaper_id)
+            remaining -= thumbnail.size
+
+        return ThumbnailEviction(evicted=tuple(evicted), remaining_bytes=remaining, over_cap=remaining > cap)
+
+    def _explicitly_decided(self) -> set[str]:
+        """The **Wallpapers** whose resolved **Verdict** is an **Explicit Verdict**.
+
+        Bounded by what the user has actually judged rather than by the **Pool**, and read through the same
+        resolution CTE as everything else — so a **Cleared Favourite** is not in it, and an un-**Banned**
+        **Wallpaper** stops being in it the moment the **Clearance** lands.
+        """
+        return {str(row["wallpaper_id"]) for row in self._connect().execute(_EXPLICITLY_DECIDED)}
+
+    def _awaiting_a_verdict(self) -> set[str]:
+        """The **Wallpapers** that are still going to be put in front of the user: the **Pool** and the
+        live **Batch**. The live **Batch** is named separately because a **Wallpaper** can be on screen
+        after being pruned out of the **Pool** by a **Filter** change."""
+        return {str(row["wallpaper_id"]) for row in self._connect().execute(_AWAITING_A_VERDICT)}
+
     # -- verdict resolution ----------------------------------------------------------------------------
 
     def resolve_verdicts(self, wallpaper_ids: Sequence[str]) -> dict[str, ResolvedVerdict]:
@@ -1342,7 +1564,8 @@ class CoreService:
         Plural because #9 scores a whole **Pool** in one go, and a per-**Wallpaper** call would force a
         Python loop over 10k rows. Derived on every call because **Scores** are never stored (invariant 2).
 
-        A **Wallpaper** with no entries, or one this database has never seen, resolves to absent and zero.
+        A **Wallpaper** with no entries, one whose **Explicit Verdict** has been **Cleared** with no
+        **Ignores** left standing, and one this database has never seen all resolve to absent and zero.
         """
         requested = list(dict.fromkeys(wallpaper_ids))
         resolved = dict.fromkeys(requested, _ABSENT)
@@ -1351,33 +1574,161 @@ class CoreService:
         # One query rather than one per **Wallpaper**. SQLite's parameter limit is 32,766 here, well above
         # the 10k **Pool** #9 will hand in.
         placeholders = ",".join("?" * len(requested))
-        rows = (
-            self._connect().execute(_RESOLVE_VERDICTS.format(placeholders=placeholders), requested).fetchall()
+        query = _resolution_query(
+            "SELECT wallpaper_id, resolved, ignores FROM resolution",
+            restriction=f"WHERE wallpaper_id IN ({placeholders})",
         )
-        for row in rows:
-            resolved[str(row["wallpaper_id"])] = _resolved_from(row["latest_explicit"], int(row["ignores"]))
+        for row in self._connect().execute(query, requested).fetchall():
+            resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"], int(row["ignores"]))
         return resolved
 
     # -- history ---------------------------------------------------------------------------------------
 
-    def list_history(self, *, batch_id: str | None = None) -> list[DecisionEntry]:
-        """The **Decision log** in sequence order — the order **Verdict resolution** depends on.
+    def edit_verdict(self, wallpaper_id: str, verdict: Verdict) -> HistoryRefused | None:
+        """Change a **Wallpaper**'s **Verdict** from **History** by appending a new **Explicit Verdict**.
 
-        `batch_id` narrows it to one submission. **History** proper is #7; this is the same query with a
-        filter, not a second store.
+        Appended, never a rewrite. The **Decision log** is the single source of truth and it is append-only
+        (invariant 6): what the user thought in March is a fact, and changing their mind in September is a
+        second fact, not a correction of the first. **Verdict resolution** is what makes the later one the
+        one that counts.
+
+        `batch_id` is `NULL` on the entry, which is how an edit made from **History** is told apart from
+        one given to a **Batch** — the only distinction the log draws between them.
+
+        **Ignore** is refused. It is derived for every **Wallpaper** left unmarked at submit, so choosing
+        one here would be a stored **Ignore** that stacks, sitting next to a **Clearance** that means the
+        opposite. An unknown **Wallpaper** is refused rather than left to the foreign key, so the caller
+        gets a reason instead of an `IntegrityError`.
+
+        The **Library** is reconciled afterwards, outside the transaction and for the same reasons
+        `submit_batch` does it there (ADR 0006): a new **Favourite** gains a file and a replaced one loses
+        the file wallpapi actually wrote.
         """
-        query = "SELECT seq, wallpaper_id, batch_id, verdict, recorded_at FROM decision_log"
-        parameters: tuple[str, ...] = ()
+        if verdict is Verdict.IGNORE:
+            return HistoryRefused(reason=HistoryRefused.Reason.IGNORE_NOT_CHOOSABLE)
+        recorded_at = self._clock.now().isoformat()
+        with self._write() as write:
+            if not _wallpaper_exists(write, wallpaper_id):
+                return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+            write.execute(_APPEND_HISTORY_ENTRY, (wallpaper_id, verdict.value, recorded_at))
+        self.reconcile_library()
+        return None
+
+    def clear_verdict(self, wallpaper_id: str) -> HistoryRefused | None:
+        """Withdraw a **Wallpaper**'s **Explicit Verdict** by appending a **Clearance**.
+
+        A **Clearance** is an entry in its own right and not a fifth **Verdict** (CONTEXT.md): it says that
+        what was judged is no longer judged. After it, every **Ignore** on the **Wallpaper** stacks again —
+        the ones from before the **Verdict** as well as the ones after it — because nothing is disregarding
+        them any more.
+
+        Un-**Banning** falls out of this rather than being built: a **Batch** excludes by *resolved*
+        **Verdict**, so a **Wallpaper** whose **Ban** has been **Cleared** is eligible again with no code
+        anywhere that knows the word.
+
+        Refused when there is no **Explicit Verdict** standing — never seen, only **Ignored**, or already
+        **Cleared**. The alternative is an append-only log accumulating entries that change nothing, and a
+        page whose clear button means "nothing will happen" half the time.
+        """
+        recorded_at = self._clock.now().isoformat()
+        with self._write() as write:
+            if not _wallpaper_exists(write, wallpaper_id):
+                return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+            # Read inside the write transaction, on this thread's one connection: the check and the append
+            # cannot then be split by a second tab clearing the same row.
+            standing = self.resolve_verdicts([wallpaper_id])[wallpaper_id].verdict
+            if standing is None or standing is Verdict.IGNORE:
+                return HistoryRefused(reason=HistoryRefused.Reason.NOTHING_TO_CLEAR)
+            write.execute(_APPEND_HISTORY_ENTRY, (wallpaper_id, Clearance.CLEARED.value, recorded_at))
+        self.reconcile_library()
+        return None
+
+    def list_history_rows(self, *, verdict: Verdict | None = None, page: int = 1) -> HistoryPage:
+        """One page of **History**: the **Wallpapers** with entries, newest activity first.
+
+        A view over the **Decision log** and not a second store — the same CTE **Verdict resolution** uses,
+        with the paging and the filter in SQL. It has to be in SQL: a **History** of thousands of
+        **Ignores** cannot be resolved in Python and then sliced, and the filter is over the *resolved*
+        **Verdict** rather than over anything a row holds.
+
+        `verdict` narrows to one resolved **Verdict**, **Ignore** included, which is what keeps the
+        thousands of **Ignores** off the page a user is actually looking for something on. `page` is
+        clamped into range rather than refused: a stale link to page 9 of a **History** that has shrunk
+        should show the last page, not an error.
+        """
+        parameters: list[str] = [] if verdict is None else [verdict.value]
+        filtered = verdict is not None
+        connection = self._connect()
+        total = int(connection.execute(_history_count_query(filtered=filtered), parameters).fetchone()[0])
+        pages = max(1, -(-total // HISTORY_PAGE_SIZE))
+        wanted = min(max(page, 1), pages)
+        rows = connection.execute(
+            _history_rows_query(filtered=filtered),
+            [*parameters, HISTORY_PAGE_SIZE, (wanted - 1) * HISTORY_PAGE_SIZE],
+        ).fetchall()
+        return HistoryPage(
+            rows=self._history_rows_from(rows), page=wanted, pages=pages, total=total, verdict=verdict
+        )
+
+    def get_history_row(self, wallpaper_id: str) -> HistoryRow | None:
+        """One **Wallpaper**'s **History** row, or `None` if it has no entries.
+
+        What an edit or a **Clearance** swaps back into the page. Built by the same query as the listing,
+        so the row the user is left looking at is the row a reload would give them.
+        """
+        row = self._connect().execute(_HISTORY_ROW, (wallpaper_id,)).fetchone()
+        if row is None:
+            return None
+        return self._history_rows_from([row])[0]
+
+    def _history_rows_from(self, rows: Sequence[sqlite3.Row]) -> tuple[HistoryRow, ...]:
+        """Turn listing rows into **History** rows, resolving the page's **Wallpapers** in one call.
+
+        The values come from `resolve_verdicts` rather than from the listing query even though the query
+        already chose each **Verdict**: the query is what the filter and the ordering need, and what a
+        resolved **Verdict** is *worth* belongs to the one operation #9 will be summing across a **Pool**.
+        Both read the same CTE, so they cannot disagree about which **Verdict** it is.
+        """
+        resolved = self.resolve_verdicts([str(row["id"]) for row in rows])
+        return tuple(
+            HistoryRow(
+                wallpaper=_wallpaper_from_row(row),
+                resolved=resolved[str(row["id"])],
+                latest_at=dt.datetime.fromisoformat(str(row["latest_at"])),
+            )
+            for row in rows
+        )
+
+    def list_history(
+        self, *, batch_id: str | None = None, wallpaper_id: str | None = None
+    ) -> list[DecisionEntry]:
+        """The **Decision log**'s raw entries in sequence order — the order resolution depends on.
+
+        `batch_id` narrows it to one submission and `wallpaper_id` to one **Wallpaper**. The **History**
+        *page* is `list_history_rows`; this stays the entry-by-entry view, which is what shows that an edit
+        appended rather than rewrote.
+
+        Entries are **Verdicts** or **Clearances**, which is why `DecisionEntry.entry` is neither named nor
+        typed as a **Verdict** alone.
+        """
+        conditions: list[str] = []
+        parameters: list[str] = []
         if batch_id is not None:
-            query += " WHERE batch_id = ?"
-            parameters = (batch_id,)
+            conditions.append("batch_id = ?")
+            parameters.append(batch_id)
+        if wallpaper_id is not None:
+            conditions.append("wallpaper_id = ?")
+            parameters.append(wallpaper_id)
+        query = "SELECT seq, wallpaper_id, batch_id, verdict, recorded_at FROM decision_log"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         rows = self._connect().execute(f"{query} ORDER BY seq", parameters).fetchall()
         return [
             DecisionEntry(
                 seq=int(row["seq"]),
                 wallpaper_id=str(row["wallpaper_id"]),
                 batch_id=None if row["batch_id"] is None else str(row["batch_id"]),
-                verdict=Verdict(row["verdict"]),
+                entry=_entry_from(row["verdict"]),
                 recorded_at=dt.datetime.fromisoformat(str(row["recorded_at"])),
             )
             for row in rows
@@ -1555,6 +1906,22 @@ def _validated_similarity_decay(value: float | str) -> float | SettingsRefused.R
     return number
 
 
+def _validated_thumbnail_cache_max_mb(value: int | str) -> int | SettingsRefused.Reason:
+    """The **Thumbnail cache** size cap in megabytes, or the reason it is not one.
+
+    Zero is accepted and means what it says: keep no thumbnail the cap is allowed to touch. It is not the
+    same as keeping none at all — a **Wallpaper** with an **Explicit Verdict** is never evicted (invariant
+    8), so **History** still renders — and every evicted tile is re-fetched the next time it is asked for.
+
+    No ceiling. Unlike a resolution there is no number above which this can only be a typo, and a cap set
+    higher than the disk simply never fires, which is what "no cap" means anyway.
+    """
+    megabytes = _whole_number(value)
+    if megabytes is None or megabytes < 0:
+        return SettingsRefused.Reason.THUMBNAIL_CACHE_MAX_MB_INVALID
+    return megabytes
+
+
 def _validated_allowed_ratios(value: Sequence[str] | str) -> tuple[str, ...] | SettingsRefused.Reason:
     """The allowed ratios, or the reason they are not.
 
@@ -1647,38 +2014,186 @@ _IGNORE_VALUE = -10
 """One **Ignore**. They stack, but only while the **Wallpaper** has no **Explicit Verdict**."""
 
 
-def _resolved_from(latest_explicit: object, ignores: int) -> ResolvedVerdict:
-    """The resolution rule itself, over one **Wallpaper**'s aggregated entries.
+def _entry_from(stored: object) -> Verdict | Clearance:
+    """One `decision_log.verdict` cell as the entry it is.
 
-    The latest **Explicit Verdict** wins outright and every **Ignore** on that **Wallpaper** is disregarded,
-    before it and after it alike. Only without one do the **Ignores** stack.
+    The column holds **Clearances** as well as **Verdicts** (#7), so `Verdict(cell)` is wrong on its own —
+    it raises on `'cleared'`. This is the one place that reads the column into a Python value, so it is the
+    one place that has to know.
     """
-    if latest_explicit is not None:
-        verdict = Verdict(str(latest_explicit))
-        return ResolvedVerdict(verdict=verdict, value=_EXPLICIT_VALUES[verdict])
-    if ignores:
-        return ResolvedVerdict(verdict=Verdict.IGNORE, value=_IGNORE_VALUE * ignores)
-    return _ABSENT
+    text = str(stored)
+    return Clearance.CLEARED if text == Clearance.CLEARED.value else Verdict(text)
 
 
-_RESOLVE_VERDICTS = f"""
-SELECT
-    wallpaper_id,
-    (
-        SELECT latest.verdict
-        FROM decision_log AS latest
-        WHERE latest.wallpaper_id = decision_log.wallpaper_id
-          AND latest.verdict != '{Verdict.IGNORE.value}'
-        ORDER BY latest.seq DESC
-        LIMIT 1
-    ) AS latest_explicit,
-    COUNT(*) FILTER (WHERE verdict = '{Verdict.IGNORE.value}') AS ignores
-FROM decision_log
-WHERE wallpaper_id IN ({{placeholders}})
-GROUP BY wallpaper_id
+def _resolved_from(resolved: object, ignores: int) -> ResolvedVerdict:
+    """What a resolved **Verdict** is worth. The rule that *chose* it is `_RESOLUTION_CTE`.
+
+    Deliberately not a second copy of the rule. The **History** listing has to filter by resolved
+    **Verdict** in SQL — a page of 100 rows cannot be sliced out of a log resolved in Python — so the rule
+    has to exist in SQL, and the moment it exists in two places is the moment they disagree. So SQL chooses
+    the **Verdict** and this turns it into a number, which is the half SQL has no business knowing.
+    """
+    if resolved is None:
+        return _ABSENT
+    verdict = Verdict(str(resolved))
+    if verdict is Verdict.IGNORE:
+        return ResolvedVerdict(verdict=verdict, value=_IGNORE_VALUE * ignores)
+    return ResolvedVerdict(verdict=verdict, value=_EXPLICIT_VALUES[verdict])
+
+
+_RESOLUTION_CTE = f"""
+WITH entries AS (
+    SELECT
+        wallpaper_id,
+        MAX(seq) AS latest_seq,
+        COUNT(*) FILTER (WHERE verdict = '{Verdict.IGNORE.value}') AS ignores,
+        (
+            SELECT decisive.verdict
+            FROM decision_log AS decisive
+            WHERE decisive.wallpaper_id = decision_log.wallpaper_id
+              AND decisive.verdict != '{Verdict.IGNORE.value}'
+            ORDER BY decisive.seq DESC
+            LIMIT 1
+        ) AS latest_decisive
+    FROM decision_log
+    {{restriction}}
+    GROUP BY wallpaper_id
+),
+resolution AS (
+    SELECT
+        wallpaper_id,
+        latest_seq,
+        ignores,
+        CASE
+            WHEN latest_decisive IS NOT NULL AND latest_decisive != '{Clearance.CLEARED.value}'
+                THEN latest_decisive
+            WHEN ignores > 0 THEN '{Verdict.IGNORE.value}'
+        END AS resolved
+    FROM entries
+)
 """
-"""Ordered by `seq` and never by `recorded_at` (invariant 4): every entry from one submit transaction
-shares a timestamp, so "the latest **Explicit Verdict**" is only well defined against the sequence."""
+"""**Verdict resolution**, in one place, as the prelude to every query that needs it.
+
+The rule, extended by #7 for the **Clearance**: the latest entry that is not an **Ignore** decides. If it
+is an **Explicit Verdict**, that alone counts and every **Ignore** on the **Wallpaper** is disregarded,
+before it and after it alike. If it is a **Clearance** — or if there is no such entry at all — every
+**Ignore** stacks, again before and after. The `CASE` falls off the end to `NULL` for a **Wallpaper** whose
+only entries are an **Explicit Verdict** and the **Clearance** that withdrew it: nothing has been said
+about it that still stands, which is the same answer as never having seen it.
+
+`ORDER BY decisive.seq` and never `recorded_at` (invariant 4): every entry from one submit transaction
+shares a timestamp, and a **Clearance** made from **History** in the same frozen second as a **Verdict** is
+exactly the case that has no answer without the sequence.
+
+`{{restriction}}` is a `WHERE` over `decision_log` that narrows the aggregate to the **Wallpapers** a
+caller cares about, or empty for the whole log. It is always a literal built here — never anything a caller
+supplies — with the values themselves bound as parameters.
+"""
+
+
+def _resolution_query(select: str, *, restriction: str = "") -> str:
+    """A query over the resolved **Decision log**: the shared CTE, then whatever the caller selects."""
+    return _RESOLUTION_CTE.format(restriction=restriction) + select
+
+
+_HISTORY_SELECT = """
+SELECT w.*, resolution.resolved AS resolved, latest.recorded_at AS latest_at
+FROM resolution
+JOIN wallpapers AS w ON w.id = resolution.wallpaper_id
+JOIN decision_log AS latest ON latest.seq = resolution.latest_seq
+"""
+"""One **History** row per **Wallpaper** with entries: the image, what it resolves to, and when it was
+last judged.
+
+`latest` is joined on `latest_seq` rather than the timestamp being aggregated with a `MAX`, so the
+`recorded_at` shown is the one belonging to the entry that actually decided the order (invariant 4).
+"""
+
+
+def _history_rows_query(*, filtered: bool) -> str:
+    """The **History** listing, optionally narrowed to one resolved **Verdict**.
+
+    Ordered by `latest_seq` and never by `latest_at`: "newest activity first" has to be a total order, and
+    a whole submitted **Batch** shares one timestamp.
+    """
+    where = "WHERE resolution.resolved = ?" if filtered else ""
+    return _resolution_query(
+        f"{_HISTORY_SELECT}{where}\nORDER BY resolution.latest_seq DESC\nLIMIT ? OFFSET ?"
+    )
+
+
+def _history_count_query(*, filtered: bool) -> str:
+    """How many rows the same filter matches, for the paging."""
+    where = "WHERE resolved = ?" if filtered else ""
+    return _resolution_query(f"SELECT COUNT(*) FROM resolution {where}")
+
+
+_HISTORY_ROW = _resolution_query(_HISTORY_SELECT, restriction="WHERE wallpaper_id = ?")
+"""One **Wallpaper**'s **History** row — what an edit or a **Clearance** swaps back into the page."""
+
+_EXPLICITLY_DECIDED = _resolution_query(
+    f"SELECT wallpaper_id FROM resolution WHERE resolved IS NOT NULL AND resolved != '{Verdict.IGNORE.value}'"
+)
+"""Every **Wallpaper** whose resolved **Verdict** is an **Explicit Verdict** — the ones whose thumbnails
+eviction may never touch (invariant 8)."""
+
+_AWAITING_A_VERDICT = """
+SELECT wallpaper_id FROM pool
+UNION
+SELECT bw.wallpaper_id
+FROM batch_wallpapers AS bw
+JOIN batches AS b ON b.id = bw.batch_id
+WHERE b.submitted_at IS NULL
+"""
+"""Every **Wallpaper** still to be shown: the **Pool**, plus the live **Batch** in case a **Filter** change
+has pruned one of its **Wallpapers** out of the **Pool** while it is on screen."""
+
+_APPEND_HISTORY_ENTRY = """
+INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)
+"""
+"""An edit or a **Clearance** made from **History**.
+
+`batch_id` is `NULL` because there is no **Batch**: the user was looking at a list, not judging a screenful.
+That null is the only thing in the log that distinguishes the two, and `list_history(batch_id=...)`
+depends on it — a **History** edit must not be counted among what a **Batch** recorded.
+"""
+
+
+def _wallpaper_exists(connection: sqlite3.Connection, wallpaper_id: str) -> bool:
+    """Whether this database has ever seen the **Wallpaper**.
+
+    Checked before appending rather than left to `decision_log`'s foreign key, so a caller gets a refusal
+    in the house style instead of an `IntegrityError` out of the middle of a transaction.
+    """
+    return connection.execute("SELECT 1 FROM wallpapers WHERE id = ?", (wallpaper_id,)).fetchone() is not None
+
+
+def _cached_thumbnails(directory: Path) -> list[_CachedThumbnail]:
+    """Every file in the **Thumbnail cache**, stat-ed once, keyed by the **Wallpaper** its name carries.
+
+    The name is the whole mapping — `get_thumbnail` writes `{wallhaven_id}{suffix}` — so a file whose stem
+    matches no `wallpapers` row belongs to no **Wallpaper** and is evicted by the first pass for free.
+
+    A file that vanishes between the listing and the stat is skipped rather than raising: this runs after
+    a **Batch** has already been recorded, and nothing here may turn that into an error.
+    """
+    cached: list[_CachedThumbnail] = []
+    for path in sorted(directory.iterdir()):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if path.is_file():
+            cached.append(
+                _CachedThumbnail(
+                    wallpaper_id=path.stem, path=path, size=stat.st_size, modified_at=stat.st_mtime
+                )
+            )
+    return cached
+
+
+_NOTHING_EVICTED = ThumbnailEviction(evicted=(), remaining_bytes=0, over_cap=False)
+"""An empty or absent **Thumbnail cache**: nothing to delete and nothing taking up room."""
 
 
 def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:

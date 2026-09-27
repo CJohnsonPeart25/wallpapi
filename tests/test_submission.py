@@ -24,7 +24,7 @@ def test_empty_submission_records_an_ignore_for_every_wallpaper_in_the_batch(har
 
     history = harness.core.list_history()
     assert {e.wallpaper_id for e in history} == shown
-    assert [e.verdict for e in history] == [Verdict.IGNORE] * 8
+    assert [e.entry for e in history] == [Verdict.IGNORE] * 8
     assert all(e.batch_id == batch.id for e in history)
     assert harness.library.written == []
 
@@ -73,7 +73,7 @@ def test_ignores_stack_across_two_batches_containing_the_same_wallpaper(db_path:
     history = harness.core.list_history()
     assert len(history) == 16
     for wallpaper_id in (w.id for w in first.wallpapers):
-        assert [e.verdict for e in history if e.wallpaper_id == wallpaper_id] == [
+        assert [e.entry for e in history if e.wallpaper_id == wallpaper_id] == [
             Verdict.IGNORE,
             Verdict.IGNORE,
         ]
@@ -95,7 +95,7 @@ def test_decision_log_survives_a_restart(db_path: Path) -> None:
     restored = second_run.core.list_history()
 
     assert len(restored) == 8
-    assert [(e.wallpaper_id, e.verdict) for e in restored] == [(e.wallpaper_id, e.verdict) for e in recorded]
+    assert [(e.wallpaper_id, e.entry) for e in restored] == [(e.wallpaper_id, e.entry) for e in recorded]
     assert [e.recorded_at for e in restored] == [e.recorded_at for e in recorded]
 
 
