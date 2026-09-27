@@ -15,6 +15,9 @@
   the list only: closed, the control shows the name, which is the one thing worth knowing once the
   choice is made. wallpapi.js swaps the selected option's text between the two, because a `<select>`
   shows the selected option's own text and there is no other way to give it two labels.
+
+  A stored name whose **Mix** is gone is still the selected option, disabled: a `<select>` shows some
+  option as chosen whatever happens, and left to itself it would show the first.
 #}
 <section id="mix-switcher">
   <label class="mix-label" for="mix-select">Next batch</label>
@@ -29,10 +32,12 @@
     hx-swap="outerHTML"
     hx-sync="#mix-switcher:replace"
   >
+    {% if active_mix not in mixes | map(attribute="name") | list %}
+      <option value="{{ active_mix }}" selected disabled>{{ active_mix }}</option>
+    {% endif %}
     {% for mix in mixes %}
       <option
         value="{{ mix.name }}"
-        data-mix="{{ mix.name }}"
         data-name="{{ mix.name }}"
         data-full="{{ mix.name }} — {{ mix.unknown }}/{{ mix.banger }}/{{ mix.dud }}"
         {{ "selected" if mix.name == active_mix else "" }}

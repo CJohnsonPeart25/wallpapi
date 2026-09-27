@@ -55,10 +55,10 @@ attribute in a template, and anything that can be a CSS rule is one — the **Ve
 hover, and the marked state, are both CSS. Every asset the page loads is served from `/static`.
 
 The **Batch** page's layout was settled by prototype rather than by argument: several variants on the live
-page behind a `?variant=` switch, flipped through and narrowed over six rounds. The variants and what each
-round decided are on the `prototype/batch-ui` branch, in `docs/prototypes/batch-ui.md` — worth reading
-before repainting that page, because most of the obvious alternatives were tried there and rejected for
-reasons that are recorded.
+page behind a `?variant=` switch, flipped through and narrowed over six rounds. The reasons that survived
+are in `wallpapi.css`, beside the rules they justify. The rounds themselves, and what each rejected, are on
+the `prototype/batch-ui` branch in `docs/prototypes/batch-ui.md` — a throwaway record, not merged — and
+worth a look before repainting that page while that branch still exists.
 
 Run the app **single-worker**. `uvicorn --workers N` would give N background refill threads and N writers
 against one SQLite file.

@@ -1,9 +1,9 @@
 {#
   The refill indicator: one line saying what the background thread is doing.
 
-  It is on every state of the batch page, including the one that says there is nothing to show, because
-  that is where it answers the question the page raises. "Pool 0 of 2000, refill not running" is the whole
-  diagnosis; without it an empty page and a dead thread look exactly alike.
+  It is rendered on every state of the batch page, and wallpapi.css hides it behind a batch only while
+  it has nothing to report: "Pool 0 of 2000, refill not running" is the whole diagnosis, and without it
+  an empty page and a dead thread look exactly alike.
 
   A plain line and not a poll: the numbers move slowly, the page is reloaded often, and htmx polling this
   would be a request a second for something nobody is watching.

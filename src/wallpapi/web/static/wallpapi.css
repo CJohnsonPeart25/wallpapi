@@ -16,6 +16,8 @@
 */
 
 :root {
+  --dock-height: 4.5rem;
+  --dock-width: 30rem;
   color-scheme: dark;
   --font: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   --favourite: #f0b429;
@@ -39,9 +41,11 @@ main {
 
 nav {
   display: flex;
+  align-items: center;
   gap: 1.25rem;
-  padding: 0.75rem 1.25rem;
-  padding-right: 26rem; /* clear of the dock, which floats over this corner */
+  box-sizing: border-box;
+  min-height: var(--dock-height);
+  padding: 0.75rem var(--dock-width) 0.75rem 1.25rem; /* the dock floats over this corner */
   font-size: 0.85rem;
   font-weight: 500;
   border-bottom: 1px solid #1e1e24;
@@ -76,6 +80,8 @@ button {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  box-sizing: border-box;
+  max-width: calc(var(--dock-width) - 2.5rem);
   padding: 0.4rem 0.4rem 0.4rem 0.9rem;
   border-radius: 999px;
   background: rgb(24 24 30 / 94%);
@@ -117,7 +123,11 @@ button {
 }
 
 .mix-select {
-  min-width: 11rem;
+  min-width: 0;
+  max-width: 13rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 0.5rem 0.9rem;
   border-radius: 999px;
   border: 1px solid #3a3a46;
@@ -155,10 +165,10 @@ button {
 }
 
 /*
-  The pool line steps aside while there is a batch to look at, and comes back when there is not — where
-  it is the whole diagnosis, and where hiding it would leave an empty page with no explanation of why.
+  The pool line steps aside while there is a batch to look at and nothing to report, and stays wherever
+  it is the whole diagnosis: a stopped thread, an error, or an empty page with no other explanation.
 */
-body:has(#batch-grid) .refill {
+body:has(#batch-grid) .refill:not(:has(.refill-stopped, .refill-error)) {
   display: none;
 }
 
@@ -365,17 +375,17 @@ body:has(#batch-grid) .refill {
    is clicked — the highlight and the mark are the same idea said twice. */
 .verdict[data-verdict="favourite"]:hover,
 .preview-verdict[data-verdict="favourite"]:hover {
-  background: rgb(240 180 41 / 85%);
+  background: color-mix(in srgb, var(--favourite) 85%, transparent);
 }
 
 .verdict[data-verdict="like"]:hover,
 .preview-verdict[data-verdict="like"]:hover {
-  background: rgb(52 199 89 / 85%);
+  background: color-mix(in srgb, var(--like) 85%, transparent);
 }
 
 .verdict[data-verdict="ban"]:hover,
 .preview-verdict[data-verdict="ban"]:hover {
-  background: rgb(255 69 58 / 85%);
+  background: color-mix(in srgb, var(--ban) 85%, transparent);
 }
 
 /* The mark is the outline round the thumbnail, which is there whether the rail is up or not. All the

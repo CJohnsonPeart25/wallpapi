@@ -252,15 +252,19 @@
     syncRail();
   });
 
-  // Opening the Mix restores the split, closing takes it away again. focusin covers the keyboard,
-  // mousedown the pointer, and both are cheap enough to run every time.
-  document.addEventListener("focusin", function (event) {
-    if (event.target.id === "mix-select") {
+  // Opening the Mix restores the split, closing takes it away again. A pointer opens the list on
+  // mousedown; the keyboard on Space, Enter or Alt+Down, and on nothing else that merely lands on it.
+  function opensMix(event) {
+    return event.target.id === "mix-select" && (event.type === "mousedown" || event.key === " " ||
+      event.key === "Enter" || (event.altKey && event.key === "ArrowDown"));
+  }
+  document.addEventListener("mousedown", function (event) {
+    if (opensMix(event)) {
       label(event.target, "data-full");
     }
   });
-  document.addEventListener("mousedown", function (event) {
-    if (event.target.id === "mix-select") {
+  document.addEventListener("keydown", function (event) {
+    if (opensMix(event)) {
       label(event.target, "data-full");
     }
   });
