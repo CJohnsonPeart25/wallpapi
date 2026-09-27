@@ -33,6 +33,9 @@ two disagree, issue #1 is the spec and wins.
 - **SQLite** via the standard library. Migrations are a `user_version` pragma plus numbered steps applied on
   startup. No ORM, no migration framework.
 - **numpy** as a direct dependency — see invariant 2.
+- **onnxruntime** and **pillow** for the **Similarity provider** (#14, ADR 0013). CPU only, image
+  tower only, imported lazily. The model is not vendored: it is fetched once into
+  `~/.wallpapi/models/` and checksummed.
 - **Pydantic at the edges only** — Wallhaven responses, settings validation, request bodies. Plain dataclasses
   and enums inside the core.
 - **pytest**, **pyright** strict, **ruff** (lint + format).
@@ -66,8 +69,15 @@ Each of these is one careless line away from being silently violated.
    `similarities(pool, decided) -> ndarray` — a matrix, never a pairwise call. A pairwise interface
    forces a Python loop over a 10k **Pool**, which is seconds per **Batch**, which makes caching **Scores**
    tempting, which breaks the rule. The matrix is **Pool** x decided (decided is small), never **Pool** x
-   **Pool** — 10k x 10k is 800MB of float64 and is never needed. `numpy` must be a direct dependency, not
-   transitive via onnxruntime; onnxruntime does not arrive until the #14 spike, which may never merge.
+   **Pool** — 10k x 10k is 800MB of float64 and is never needed. `numpy` must be a **direct** dependency
+   and never transitive via onnxruntime — onnxruntime arrived as a real dependency at #14, so this is now
+   a thing that can actually be got wrong by someone tidying `pyproject.toml`.
+
+   The protocol carries two more methods since #14, and both are on it rather than on the one provider
+   that needs them: `catch_up`, one step of a provider's own upkeep, called only from the background
+   thread; and `notice`, one line for the page when a provider is not at full strength. On the protocol,
+   because the alternative is the Core service knowing which provider it is holding, and the whole point
+   of the seam is that it does not. A provider with nothing to do returns `NOTHING_TO_CATCH_UP`.
 
    Both sides are `Sequence[Wallpaper]` and not IDs, since #9: the baseline provider reads `.colours` and
    `.category`, and one handed only IDs would have to open a second seam into storage to get them.
@@ -189,8 +199,19 @@ Each of these is one careless line away from being silently violated.
 12. **Every wait is cancellable.** Sleeps are `stop_event.wait(n)`, never `time.sleep(n)`, and the httpx2
     timeout is set below the shutdown join timeout. Otherwise shutdown hangs on a thread stuck mid-request.
 
-13. **For #14, ONNX Runtime, not open_clip/torch.** Image tower only: ~150MB against ~2.5GB. The spike stays
-    disposable.
+13. **ONNX Runtime, not open_clip/torch.** Image tower only: 85MiB against ~2.5GB. Shipped at #14 and no
+    longer a spike — `EmbeddingSimilarityProvider` is what wallpapi runs (ADR 0013) — so this is now a
+    standing rule rather than a budget for a throwaway. `onnxruntime` and `pillow` are ordinary
+    dependencies but are imported **inside the methods that use them**: importing onnxruntime costs the
+    best part of a second, and the app starts, the page renders and the whole test suite runs without
+    needing it. No test may load the model or the network: the `ModelSource` and the `Embedder` are
+    injected so that the download, the fallback and the failure are all checkable without either.
+
+    The model is fetched on a background thread of its own, never on a request and never inside the
+    refill's loop — 85MiB in front of the refill's first search would hold an empty page empty. Until it
+    is there, every pair falls back to `MetadataSimilarityProvider` and the page says so: a **Score** from
+    the fallback is indistinguishable from a real one, so the difference has to be stated or it is
+    invisible.
 
 ### Wallhaven API traps
 

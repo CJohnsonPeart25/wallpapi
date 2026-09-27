@@ -4,14 +4,18 @@ Date: 2026-09-27
 
 ## Status
 
-**Open — awaiting the maintainer's decision.** This is not an ADR. Nothing here has been adopted: the
-default **Similarity provider** is still the baseline, and the two candidates are reachable only through
-`WALLPAPI_SIMILARITY`. If the maintainer takes the recommendation, that decision wants an ADR of its own.
+**Closed. The recommendation was taken** — see
+`docs/adr/0013-image-embeddings-are-the-similarity-provider.md`, which is the decision; this note is the
+evidence behind it and is kept for that reason alone.
+
+The embedding provider is what wallpapi runs, the **Similarity radius** default moved to 0.15 with it, and
+all three providers stay selectable through `WALLPAPI_SIMILARITY` because everything below was measured
+against a *synthetic* **Decision log** and nobody has yet seen them on a real one.
 
 ## What was built
 
 Two more **Similarity providers** behind the protocol #9 shipped, selected in `main.py` by
-`WALLPAPI_SIMILARITY=metadata|tags|embedding` (default `metadata`):
+`WALLPAPI_SIMILARITY=metadata|tags|embedding` (which now defaults to `embedding`):
 
 - **`tags`** (`similarity_tags.py`) — Jaccard index of two Wallhaven tag-id sets, blended
   `0.6 / 0.4` with the baseline's colour-and-category number, and the baseline alone for any pair where
@@ -78,9 +82,35 @@ not told about**. What they cannot measure: whether a real person's taste is thi
 not — a real **Decision log** has **Favourites** scattered across subjects that share only a mood), and
 how any of this behaves as the log grows past a few dozen entries.
 
+## Choosing the Similarity radius
+
+The grid below made the embedding provider's radius the one number that had to be chosen deliberately, so
+it got a finer sweep of its own, at the shipped decay of 4.0 and with all 50 decided **Wallpapers**:
+
+| radius | right sign | Pool left Unknown |
+| --- | --- | --- |
+| 0.10 | 25/42 (60%) | 47% |
+| 0.125 | 31/42 (74%) | 24% |
+| **0.15** | **36/42 (86%)** | **7%** |
+| 0.175 | 40/42 (95%) | 3% |
+| 0.20 | 41/42 (98%) | 1% |
+| 0.225 | 39/42 (93%) | 0% |
+| 0.25 | 40/42 (95%) | 0% |
+
+The mapped similarities over **Pool** x decided: 5th percentile 0.672, median 0.751, 95th 0.899, maximum
+1.0 — so distances run from 0 to about 0.41 and a radius of 0.15 counts roughly the nearest one pair in
+eight as a neighbour.
+
+**0.15, not the accuracy-maximising 0.20.** **Unknown** is the **Zone** an **Explore** **Mix** draws
+three-quarters of a **Batch** from (ADR 0010), so a radius that decides almost everything leaves nothing
+to explore. 0.15 trades nine points of leave-one-out accuracy for more than double the **Unknown**
+**Zone**, and still beats the baseline's best at any setting. The share falls as the **Decision log**
+grows, so this errs towards **Explore** deliberately — and it is a setting either way.
+
 ## Results
 
-Full output of `uv run python scripts/similarity_spike.py evaluate`, on this machine, 2026-09-27:
+Full output of `uv run python scripts/similarity_spike.py evaluate`, on this machine, 2026-09-27, with all
+three providers still present:
 
 ```
 Pool: 360 Wallpapers. Explicit Verdicts: 42. Decided (non-zero value): 50.
@@ -259,3 +289,25 @@ unused provider is a cost with no payer. Adoption is more than flipping the defa
 non-empty **Unknown** **Zone**, and a home for the embedding step — beside the thumbnail fetch, since an
 embedding is only wanted once a thumbnail exists. And these numbers come from a synthetic taste with
 clean thematic edges; a real **Decision log** will be messier, so read them as a ranking, not a score.
+
+## What the maintainer decided
+
+The recommendation above is left exactly as it was written, because a record of advice that has been
+quietly edited to match the outcome is worth nothing. Two things went differently, and both are in ADR
+0013:
+
+**The tag provider was kept, not deleted.** The maintainer's reason is the caveat this whole note keeps
+repeating: the comparison ran on a **Decision log** nobody has ever judged a **Wallpaper** into. Keeping
+all three selectable costs a module and its tests, and buys the ability to look again with real
+**Verdicts**. Its tag fetching stays an explicit step — its `catch_up` does nothing at all, selected or
+not — so it can never quietly spend the refill's **API** budget. Choosing it means about 2,000 calls to
+tag a **Pool** at its default target size.
+
+**The radius went to 0.15 rather than "about 0.2".** The finer sweep above is what decided it: 0.2 is the
+accuracy-maximising value and it leaves 1% of the **Pool** **Unknown**, which starves the **Explore**
+**Mix** that #10 had landed in the meantime. 0.15 gives nine points back for seven times the **Unknown**
+**Zone**.
+
+The embedding step found the home the last paragraph guessed at, near enough: not beside the thumbnail
+fetch — that is a request thread — but a background loop over the **Thumbnail cache**, which is the same
+set of images one step later.
