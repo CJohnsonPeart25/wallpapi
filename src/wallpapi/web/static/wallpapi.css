@@ -118,3 +118,30 @@ main {
     transition: none;
   }
 }
+
+/* The Mix switcher. Above the grid, because it is about the next batch rather than this one. */
+#mix-switcher {
+  margin-bottom: var(--gap);
+}
+
+.mix-active {
+  margin: 0 0 0.5rem;
+}
+
+.mixes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* The active mix is marked by more than a colour: aria-pressed is on the button, and the outline is a
+   second visible cue for anyone the colour does not reach. */
+.mix-choice.active {
+  outline: 2px solid currentcolor;
+  font-weight: 600;
+}
+
+.mix-shares {
+  opacity: 0.7;
+  font-size: 0.75rem;
+}

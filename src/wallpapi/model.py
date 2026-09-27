@@ -92,3 +92,31 @@ class Zone(StrEnum):
     BANGER = "banger"
     DUD = "dud"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class Mix:
+    """The **Zone** percentages a **Batch** is built from, under the name the user switches by.
+
+    Frozen, and a value like `Wallpaper` is: two **Mixes** with the same name and the same three numbers
+    are the same **Mix**. The three are whole percentages and they sum to 100 — but that rule is *not*
+    enforced here. It lives in `core.validated_mix`, because a **Mix** arrives from a stored row and, at
+    #12, from a form, and a dataclass that raised would turn "the user typed 30/30/30" into a traceback
+    instead of a message next to the field. Nothing constructs one except that validator and the migration
+    that seeds these two.
+
+    The three are named rather than a `Mapping[Zone, int]` so that a missing **Zone** is not expressible.
+    """
+
+    name: str
+    unknown: int
+    banger: int
+    dud: int
+
+    def percentage(self, zone: Zone) -> int:
+        """This **Mix**'s share of a **Batch** for one **Zone**."""
+        if zone is Zone.UNKNOWN:
+            return self.unknown
+        if zone is Zone.BANGER:
+            return self.banger
+        return self.dud
