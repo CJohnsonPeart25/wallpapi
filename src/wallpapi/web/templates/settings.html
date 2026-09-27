@@ -1,0 +1,66 @@
+{#
+  The settings page: batch size and the **Library** folder.
+
+  A plain form post, not htmx — saving settings changes the whole page's meaning, so there is no fragment
+  worth swapping. Unlike submitting a **Batch**, a successful save redirects, because saving the same
+  settings twice is the same settings and a refresh should not be an error.
+
+  The fields are rendered from whatever the form last carried rather than from storage, so a refused save
+  comes back with what the user typed still in it.
+#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wallpapi — settings</title>
+  </head>
+  <body>
+    <main>
+      <nav><a href="/">Back to batches</a></nav>
+      <h1>Settings</h1>
+      {% if saved %}
+        <p class="saved">Settings saved.</p>
+      {% endif %}
+      {% if refused %}
+        {# The Core service's refusal reason, said in words. One branch per reason, so a reason added
+           later shows up here as an unhandled case rather than as a silent blank. #}
+        <p class="refused">
+          {% if refused.reason.value == "batch_size_out_of_range" %}
+            Batch size must be between {{ min_batch_size }} and {{ max_batch_size }}.
+          {% elif refused.reason.value == "batch_size_not_a_number" %}
+            Batch size must be a whole number between {{ min_batch_size }} and {{ max_batch_size }}.
+          {% elif refused.reason.value == "library_path_empty" %}
+            The library folder cannot be blank.
+          {% else %}
+            The library folder must be an absolute path, such as C:\Users\you\Pictures\wallpapi.
+          {% endif %}
+          Nothing was changed.
+        </p>
+      {% endif %}
+      <form method="post" action="/settings">
+        <p>
+          <label for="batch_size">Batch size</label>
+          <input
+            type="number"
+            id="batch_size"
+            name="batch_size"
+            min="{{ min_batch_size }}"
+            max="{{ max_batch_size }}"
+            step="1"
+            value="{{ batch_size }}"
+          />
+          <span class="hint">Wallpapers per batch, {{ min_batch_size }} to {{ max_batch_size }}. Applies
+            to the next batch — the one on screen keeps the size it was built with.</span>
+        </p>
+        <p>
+          <label for="library_path">Library folder</label>
+          <input type="text" id="library_path" name="library_path" size="60" value="{{ library_path }}" />
+          <span class="hint">An absolute path. Favourites are downloaded here; the folder is created the
+            first time one is written.</span>
+        </p>
+        <button type="submit">Save settings</button>
+      </form>
+    </main>
+  </body>
+</html>
