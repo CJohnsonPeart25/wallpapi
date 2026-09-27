@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 
 from wallpapi.core import LIKE_QUERY_PREFIX
 from wallpapi.model import Wallpaper
+from wallpapi.similarity import NOTHING_TO_CATCH_UP
 from wallpapi.wallhaven import RateLimited, SearchPage
 
 
@@ -218,15 +219,43 @@ class FakeSimilarityProvider:
     not have to be arranged. Everything not named is 0.0: nothing in common.
     """
 
-    def __init__(self, similarities: dict[tuple[str, str], float] | None = None) -> None:
+    def __init__(
+        self,
+        similarities: dict[tuple[str, str], float] | None = None,
+        *,
+        notice: str | None = None,
+        catch_up_waits: Sequence[float] = (),
+    ) -> None:
         self.similarity_by_pair = similarities or {}
         self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        self.notice_text = notice
+        """What `notice()` answers. `None` — a provider working at full strength — unless a test says
+        otherwise, because every test that is not about the notice wants no extra line on the page."""
+        self.catch_up_calls: list[Path] = []
+        self.catch_up_started = threading.Event()
+        """Set by the first `catch_up`. The thread test waits on this rather than guessing how long the
+        thread needs, the same way `FakeWallhavenClient.searched` does."""
+        self._catch_up_waits = list(catch_up_waits)
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
         self.calls.append((tuple(p.id for p in pool), tuple(d.id for d in decided)))
         return np.array(
             [[self._between(p.id, d.id) for d in decided] for p in pool], dtype=np.float32
         ).reshape(len(pool), len(decided))
+
+    def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
+        """Record the call and hand back the next arranged wait, then `NOTHING_TO_CATCH_UP` for ever.
+
+        A list of waits rather than one number, so a test can arrange "more to do, then done" and watch
+        the loop come straight back before it settles.
+        """
+        del stop_event
+        self.catch_up_calls.append(thumbnails)
+        self.catch_up_started.set()
+        return self._catch_up_waits.pop(0) if self._catch_up_waits else NOTHING_TO_CATCH_UP
+
+    def notice(self) -> str | None:
+        return self.notice_text
 
     def _between(self, pool_id: str, decided_id: str) -> float:
         named = self.similarity_by_pair.get((pool_id, decided_id))

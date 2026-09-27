@@ -66,6 +66,8 @@ def make_harness(
     like_results: Mapping[str, Sequence[Wallpaper]] | None = None,
     fill_pool: int = 1,
     similarities: dict[tuple[str, str], float] | None = None,
+    similarity_notice: str | None = None,
+    catch_up_waits: Sequence[float] = (),
 ) -> Harness:
     """Build a Core service over `db_path`, with the **Pool** already primed.
 
@@ -79,6 +81,10 @@ def make_harness(
 
     `similarities` goes straight to the fake **Similarity provider**: `{(pool id, decided id): value}`, with
     a **Wallpaper** against itself 1.0 and everything unnamed 0.0.
+
+    `similarity_notice` is what that provider says about itself on the **Batch** page — `None`, a provider
+    working at full strength, unless a test is about the notice. `catch_up_waits` is what its upkeep asks
+    the background thread to wait between steps.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
@@ -91,7 +97,7 @@ def make_harness(
         like_results=like_results,
     )
     library = FakeLibraryWriter()
-    similarity = FakeSimilarityProvider(similarities)
+    similarity = FakeSimilarityProvider(similarities, notice=similarity_notice, catch_up_waits=catch_up_waits)
     clock = FakeClock(now)
     core = CoreService(
         db_path=db_path,

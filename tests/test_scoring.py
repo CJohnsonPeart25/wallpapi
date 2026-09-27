@@ -229,7 +229,7 @@ def test_a_restarted_core_service_derives_the_same_classification(db_path: Path)
 def test_widening_the_radius_brings_a_distant_wallpaper_into_a_zone(db_path: Path) -> None:
     """The radius is what decides whether a decided **Wallpaper** is near enough to count at all.
 
-    At a distance of 0.6 the **Favourite** is outside the default radius of 0.5 and contributes nothing, so
+    At a distance of 0.6 the **Favourite** is well outside the default radius and contributes nothing, so
     the **Wallpaper** is **Unknown** for want of anything decided nearby. Widening the radius past 0.6 is
     the only thing that changes, and it is enough to make it a **Banger**.
     """
@@ -257,7 +257,9 @@ def test_raising_the_decay_shrinks_what_a_distant_verdict_is_worth(db_path: Path
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     loved, _, rest = _decide_two(harness)
     nearby = rest[0]
-    harness.similarity.similarity_by_pair[(nearby, loved)] = 0.7
+    # Inside the default radius, which is what "nearby" has to mean for this test to be about the decay:
+    # beyond it the weight is exactly zero and raising the decay could not change anything.
+    harness.similarity.similarity_by_pair[(nearby, loved)] = 0.9
     batch_id = _live_batch_id(harness)
     harness.core.set_draft_verdict(batch_id, loved, Verdict.FAVOURITE)
     harness.core.submit_batch(batch_id)

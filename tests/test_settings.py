@@ -13,8 +13,10 @@ import pytest
 from tests.conftest import Harness, make_harness
 from wallpapi.core import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_SIMILARITY_RADIUS,
     MAX_BATCH_SIZE,
     MIN_BATCH_SIZE,
+    SUPERSEDED_SIMILARITY_RADIUS,
     Batch,
     Settings,
     SettingsRefused,
@@ -209,3 +211,58 @@ def test_a_refused_batch_size_leaves_the_next_batch_alone(harness: Harness) -> N
 
     assert isinstance(batch, Batch)
     assert len(batch.wallpapers) == 8
+
+
+# -- migration 9: the Similarity radius default moves with the provider (#14) ---------------------------
+
+
+def test_a_fresh_database_gets_the_radius_the_embedding_provider_wants(harness: Harness) -> None:
+    """0.15, not the 0.5 ADR 0007 seeded. Image-embedding similarities are bunched into the top of the
+    range, so 0.5 made every decided **Wallpaper** a neighbour of the whole **Pool** (ADR 0013)."""
+    assert harness.core.get_settings().similarity_radius == DEFAULT_SIMILARITY_RADIUS == 0.15
+
+
+def test_the_new_default_reaches_a_database_that_still_held_the_old_one(db_path: Path) -> None:
+    """The upgrade path: a **Decision log** written before #14 gets the radius its new provider needs.
+
+    Arranged through the seam rather than by writing a row: setting it *to* the old default is exactly the
+    state a pre-#14 database is in, and it is the state migration 9 has to recognise.
+    """
+    before = make_harness(db_path, fill_pool=0)
+    before.core.update_settings(similarity_radius=SUPERSEDED_SIMILARITY_RADIUS)
+    _force_remigration(db_path)
+
+    after = make_harness(db_path, fill_pool=0)
+
+    assert after.core.get_settings().similarity_radius == DEFAULT_SIMILARITY_RADIUS
+
+
+def test_a_radius_the_user_chose_is_left_exactly_as_they_set_it(db_path: Path) -> None:
+    """The other half, and the one that matters: a migration must never undo a setting.
+
+    0.42 is not the old default, so migration 9's `WHERE value = ?` does not match it and the row is not
+    touched. Without that clause the only way to move a default would be to overwrite everybody's.
+    """
+    chosen = make_harness(db_path, fill_pool=0)
+    chosen.core.update_settings(similarity_radius=0.42)
+    _force_remigration(db_path)
+
+    after = make_harness(db_path, fill_pool=0)
+
+    assert after.core.get_settings().similarity_radius == 0.42
+
+
+def _force_remigration(db_path: Path) -> None:
+    """Wind `user_version` back so the next Core service over this file applies migration 9 again.
+
+    The one place a test reaches past the seam, and it is unavoidable: what is being checked is a
+    *migration*, and a migration only runs against a database that has not had it. There is no way to ask
+    the Core service for an un-migrated database, because the Core service migrates in its constructor.
+    """
+    import sqlite3
+
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA user_version = 8")
+    finally:
+        connection.close()
