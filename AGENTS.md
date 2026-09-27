@@ -148,6 +148,11 @@ Each of these is one careless line away from being silently violated.
 - `ratios` **buckets rather than matching exactly**. A 3440x1440 ultrawide is 2.39 and Wallhaven serves it
   under `21x9`, which is 2.33. A local ratio check that demands equality prunes **Wallpapers** the API
   correctly returned, so the check in `core.py` is a band (`RATIO_TOLERANCE`) around each named ratio.
+- `q` takes a search **expression**, not only words. `q=like:<wallhaven id>` asks for the **Wallpapers**
+  Wallhaven considers similar to that one — the **Banger** refill at #13. Its result set is small and its
+  tail is weakly similar, so it is sorted by `relevance` and the walk through it is capped at
+  `LIKE_PAGES_PER_FAVOURITE` rather than paged to the end. `sorting` otherwise defaults to `date_added`,
+  which for a `like:` search is the wrong order entirely.
 - `meta.seed` is returned on `sorting=random` and is carried between pages to avoid repeats *within one walk*.
   Reusing a seed across refill runs returns the same **Wallpapers**.
 - `meta.last_page` is returned but is not a usable stop condition for a random walk: it was 14,055 on the

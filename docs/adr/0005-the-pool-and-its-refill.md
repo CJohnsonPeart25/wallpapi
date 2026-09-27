@@ -55,7 +55,7 @@ background thread for the budget in one minute — has no answer to give, becaus
 **Pool membership is its own table**, `pool(wallpaper_id, fetched_at, source)`, never a column on
 `wallpapers`. A **Wallpaper** leaves the **Pool** while the **Decision log** goes on referring to its row
 for ever, so "is it in the **Pool**" and "does this row exist" must not be the same question. `source` is
-`'random'` today and `'like'` when #13 starts searching for lookalikes.
+`'random'` or, since #13, `'like'` — see the extension below.
 
 **Batch building is a uniform random sample of the Pool, minus anything whose resolved Verdict is Ban.**
 Other **Verdicts** may reappear: an **Ignore** that removed a **Wallpaper** for ever would be an
@@ -117,6 +117,49 @@ Reusing a seed across runs returns the same **Wallpapers** (`AGENTS.md`). A walk
 reaches target or a page comes back empty. `meta.last_page` is returned by Wallhaven but is not carried:
 on the captured random SFW search it was 14,055, which is not a stop condition, and an empty page is the
 real end of a walk.
+
+### Extended at issue #13 — like: searches
+
+**Two strategies, taking strict turns, inside the one `refill_step`.** The random walk above feeds the
+**Unknown** **Zone**; a like: walk searches `q=like:<wallhaven id>` on a **Favourite** and feeds the
+**Banger** one. Step by step they alternate while both have work, and with no **Favourites** every step is
+random.
+
+Turns rather than a share of the budget, a period, or a priority. With one **API call** per step, "take
+turns" *is* an even split, so "neither starves the other" needs no number for anybody to set wrong — and
+the 45-per-minute budget covers both strategies without a second limiter, because what the limiter counts
+is steps. Which strategy ran last is on `refill_status()` and so on the indicator: a **Pool** growing only
+at random means an empty **Favourites** list, which is something the user can act on.
+
+**A like: walk picks one Favourite at a time, and every Favourite gets a turn before any gets a second.**
+The subject is drawn through the injected random source from the **Favourites** not yet walked this cycle;
+when all of them have been, the cycle restarts. Without that rule a seeded draw is free to spend every
+like: step on one **Wallpaper** while the rest of the user's taste goes unasked about.
+
+Which **Wallpapers** are **Favourites** is resolved from the **Decision log** on every step rather than
+kept in a list of subjects. A **Favourite** replaced by a **Like** or a **Ban**, or **Cleared** at #7,
+therefore leaves the rotation by itself — mid-walk if need be — and there is no second copy of the truth
+to drift out of step.
+
+**A like: walk is capped at three pages per Favourite, or an empty page, whichever comes first.** A like:
+result set is small and its tail is only weakly similar, so paging to the end would spend an unbounded
+share of the budget on one **Favourite**'s worst matches. Three pages is 72 **Wallpapers** at Wallhaven's
+listing size. The sort is `relevance` rather than `random` for the same reason: most similar first is the
+whole point of the search, and Wallhaven's default of `date_added` would scatter them.
+
+**The like: walk's seed and page are kept entirely apart from the random walk's.** The two interleave step
+by step, so one shared position would have each clobbering the other's every other call. The like: walk
+also keeps its place when the **Pool** reaches target, where the random one resets: only the random walk
+has the seed trap, and `like:<id>` answers the same way whenever it is asked.
+
+**Results go through the same `_admit_to_pool` and the same Filters**, tagged `source = 'like'`. A
+**Wallpaper** the random walk already found keeps the `source` and `fetched_at` it arrived with — meeting
+it again is not a second arrival — which the membership insert's `DO NOTHING` gives for free.
+
+**A failed like: call is a failed call and nothing more:** recorded, backed off, never raised (#15), and
+the page it failed on is retried rather than skipped. The turn is spent either way, so the step after the
+back-off belongs to the other strategy; a strategy that could retry its way through the whole budget would
+be exactly the starvation the alternation exists to prevent.
 
 ## Consequences
 
