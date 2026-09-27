@@ -4,7 +4,9 @@ Date: 2026-09-27
 
 ## Status
 
-Accepted
+Accepted. **Partly superseded by ADR 0013**, which names the **Similarity provider** and moves the
+**Similarity radius** default from 0.5 to 0.15. Everything else here — the matrix interface, the **Score**
+formula, the **Zone** rule, `classify_pool` — is unchanged by it.
 
 ## Context
 
@@ -60,6 +62,9 @@ the sum of `weight * value`. The radius is a cliff and the decay is a slope, and
 settings page. **Those two numbers are starting points, not tuned values.** Nothing has been measured
 against a real **Decision log**; that they are settings is the point.
 
+(ADR 0013 moved the radius default to 0.15 when the provider changed, having measured it against #14's
+*synthetic* **Decision log**. The sentence above still holds: a real one has still never been measured.)
+
 **Zone is the sign of the Score and nothing else.** **Banger** above zero, **Dud** below, **Unknown** at
 exactly zero. The spec's second cause of **Unknown** needs no branch: every decided **Wallpaper** beyond
 the radius is weighted at exactly zero, and every member of the decided set has a non-zero value, so
@@ -81,6 +86,11 @@ It costs no **API call**, is deterministic, and is one matmul plus one broadcast
 loop over pairs. It is crude on purpose: hard bins mean two near-identical reds either side of a boundary
 score nothing against each other, and a palette says nothing about subject or composition. #14's spike is
 where that stops being the only option; until then, everything downstream sees a number in `[0, 1]`.
+
+**ADR 0013 settled that.** wallpapi runs `EmbeddingSimilarityProvider` — a CLIP image tower over the
+cached thumbnails — and this one is now the *floor*, not the default: both other providers fall back to it
+per pair for anything their own cache has not reached, which is what makes an empty cache safe. It is not
+deletable and everything downstream still sees a number in `[0, 1]`.
 
 **Migration 6 adds a nullable `zone` column to `batch_wallpapers`, written when the Batch is minted.**
 That is not a stored **Score** and not a cache of one. It is the record of which **Zone** the **Wallpaper**

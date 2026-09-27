@@ -95,8 +95,16 @@ A wallpaper's derived value, calculated from the decision log with each resolved
 _Avoid_: rating, weight, rank, affinity
 
 **Similarity provider**:
-The component that measures how alike wallpapers are. Its method is deliberately left open. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair.
-_Avoid_: embedder, model, comparator
+The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. Its method was deliberately left open until #14; it is now a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded. Two others remain selectable. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
+_Avoid_: embedder, model, comparator, CLIP
+
+**Embedding**:
+The few hundred numbers a CLIP image encoder turns one thumbnail into, standing for what is in the picture. Cached permanently, computed in the background, and never stored in the decision log's database. Two wallpapers of the same thing have close embeddings whatever their colours, which is the whole reason the provider changed.
+_Avoid_: vector, feature, encoding, latent
+
+**Tag**:
+One of Wallhaven's own labels on a wallpaper, applied by its users. Only available from the single-wallpaper endpoint, one API call each, so a pool costs thousands of calls to tag. The tag similarity provider uses them; nothing else does.
+_Avoid_: label, keyword, category
 
 **Similarity radius**:
 How far a verdict reaches, as a distance from 0 to 1. Beyond it a decided wallpaper counts for nothing at all, which is what makes a wallpaper with nothing decided nearby an unknown. A setting.
