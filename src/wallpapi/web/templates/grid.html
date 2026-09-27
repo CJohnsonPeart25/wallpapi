@@ -1,0 +1,46 @@
+{#
+  The **Batch**'s tiles, and the controls that mark every one of them at once.
+
+  Rendered inside batch.html on a page load, and on its own as the htmx swap for a bulk mark. It is the
+  whole grid that swaps because a bulk mark changes every tile — the single-tile route still swaps one
+  tile, because a single mark changes one.
+
+  Bulk and per-tile controls disable each other for the duration of a request (`hx-disabled-elt`), so only
+  one of the two can ever be in flight. The server side is already atomic; this is what stops a single-tile
+  post that lands after the grid was read leaving the screen showing a mark the server no longer holds.
+#}
+<section id="batch-grid">
+  <div class="bulk">
+    {% for choice in ["favourite", "like", "ban"] %}
+      <button
+        type="button"
+        class="bulk-verdict"
+        data-bulk-verdict="{{ choice }}"
+        hx-post="/draft/all"
+        hx-vals='{"batch_id": "{{ batch.id }}", "verdict": "{{ choice }}"}'
+        hx-target="#batch-grid"
+        hx-swap="outerHTML"
+        hx-sync="#batch-grid:replace"
+        hx-disabled-elt=".verdict"
+      >{{ choice }} all</button>
+    {% endfor %}
+    {# Select-none posts an empty **Verdict**, the same clear a marked tile control posts. #}
+    <button
+      type="button"
+      class="bulk-verdict"
+      data-bulk-verdict=""
+      hx-post="/draft/all"
+      hx-vals='{"batch_id": "{{ batch.id }}", "verdict": ""}'
+      hx-target="#batch-grid"
+      hx-swap="outerHTML"
+      hx-sync="#batch-grid:replace"
+      hx-disabled-elt=".verdict"
+    >clear all</button>
+  </div>
+  <ul class="batch">
+    {% for wallpaper in batch.wallpapers %}
+      {% set draft = batch.drafts.get(wallpaper.id) %}
+      {% include "tile.html" %}
+    {% endfor %}
+  </ul>
+</section>

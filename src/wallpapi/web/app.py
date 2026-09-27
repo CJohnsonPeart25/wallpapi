@@ -22,7 +22,7 @@ from wallpapi.model import Verdict
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
-"""Vendored htmx, served by the app. No CDN reference anywhere in the templates."""
+"""Vendored htmx, stylesheet and preview script, served by the app. No third-party asset in any template."""
 
 
 def _drafted_verdict(posted: str) -> Verdict | None:
@@ -122,6 +122,35 @@ def create_app(core: CoreService) -> FastAPI:
             "tile.html",
             {"batch": live, "wallpaper": marked, "draft": live.drafts.get(wallpaper_id)},
         )
+
+    @app.post("/draft/all", response_class=HTMLResponse)
+    def draft_all(
+        request: Request,
+        batch_id: Annotated[str, Form()],
+        verdict: Annotated[str, Form()] = "",
+    ) -> HTMLResponse:
+        """Mark the whole **Batch**, or clear it, and swap the whole grid back.
+
+        One post and one transaction for one click, never one per tile (invariant 6). The response is the
+        grid rather than the tile, because a bulk mark changes every tile — the **Draft Batch** is read
+        back after the write, so what the user is left looking at is what the server actually holds.
+
+        The grid and the tiles disable each other's controls while a request is in flight
+        (`hx-disabled-elt`), so a bulk post and a single-tile post can never overlap. Without that, a tile
+        post committing after this route read the **Draft Batch** would leave the swapped-in grid showing
+        a mark the server no longer holds — the server side is atomic, but the screen would not be.
+
+        An **Ignore** is refused here exactly as it is for a single mark: it is derived at submit, and a
+        bulk one would write an explicit nothing against every tile at once.
+        """
+        refused = core.set_all_draft_verdicts(batch_id, _drafted_verdict(verdict))
+        if refused is not None:
+            return render(request, refused)
+
+        live = core.get_next_batch()
+        if not isinstance(live, Batch):
+            return render(request, live)
+        return templates.TemplateResponse(request, "grid.html", {"batch": live})
 
     @app.get("/thumb/{wallpaper_id}")
     def thumbnail(wallpaper_id: str) -> FileResponse:
