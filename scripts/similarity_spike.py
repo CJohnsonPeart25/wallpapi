@@ -371,15 +371,26 @@ def evaluate(arguments: argparse.Namespace) -> None:
 
 
 def _print_grid(name: str, grid: Sequence[Result], folds: int) -> None:
-    """Right-sign share over the whole grid, decay down the side and radius across the top."""
-    print(f"\n  {name}: right-sign share of {folds} folds, decay (rows) by radius (columns)")
-    print("  " + " " * 7 + "".join(f"{radius:>7}" for radius in SWEEP_RADII))
+    """Two grids over the same sweep: how often the sign is right, and how much of the **Pool** is left
+    **Unknown**.
+
+    Both, because the **Similarity radius** is being asked to do two jobs at once and they pull in
+    opposite directions. Widening it decides more folds — a **Wallpaper** with no decided neighbour has a
+    **Score** of exactly zero and so no sign to be right about — and widening it also empties the
+    **Unknown** **Zone**, which is the one an **Explore** **Mix** draws three-quarters of a **Batch** from
+    (ADR 0010). A radius picked for accuracy alone can leave nothing to explore.
+    """
     by_setting = {(result.radius, result.decay): result for result in grid}
-    for decay in SWEEP_DECAYS:
-        cells = "".join(
-            f"{_share(by_setting[(radius, decay)].right_sign, folds):>7.2f}" for radius in SWEEP_RADII
-        )
-        print(f"  {decay:>7}{cells}")
+    grids: tuple[tuple[str, Callable[[Result], float]], ...] = (
+        (f"right-sign share of {folds} folds", lambda result: _share(result.right_sign, folds)),
+        ("share of the Pool left Unknown", lambda result: result.pool_unknown_share),
+    )
+    for title, cell in grids:
+        print(f"\n  {name}: {title}, decay (rows) by radius (columns)")
+        print("  " + " " * 7 + "".join(f"{radius:>7}" for radius in SWEEP_RADII))
+        for decay in SWEEP_DECAYS:
+            cells = "".join(f"{cell(by_setting[(radius, decay)]):>7.2f}" for radius in SWEEP_RADII)
+            print(f"  {decay:>7}{cells}")
     print()
 
 

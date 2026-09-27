@@ -211,7 +211,17 @@ Each of these is one careless line away from being silently violated.
 - A 429 is the only failure worth telling apart from any other, which is why `wallhaven.py` raises
   `RateLimited` for it and nothing else. `Retry-After` may be seconds or an HTTP date; only the seconds form
   is parsed, and the caller's own back-off covers the rest.
-- Search listings return 24 per page. Tags are only on the single-wallpaper endpoint.
+- Search listings return 24 per page. Tags are only on the single-wallpaper endpoint, `GET /api/v1/w/{id}`,
+  which is on `wallhaven.cc/api` and so spends the same 45 a minute the refill's searches do — one call per
+  **Wallpaper**, which is 45 minutes for a 2,000-strong **Pool**.
+- **The 45 a minute is Wallhaven's, counted across everything this machine does.** `wait_needed` counts only
+  the calls the process in front of it has made, and starts every process with an empty window — so a second
+  process will happily spend all 45 in six seconds on top of whatever the app has already spent, and be
+  refused. Seen at #14: 15 searches from one command and 30 tag calls from the next, inside one of
+  Wallhaven's minutes, is 45 and the 46th was a 429. Anything that makes **API calls** outside the refill
+  thread has to pace itself evenly as well as stay inside the window. Every API response carries
+  `x-ratelimit-limit` and `x-ratelimit-remaining`, which are the authoritative count; `wallhaven.py` does not
+  read them today.
 - No API key is needed: NSFW is what requires one, and purity is fixed to SFW.
 
 ## Deferred decisions
