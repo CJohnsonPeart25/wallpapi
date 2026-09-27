@@ -159,11 +159,19 @@ _Avoid_: cooldown, decay, penalty
 ### Output
 
 **Library**:
-The output folder of favourites, written one way only and never read back. Windows' own personalisation settings handle rotation from it.
+The output folder of favourites, written one way only. Windows' own personalisation settings handle rotation from it. wallpapi never lists it and never reads a file back out of it; the one thing it ever asks the folder is whether a path it recorded itself is still there, and it asks that only when the favourites are downloaded. Everything wallpapi writes into it is named for its wallpaper — a Wallhaven ID and one short extension — and nothing outside it is ever written or deleted, whatever a recorded path says.
 _Avoid_: downloads, collection, gallery, output dir
 
+**Confinement**:
+The guarantee that the only folder wallpapi can write into or delete from is the library folder currently configured. A path is confined when its name is one wallpapi could have chosen and, once fully resolved — dot-dot collapsed, every symlink and junction followed — it lies strictly inside the resolved library folder. Both the write and the deletion go through the same check, and a recorded path that fails it is dropped from wallpapi's records with the file left exactly where it is.
+_Avoid_: sandbox, jail, validation, sanitising
+
+**Favourite download**:
+Writing a library file for every favourite that has not got one, on demand rather than at submission. The one-way half of library reconciliation, and the only place wallpapi looks at the folder: a favourite counts as missing its file when there is no recorded path, when the recorded path is not on the disk, or when it no longer resolves inside the library folder. It never deletes, so it is the repair for a library deleted in Explorer, moved, or arriving on a new machine with the decision log.
+_Avoid_: sync, restore, rebuild, repair
+
 **Library reconciliation**:
-Making the library agree with the decision log: every favourite with no file gets one, and every file whose wallpaper is no longer a favourite loses it. The library is derived from the decision log rather than written as a side effect of a click, so reconciling twice does nothing the second time.
+Making the library agree with the decision log: every favourite with no file gets one, and every file whose wallpaper is no longer a favourite loses it. The library is derived from the decision log rather than written as a side effect of a click, so reconciling twice does nothing the second time. It runs after every submission and reads nothing but the log — what the folder actually holds is a question only a favourite download asks.
 _Avoid_: sync, download queue, flush, refresh
 
 **Thumbnail cache**:
@@ -185,5 +193,5 @@ How many wallpapers a batch holds. A setting, read when a batch is minted, so ch
 _Avoid_: n, page size, grid size
 
 **Library path**:
-Where the library folder is. A setting, always an absolute path, and not necessarily a folder that exists yet.
+Where the library folder is. A setting, always an absolute path, and not necessarily a folder that exists yet. It defines confinement, so changing it changes what wallpapi may touch: files already written elsewhere are neither moved nor deleted, and a favourite download is what fills the new folder.
 _Avoid_: output folder, download directory, destination
