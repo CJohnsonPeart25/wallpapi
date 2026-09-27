@@ -50,18 +50,43 @@ THUMBNAIL_BYTES = b"\xff\xd8\xff\xe0 fake thumbnail"
 """What the fake serves for any thumbnail. A JPEG magic number, because Wallhaven's thumbs are `.jpg`."""
 
 
-class FakeWallhavenClient:
-    """An in-memory catalogue. Records the search parameters and the thumbnail URLs it was called with."""
+class WallhavenUnreachable(RuntimeError):
+    """What the fake raises to stand in for a transport failure.
 
-    def __init__(self, catalogue: Sequence[Wallpaper] = (), *, seed: str | None = None) -> None:
+    The Wallhaven protocol declares no error type, so the Core service cannot name one either — this exists
+    so a test can make a call fail without reaching for `httpx2` on the far side of the seam.
+    """
+
+
+class FakeWallhavenClient:
+    """An in-memory catalogue, served a page at a time.
+
+    Records the search parameters and the thumbnail URLs it was called with. `page_size` defaults to
+    Wallhaven's listing size of 24; tests that care about the walk turn it down so a page boundary is a
+    couple of **Wallpapers** away rather than two dozen.
+    """
+
+    def __init__(
+        self,
+        catalogue: Sequence[Wallpaper] = (),
+        *,
+        seed: str | None = None,
+        page_size: int = 24,
+        fail_from_call: int | None = None,
+    ) -> None:
         self.catalogue: list[Wallpaper] = list(catalogue)
         self.seed = seed
+        self.page_size = page_size
+        self.fail_from_call = fail_from_call
         self.searches: list[dict[str, object]] = []
         self.thumbnail_fetches: list[str] = []
 
-    def search(self, *, sorting: str, purity: str, page: int = 1) -> SearchPage:
-        self.searches.append({"sorting": sorting, "purity": purity, "page": page})
-        return SearchPage(wallpapers=tuple(self.catalogue), seed=self.seed)
+    def search(self, *, sorting: str, purity: str, page: int = 1, seed: str | None = None) -> SearchPage:
+        self.searches.append({"sorting": sorting, "purity": purity, "page": page, "seed": seed})
+        if self.fail_from_call is not None and len(self.searches) >= self.fail_from_call:
+            raise WallhavenUnreachable(f"call {len(self.searches)} was set up to fail")
+        start = (page - 1) * self.page_size
+        return SearchPage(wallpapers=tuple(self.catalogue[start : start + self.page_size]), seed=self.seed)
 
     def fetch_thumbnail(self, url: str) -> bytes:
         self.thumbnail_fetches.append(url)

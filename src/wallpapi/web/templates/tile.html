@@ -1,0 +1,35 @@
+{#
+  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, and its three **Explicit Verdict**
+  controls. Included by batch.html and rendered on its own as the htmx swap for a mark.
+
+  Each control posts the **Verdict** the tile should *end up* with rather than "flip this one", so a
+  replayed or duplicated click lands on the same state (invariant 6). The control that is currently marked
+  posts an empty **Verdict**, which is how clicking it a second time clears the mark.
+
+  **Ignore** has no control. It is derived for everything unmarked at submit, and a button for it would be
+  a second way to say what leaving a tile alone already says.
+#}
+<li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}">
+  <img
+    src="/thumb/{{ wallpaper.id }}"
+    alt=""
+    loading="lazy"
+    width="{{ wallpaper.width }}"
+    height="{{ wallpaper.height }}"
+  />
+  <div class="verdicts">
+    {% for choice in ["favourite", "like", "ban"] %}
+      <button
+        type="button"
+        class="verdict{{ ' marked' if draft == choice else '' }}"
+        data-verdict="{{ choice }}"
+        aria-pressed="{{ 'true' if draft == choice else 'false' }}"
+        hx-post="/draft"
+        hx-vals='{"batch_id": "{{ batch.id }}", "wallpaper_id": "{{ wallpaper.id }}", "verdict": "{{ '' if draft == choice else choice }}"}'
+        hx-target="closest .tile"
+        hx-swap="outerHTML"
+        hx-sync="this:replace"
+      >{{ choice }}</button>
+    {% endfor %}
+  </div>
+</li>
