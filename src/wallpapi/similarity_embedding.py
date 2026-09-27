@@ -103,11 +103,16 @@ DOWNLOAD_TIMEOUT = 30.0
 85MiB and how long that takes is the user's connection's business, but a stalled socket is not."""
 
 _PENDING = (
-    "Image similarity is still fetching its model — wallpapers are being compared by colour and "
-    "category until it arrives."
+    "Image similarity is still starting up — wallpapers are being compared by colour and category until "
+    "its model is ready."
 )
-"""What the page says before the model is there. No progress and no percentage: this is a line on a page
-nobody is watching, and the honest summary is that the **Scores** are the baseline's for now."""
+"""What the page says before the provider can embed anything.
+
+"Starting up" rather than "downloading", because it covers both states it is actually true in: a first
+boot that is fetching 85MiB, and the moment after any boot before the background thread has opened a model
+that was already there. No progress and no percentage — this is a line on a page nobody is watching, and
+the honest summary is that the **Scores** are the baseline's for now.
+"""
 
 _FAILED = (
     "Image similarity could not fetch its model ({failure}) — wallpapers are being compared by colour "
