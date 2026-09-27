@@ -72,6 +72,7 @@ class Wallhaven(Protocol):
         sorting: str,
         purity: str,
         categories: str | None = None,
+        query: str | None = None,
         page: int = 1,
         seed: str | None = None,
         atleast: str | None = None,
@@ -80,6 +81,11 @@ class Wallhaven(Protocol):
         """One page of results. `purity` is Wallhaven's three-bit mask, so SFW-only is `"100"`.
 
         `seed` carries a previous page's `meta.seed` so a walk across pages does not repeat itself.
+
+        `query` is Wallhaven's `q`, which takes a search *expression* rather than only words: the refill
+        sends `like:<wallhaven id>` through it to ask for one **Wallpaper**'s lookalikes (#13). What the
+        expression means is Wallhaven's business and which one to send is the Core service's decision; this
+        seam only carries it.
 
         `atleast` is a minimum resolution as `WxH` and `ratios` a comma-separated list of Wallhaven's named
         ratios — the **Filters**, in Wallhaven's spelling. Every optional parameter is omitted from the
@@ -161,6 +167,7 @@ class WallhavenClient:
         sorting: str,
         purity: str,
         categories: str | None = None,
+        query: str | None = None,
         page: int = 1,
         seed: str | None = None,
         atleast: str | None = None,
@@ -179,6 +186,8 @@ class WallhavenClient:
         parameters: dict[str, str | int] = {"sorting": sorting, "purity": purity, "page": page}
         for name, value in (
             ("categories", categories),
+            # Wallhaven spells it `q`, and this module is the only place that spelling belongs.
+            ("q", query),
             ("seed", seed),
             ("atleast", atleast),
             ("ratios", ratios),
