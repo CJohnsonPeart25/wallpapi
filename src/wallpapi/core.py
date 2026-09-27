@@ -32,7 +32,7 @@ from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off.
@@ -141,13 +141,29 @@ DEFAULT_MIN_FAVOURITES = 10
 """Enough to skip the long tail nobody has ever looked at, low enough not to collapse the **Pool** to a few
 hundred famous images. Applied locally — Wallhaven's search has no parameter for it."""
 
-DEFAULT_SIMILARITY_RADIUS = 0.5
+SUPERSEDED_SIMILARITY_RADIUS = 0.5
+"""The radius ADR 0007 seeded, kept because migration 9 has to recognise it.
+
+Half the range says "**Wallpapers** more different than alike tell you nothing about each other", which is
+the shape of the rule and was the right guess for a provider whose similarities use the whole range. The
+embedding provider's do not (ADR 0013), so the guess became wrong when the provider changed. It lives on
+here so that the migration can tell an untouched database from one the user has tuned, and it is used for
+nothing else.
+"""
+
+DEFAULT_SIMILARITY_RADIUS = 0.15
 """How far a decided **Wallpaper**'s influence reaches, as a distance in `[0, 1]`.
 
-A starting point, not a tuned number — nothing has been measured against a real **Decision log** yet, and
-that is exactly why it is a setting. Half the range says "**Wallpapers** more different than alike tell you
-nothing about each other", which is the shape of the rule; the number itself is a guess to be corrected on
-the settings page.
+Measured, at last, rather than guessed — though against #14's synthetic **Decision log**, so still a
+starting point and still a setting. Image-embedding similarities are bunched: mapped into `[0, 1]` they
+span about 0.59 to 1.0, so every distance is under 0.41 and the old 0.5 made every decided **Wallpaper** a
+neighbour of the whole **Pool**.
+
+**Not the accuracy-maximising value, deliberately.** 0.2 got the sign right on 98% of held-out
+**Verdicts** and left 1% of the **Pool** **Unknown**; 0.15 gets 86% and leaves 7%. **Unknown** is not
+waste — it is what an **Explore** **Mix** draws three-quarters of a **Batch** from (ADR 0010) — so a
+radius that decides everything leaves nothing to explore, and a tool for finding **Wallpapers** you have
+not seen would stop being one. See ADR 0013.
 """
 
 DEFAULT_SIMILARITY_DECAY = 4.0
@@ -802,6 +818,9 @@ class CoreService:
             if applied < 8:
                 for statement, parameters in _migration_8():
                     write.execute(statement, parameters)
+            if applied < 9:
+                for statement, parameters in _migration_9():
+                    write.execute(statement, parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -1300,6 +1319,31 @@ class CoreService:
                 reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE, error=error, error_at=error_at
             )
         return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
+
+    # -- the Similarity provider's own upkeep ------------------------------------------------------------
+
+    def similarity_notice(self) -> str | None:
+        """One line for the **Batch** page when the **Similarity provider** is not at full strength.
+
+        Straight through to the provider, and the Core service does not know what the line means — it is
+        the page's seam to everything (invariant 1), and #14's embedding provider has to be able to say "I
+        am still fetching my model, so these **Scores** are the baseline's" without the Core service
+        learning what a model is.
+        """
+        return self._similarity.notice()
+
+    def similarity_step(self, stop_event: threading.Event) -> float:
+        """One step of the **Similarity provider**'s own upkeep; seconds to wait before the next.
+
+        The Core service's part is one thing only: telling the provider where the **Thumbnail cache** is.
+        That is the one fact it has that the provider does not, and it is the fact the embedding provider
+        needs — the images wallpapi already holds are the ones in there (invariant 8).
+
+        Called from `similarity_loop` on the background thread and nowhere else: for the embedding
+        provider this is an 85MiB download and then a model run per **Wallpaper**. A provider with nothing
+        to keep up returns `NOTHING_TO_CATCH_UP`, and the whole thing costs one wake-up an hour.
+        """
+        return self._similarity.catch_up(self.thumbnail_dir, stop_event)
 
     # -- the Pool and its refill -------------------------------------------------------------------------
 
@@ -3174,3 +3218,32 @@ def _migration_8() -> tuple[tuple[str, tuple[str, ...]], ...]:
     A step of its own rather than an edit to any of those: they are already applied to live databases.
     """
     return tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
+
+
+_RETUNE_SETTING = "UPDATE settings SET value = ? WHERE key = ? AND value = ?"
+"""Change a setting, but only where it still holds the value a previous migration seeded.
+
+The `AND value = ?` is the whole point and is the only safe way to move a default that is already in live
+databases: a row the user has edited does not match, so it is left exactly as they set it, and a migration
+never silently undoes a choice. The alternative — deleting the row so the next read re-seeds it — would
+throw away a tuned value without being able to tell it from an untouched one.
+"""
+
+
+def _migration_9() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Migration 9: the **Similarity radius** default moves from 0.5 to 0.15 (ADR 0013).
+
+    The provider changed, so the number changed with it: image-embedding similarities are bunched into
+    the top of the range and 0.5 made every decided **Wallpaper** a neighbour of the whole **Pool**.
+
+    **Only where the row still says 0.5.** A database whose owner has already tuned the radius keeps what
+    they chose — that is what `_RETUNE_SETTING`'s third parameter is for — and a database that has never
+    had the row seeded at all gets it from the seed below, which is the ordinary `DO NOTHING` insert every
+    settings migration since 3 has used. Both halves are needed: the update does nothing on a fresh
+    database and the insert does nothing on an old one.
+    """
+    radius = _defaults()[_SIMILARITY_RADIUS]
+    return (
+        (_RETUNE_SETTING, (radius, _SIMILARITY_RADIUS, str(SUPERSEDED_SIMILARITY_RADIUS))),
+        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
+    )

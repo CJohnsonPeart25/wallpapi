@@ -41,6 +41,7 @@ from wallpapi.core import (
 )
 from wallpapi.model import Mix, Verdict
 from wallpapi.refill import RefillThread
+from wallpapi.similarity_thread import SimilarityThread
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,25 +130,34 @@ because it is the overwhelming majority of the rows and the least interesting of
 
 
 def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
-    """Start the **Pool** refill with the app and join it on the way out.
+    """Start the two background threads with the app and join them on the way out.
 
-    The thread is started here rather than in the Core service because the Core service is also what a
-    test constructs, and constructing one must not start a thread that talks to Wallhaven.
+    The **Pool** refill, and the **Similarity provider**'s own upkeep — which for the embedding provider
+    is fetching its model and embedding cached thumbnails (#14). Both are started here rather than in the
+    Core service because the Core service is also what a test constructs, and constructing one must not
+    start a thread that talks to Wallhaven or downloads 85MiB.
 
-    Joined with a timeout greater than the client's request timeout (invariant 12), so a stop arriving mid
-    request still lands: the request cannot outlast its own timeout, and every wait inside the loop is a
-    `stop_event.wait`.
+    Each is joined with a timeout greater than the longest read it can be inside (invariant 12), so a stop
+    arriving mid request or mid download still lands: neither can outlast its own timeout, and every wait
+    inside either loop is a `stop_event.wait`.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         del app
-        thread = RefillThread(core)
-        thread.start()
+        # Two loops rather than a few extra lines in the refill's, because they want different things: on
+        # a first boot the refill is filling an empty **Pool** while somebody watches an empty page, and
+        # a model download in front of its first search would hold that page empty for the length of the
+        # download. See `similarity_thread.py`.
+        refill = RefillThread(core)
+        similarity = SimilarityThread(core)
+        refill.start()
+        similarity.start()
         try:
             yield
         finally:
-            thread.stop()
+            similarity.stop()
+            refill.stop()
 
     return lifespan
 
@@ -232,10 +242,15 @@ def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> 
 def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     """The app over an already-constructed Core service.
 
-    `refill` starts the background **Pool** refill in the lifespan and joins it on shutdown. Off by
-    default, and `main.py` is the one caller that turns it on: a test that started a thread would be a test
-    with a race in it, and every behaviour test here drives `refill_step` by hand instead. The one test
-    that does start it is `test_refill_thread.py`, and what it checks is the thread itself.
+    `refill` starts the background threads in the lifespan and joins them on shutdown — the **Pool**
+    refill, and the **Similarity provider**'s own upkeep (#14). Off by default, and `main.py` is the one
+    caller that turns it on: a test that started a thread would be a test with a race in it, and every
+    behaviour test here drives `refill_step` and `similarity_step` by hand instead. The two tests that do
+    start them are `test_refill_thread.py` and `test_similarity_thread.py`, and what they check is the
+    threads themselves.
+
+    Still one flag for both. They are the same fact — "this is the real app, not a test" — and a second
+    parameter would be a second thing for `main.py` to remember to turn on.
     """
     app = FastAPI(title="wallpapi", lifespan=_lifespan(core) if refill else None)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -254,7 +269,11 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         most of all on the one that says there is nothing to show, where what the refill is doing is the
         answer to "why".
         """
-        context: dict[str, object] = {"status": core.refill_status(), **_mix_context(core)}
+        context: dict[str, object] = {
+            "status": core.refill_status(),
+            "similarity_notice": core.similarity_notice(),
+            **_mix_context(core),
+        }
         if isinstance(result, Batch):
             return templates.TemplateResponse(
                 request,
