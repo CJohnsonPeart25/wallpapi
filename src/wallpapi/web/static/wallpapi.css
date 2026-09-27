@@ -192,9 +192,8 @@ body:has(#batch-grid) .refill {
 /* ---------- the grid ---------- */
 
 /*
-  The column count and `--tile-aspect` are set by wallpapi.js, which sizes the grid to the viewport.
-  What is here is what a browser with JavaScript off falls back to, and the shape everything else is
-  measured against.
+  The column count is set by wallpapi.js, which sizes the grid to the viewport. What is here is what a
+  browser with JavaScript off falls back to, and the shape everything else is measured against.
 */
 .batch {
   list-style: none;
@@ -212,9 +211,16 @@ body:has(#batch-grid) .refill {
 }
 
 /*
-  One aspect ratio for every thumbnail, whatever shape Wallhaven sent. Rows that each found their own
-  height made the grid look like a pile rather than a sheet, and an even wall is what makes a batch
-  quick to scan.
+  One box of one shape for every thumbnail, whatever shape Wallhaven sent, with the wallpaper fitted
+  inside it whole.
+
+  The box is fixed because rows that each found their own height made the grid look like a pile rather
+  than a sheet, and an even wall is what makes a batch quick to scan. **The wallpaper inside it is never
+  cropped**: `contain` and a letterbox, not `cover`. A crop hides the thing being judged — the top of a
+  portrait, the edges of an ultrawide — and a verdict given on a cropped wallpaper is a verdict on
+  something else. Black bars cost nothing but screen.
+
+  16:9 because that is what most of Wallhaven is, so the common case is the one with no bars at all.
 */
 .tile img {
   display: block;
@@ -223,10 +229,10 @@ body:has(#batch-grid) .refill {
      presentational hints: without this, the hint sets a 2160px height and the aspect ratio below never
      gets a say. */
   height: auto;
-  aspect-ratio: var(--tile-aspect, 16 / 10);
-  object-fit: cover;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
   border-radius: var(--radius);
-  background: #23232a;
+  background: #15151a; /* the letterbox: darker than the page, so the bars read as frame, not as tile */
   cursor: zoom-in; /* the thumbnail is what opens the preview */
 }
 

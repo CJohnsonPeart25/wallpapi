@@ -18,28 +18,23 @@
 (function () {
   "use strict";
 
-  var ASPECT = 16 / 10; // must match the aspect-ratio on .tile img in wallpapi.css
+  var ASPECT = 16 / 9; // must match the aspect-ratio on .tile img in wallpapi.css
   var BOTTOM_MARGIN = 24; // a little air under the last row, rather than flush to the viewport edge
-
-  /*
-    How tall a tile may grow into the height left under the last row.
-
-    The column count is the fewest that fits, so there is always some slack: the next count down
-    overshot the screen and this one came in under it. The rows grow into that slack and stop here
-    rather than filling the screen exactly — filling exactly makes the aspect drift with every window
-    resize, and crops hardest, for a difference only visible on a batch small enough to be one row.
-  */
-  var TALLEST = 4 / 3;
 
   /* ---------- sizing the grid ---------- */
 
   /*
     Every column count whose rows still fit on one screen, largest tiles first.
 
-    Fewer columns means wider tiles, and wider tiles in a 16:10 grid are short enough that another row
-    usually still fits — which is why 32 wallpapers come out 7x5 rather than the 8x4 the number
-    suggests, and why forcing a sixth row is a false economy. 6x6 tiles would be wider but would have
-    to be less than half as tall to fit, which is less tile than 7x5 and a 2.3:1 crop of the wallpaper.
+    Fewer columns means wider tiles, and wider tiles are short enough that another row usually still
+    fits — which is why 32 wallpapers come out in fewer columns than the number suggests, and why
+    forcing one more row on top of that is a false economy: the tiles have to lose more height than
+    they gain width.
+
+    The height left under the last row is left there. It used to go back into the rows as extra tile
+    height, which was worth having while thumbnails were cropped to fill their box. They are fitted
+    whole now, so a taller box only adds letterbox — the wallpaper is as big as the column width lets
+    it be, and nothing below that line changes it.
   */
   function layouts(tiles, width, height, gap) {
     var fits = [];
@@ -53,18 +48,6 @@
     return fits;
   }
 
-  function aspectFor(layout, height, gap) {
-    var rowHeight = (height - gap * (layout.rows - 1)) / layout.rows;
-    if (rowHeight <= 0) {
-      return null;
-    }
-    var stretched = layout.width / rowHeight;
-    if (stretched >= ASPECT) {
-      return null; // no slack to spend — the rows are already as tall as 16:10 allows
-    }
-    return Math.max(stretched, TALLEST);
-  }
-
   function fit() {
     var grid = document.querySelector(".batch");
     if (!grid || !grid.children.length) {
@@ -75,8 +58,8 @@
     var gap = parseFloat(styles.columnGap) || 0;
     var width =
       grid.clientWidth - (parseFloat(styles.paddingLeft) || 0) - (parseFloat(styles.paddingRight) || 0);
-    // The grid's own bottom padding comes off too: the rows are laid out inside it and grow into
-    // whatever this works out to, so a few tens of pixels of slop would show at the fold.
+    // The grid's own bottom padding comes off too: the rows are laid out inside it, so counting it as
+    // usable height is what makes a layout "fit" and then not quite.
     var height =
       window.innerHeight -
       grid.getBoundingClientRect().top -
@@ -88,9 +71,6 @@
     // is the honest answer rather than tiles too small to judge.
     var layout = fits.length ? fits[0] : { columns: tiles, rows: 1, empty: 0, width: width / tiles };
     grid.style.gridTemplateColumns = "repeat(" + layout.columns + ", minmax(0, 1fr))";
-
-    var aspect = fits.length ? aspectFor(layout, height, gap) : null;
-    grid.style.setProperty("--tile-aspect", aspect ? String(aspect) : "");
 
     // A last row that does not fill its columns is centred, so what is missing is split evenly either
     // side rather than hanging off one end. Nudging its first tile is enough; the rest follow.
