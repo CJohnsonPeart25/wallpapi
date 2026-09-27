@@ -21,7 +21,7 @@ def test_batch_has_the_configured_size(harness: Harness) -> None:
     assert isinstance(batch, Batch)
     assert len(batch.wallpapers) == 8
     assert batch.size == 8
-    assert harness.core.get_setting("batch_size") == "8"
+    assert harness.core.get_settings().batch_size == 8
 
 
 def test_batch_never_contains_the_same_wallpaper_twice(db_path: Path) -> None:
@@ -123,7 +123,7 @@ def test_asking_again_returns_the_live_batch_rather_than_minting_another(harness
 def test_a_batch_of_a_different_size_is_honoured(db_path: Path) -> None:
     """Changing batch_size changes the next Batch. The settings page is #4; the setting itself is #2."""
     harness = make_harness(db_path, catalogue=catalogue_of(24))
-    harness.core.set_setting("batch_size", "2")
+    harness.core.update_settings(batch_size=2)
 
     batch = harness.core.get_next_batch()
 

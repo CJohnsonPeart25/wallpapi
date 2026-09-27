@@ -25,7 +25,7 @@ from wallpapi.rng import SeededRandom
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import Wallhaven
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off."""
@@ -37,6 +37,72 @@ A bound on page load latency, not a rate limiter: four calls at the client's ten
 the worst case worth making a user sit through. Spending the documented 45 per minute is the background
 refill's job at #6.
 """
+
+MIN_BATCH_SIZE = 1
+MAX_BATCH_SIZE = 64
+"""The accepted range for the batch size, inclusive at both ends.
+
+One because a **Batch** of none is a page with nothing to decide on and no way back off it. Sixty-four
+because the spec asks for "a big blitz of 16 or 32" and nothing larger, and because a **Batch** is what
+**Batch** building can actually fill: Wallhaven listings return 24 at a time and the walk is capped at four
+**API calls** (`MAX_SEARCHES_PER_BATCH`), so 96 candidates is the ceiling before **Bans** thin it. Sixty-four
+leaves headroom inside that; a larger cap would silently ship short **Batches**.
+"""
+
+DEFAULT_BATCH_SIZE = 8
+
+_BATCH_SIZE = "batch_size"
+_LIBRARY_PATH = "library_path"
+"""The `settings` keys. One row per key, with `Settings` as the typed view over them."""
+
+
+def _default_library_path() -> Path:
+    """Where **Favourites** go until the user says otherwise.
+
+    Under Pictures because that is where Windows' own slideshow settings start looking, and in a `wallpapi`
+    subfolder because the **Library** is write-only and should never be mixed in with photos.
+    """
+    return Path.home() / "Pictures" / "wallpapi"
+
+
+def _defaults() -> dict[str, str]:
+    """The seeded value of every setting, as it is stored.
+
+    The single source of truth for what "unconfigured" means: migration 3 seeds from here, and
+    `get_settings` falls back to here for a row a hand-edited database has lost. Computed rather than a
+    constant because the **Library** default depends on the user's home directory.
+    """
+    return {_BATCH_SIZE: str(DEFAULT_BATCH_SIZE), _LIBRARY_PATH: str(_default_library_path())}
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """Everything configurable, as one typed value.
+
+    A plain dataclass, not a Pydantic model: this is inside the core, and Pydantic lives at the edges.
+    Storage is still one row per key — this is a view over those rows, so a new setting is a new field and
+    a new seeded row rather than a migration against a widening table.
+    """
+
+    batch_size: int
+    library_path: Path
+
+
+@dataclass(frozen=True)
+class SettingsRefused:
+    """The update did not happen, and this is why.
+
+    A result rather than an exception, in the style of `SubmissionRefused`, so the settings page has one
+    error branch and can render the reason next to the value that caused it.
+    """
+
+    class Reason(StrEnum):
+        BATCH_SIZE_NOT_A_NUMBER = "batch_size_not_a_number"
+        BATCH_SIZE_OUT_OF_RANGE = "batch_size_out_of_range"
+        LIBRARY_PATH_EMPTY = "library_path_empty"
+        LIBRARY_PATH_NOT_ABSOLUTE = "library_path_not_absolute"
+
+    reason: Reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,25 +227,74 @@ class CoreService:
             if applied < 2:
                 for statement in _MIGRATION_2:
                     write.execute(statement)
+            if applied < 3:
+                for statement, parameters in _migration_3():
+                    write.execute(statement, parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
 
-    def get_setting(self, key: str) -> str:
-        row = self._connect().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            raise KeyError(key)
-        return str(row["value"])
+    def get_settings(self) -> Settings:
+        """Everything configurable, read in one go.
 
-    def set_setting(self, key: str, value: str) -> None:
-        """Change a setting. The settings page is #4; the settings themselves exist from #2, so #4 adds a
-        page rather than a code path."""
+        Never raises and never refuses. A stored value this Core service would not have accepted cannot
+        have been written through `update_settings`, so it is a hand-edited or truncated row; falling back
+        to the seeded default keeps the settings page openable, which is where such a row gets fixed.
+        """
+        stored = {
+            str(row["key"]): str(row["value"])
+            for row in self._connect().execute("SELECT key, value FROM settings")
+        }
+        defaults = _defaults()
+        batch_size = _validated_batch_size(stored.get(_BATCH_SIZE, defaults[_BATCH_SIZE]))
+        library_path = _validated_library_path(stored.get(_LIBRARY_PATH, defaults[_LIBRARY_PATH]))
+        return Settings(
+            batch_size=DEFAULT_BATCH_SIZE if isinstance(batch_size, SettingsRefused.Reason) else batch_size,
+            library_path=(
+                _default_library_path() if isinstance(library_path, SettingsRefused.Reason) else library_path
+            ),
+        )
+
+    def update_settings(
+        self,
+        *,
+        batch_size: int | str | None = None,
+        library_path: Path | str | None = None,
+    ) -> Settings | SettingsRefused:
+        """Validate and persist the settings named, in one write transaction.
+
+        Keyword-only fields rather than a whole `Settings` value, and `None` meaning "leave this one
+        alone". Two reasons. A caller that has to hand back every field must read them all first, and the
+        read and the write are then two transactions with a lost update between them. And the page will
+        grow sections — **Filters** at #6, **Mixes** at #10 — so a form that renders half the settings must
+        not reset the other half by omission. Adding a setting is a new keyword and a new field on
+        `Settings`; no existing caller changes. (No setting is nullable today; one that ever is needs a
+        sentinel here rather than `None`.)
+
+        Values are accepted as strings as well as typed, because the web form posts strings and the
+        coercion rule belongs with the validation rule rather than being spelled out again at the edge.
+
+        Everything is validated before anything is written: a good batch size beside a bad path must not
+        half-apply and then be reported as a failure.
+        """
+        changes: list[tuple[str, str]] = []
+        if batch_size is not None:
+            validated_size = _validated_batch_size(batch_size)
+            if isinstance(validated_size, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_size)
+            changes.append((_BATCH_SIZE, str(validated_size)))
+        if library_path is not None:
+            validated_path = _validated_library_path(library_path)
+            if isinstance(validated_path, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_path)
+            # Stored, not created. The **Library** writer creates the folder on its first write (#5);
+            # creating it here would leave a folder behind for every path the user typed and undid.
+            changes.append((_LIBRARY_PATH, str(validated_path)))
+
         with self._write() as write:
-            write.execute(
-                "INSERT INTO settings (key, value) VALUES (?, ?)"
-                " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                (key, value),
-            )
+            write.executemany(_UPSERT_SETTING, changes)
+            # Read inside the transaction, so what comes back is what this write put there.
+            return self.get_settings()
 
     # -- batches ---------------------------------------------------------------------------------------
 
@@ -189,12 +304,15 @@ class CoreService:
         At most one unsubmitted **Batch** exists at a time. Asking again — a page load, a refresh — hands
         back the same one rather than rerolling it, so nothing is stored until there is something to
         decide on. There is no **Pool** at #2, so each new **Batch** is its own live search.
+
+        The batch size is read when a **Batch** is minted and not afterwards, so changing it applies to the
+        next **Batch** rather than rebuilding the one on screen and discarding its **Draft Batch**.
         """
         live = self._live_batch()
         if live is not None:
             return live
 
-        size = int(self.get_setting("batch_size"))
+        size = self.get_settings().batch_size
         candidates = self._gather_candidates(size)
         if not candidates:
             return BatchUnavailable(reason=BatchUnavailable.Reason.NO_RESULTS)
@@ -471,6 +589,44 @@ class CoreService:
         ]
 
 
+def _validated_batch_size(value: int | str) -> int | SettingsRefused.Reason:
+    """The batch size, or the reason it is not one.
+
+    Coerces from text because the form posts text. `int` rather than `float`: "1.5" is refused outright
+    rather than silently becoming a **Batch** of one, because a size the user did not ask for is worse
+    than being told to type a whole number.
+    """
+    try:
+        size = int(str(value).strip())
+    except ValueError:
+        return SettingsRefused.Reason.BATCH_SIZE_NOT_A_NUMBER
+    if not MIN_BATCH_SIZE <= size <= MAX_BATCH_SIZE:
+        return SettingsRefused.Reason.BATCH_SIZE_OUT_OF_RANGE
+    return size
+
+
+def _validated_library_path(value: Path | str) -> Path | SettingsRefused.Reason:
+    """The **Library** path, or the reason it is not one.
+
+    Absolute or nothing (invariant 9): a relative path moves the **Library** with the working directory,
+    and every absolute path recorded for a file written into it would then point somewhere that cannot be
+    found again. Nothing here touches the filesystem — the path is allowed not to exist yet, and the
+    **Library** writer creates it on its first write (#5).
+    """
+    text = str(value).strip()
+    if not text:
+        return SettingsRefused.Reason.LIBRARY_PATH_EMPTY
+    path = Path(text)
+    if not path.is_absolute():
+        return SettingsRefused.Reason.LIBRARY_PATH_NOT_ABSOLUTE
+    return path
+
+
+_UPSERT_SETTING = """
+INSERT INTO settings (key, value) VALUES (?, ?)
+ON CONFLICT (key) DO UPDATE SET value = excluded.value
+"""
+
 _ABSENT = ResolvedVerdict(verdict=None, value=0)
 """A **Wallpaper** with no **Decision log** entries at all."""
 
@@ -715,3 +871,20 @@ CREATE TABLE draft_batch (
 Keyed `(batch_id, wallpaper_id)`, which enforces one **Verdict** per **Wallpaper** per submission for free.
 A separate step rather than an edit to migration 1: that one is already applied to live databases.
 """
+
+
+def _migration_3() -> tuple[tuple[str, tuple[str, str]], ...]:
+    """Migration 3: seed the settings the settings page edits.
+
+    A function rather than a constant, and statements paired with parameters rather than statements alone,
+    because the **Library** default is `Path.home() / "Pictures" / "wallpapi"` — computed here at migration
+    time and inserted as text, never interpolated into SQL.
+
+    `DO NOTHING` rather than an upsert: this runs on databases that predate it as well as on empty ones,
+    and a database that already holds a chosen `batch_size` must keep it. It also backfills `batch_size`
+    into the one shape that could be missing it — a `settings` table hand-edited since migration 1.
+    """
+    return tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
+
+
+_SEED_SETTING = "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING"
