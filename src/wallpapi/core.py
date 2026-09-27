@@ -51,8 +51,69 @@ leaves headroom inside that; a larger cap would silently ship short **Batches**.
 
 DEFAULT_BATCH_SIZE = 8
 
+MIN_POOL_TARGET_SIZE = 1
+MAX_POOL_TARGET_SIZE = 20_000
+"""The accepted range for the **Pool** target size.
+
+One, because a **Pool** of none is a **Batch** page with nothing on it and no way off, exactly as a
+**Batch** size of none would be. Twenty thousand, because invariant 2 sizes the **Similarity provider**'s
+matrix off the **Pool**, and every whole-**Pool** scan — **Scoring** at #9, the **Filter** prune here — is
+linear in it. Without a ceiling the refill grows the **Pool** for ever and the system gets slower every day
+without ever saying why.
+"""
+
+DEFAULT_POOL_TARGET_SIZE = 2000
+"""Large on purpose: the refill spends the full 45-calls-per-minute budget until the **Pool** reaches this,
+so a big target is what "always a backlog to process" looks like without unbounded growth. See ADR 0005."""
+
+MAX_FILTER_PIXELS = 30_000
+"""The largest minimum resolution worth accepting, per axis.
+
+Comfortably above anything Wallhaven serves. A minimum above it can only be a typo, and its only effect
+would be an empty **Pool** with nothing anywhere to explain why.
+"""
+
+DEFAULT_MIN_WIDTH = 2560
+DEFAULT_MIN_HEIGHT = 1440
+"""1440p, as a minimum rather than an exact size (`atleast`, never `resolutions`).
+
+The spec's monitor is 1440p or 4K. This admits a 1440p wallpaper at its native size and everything larger,
+and excludes the 1080p uploads that would have to be upscaled to fill either.
+"""
+
+DEFAULT_ALLOWED_RATIOS = ("16x9", "16x10", "21x9")
+"""The shapes a desktop monitor actually is: ordinary widescreen, the 16:10 panels, and ultrawide."""
+
+DEFAULT_MIN_FAVOURITES = 10
+"""Enough to skip the long tail nobody has ever looked at, low enough not to collapse the **Pool** to a few
+hundred famous images. Applied locally — Wallhaven's search has no parameter for it."""
+
+WALLHAVEN_RATIOS = frozenset(
+    {"16x9", "16x10", "21x9", "32x9", "48x9", "9x16", "10x16", "9x18", "1x1", "3x2", "4x3", "5x4"}
+)
+"""The `ratios=` values Wallhaven accepts, as its own search offers them.
+
+Validated against rather than merely checked for being a string, because an unrecognised ratio is not an
+error Wallhaven reports — it is a search that quietly returns something other than what was asked for.
+"""
+
+RATIO_TOLERANCE = 0.08
+"""How far a **Wallpaper**'s own width/height may sit from a named ratio and still count as it.
+
+Wallhaven's `ratios=` filter buckets rather than matching exactly: a 3440x1440 ultrawide is 2.39 and
+Wallhaven serves it under `21x9`, which is 2.33. The local check is a backstop against the API returning
+something plainly wrong, not a second opinion on its bucketing, so the band is deliberately generous — and
+still narrower than half the gap between `16x9` (1.78) and `16x10` (1.60), the closest pair anyone filters
+on.
+"""
+
 _BATCH_SIZE = "batch_size"
 _LIBRARY_PATH = "library_path"
+_POOL_TARGET_SIZE = "pool_target_size"
+_MIN_WIDTH = "min_width"
+_MIN_HEIGHT = "min_height"
+_ALLOWED_RATIOS = "allowed_ratios"
+_MIN_FAVOURITES = "min_favourites"
 """The `settings` keys. One row per key, with `Settings` as the typed view over them."""
 
 
@@ -72,7 +133,15 @@ def _defaults() -> dict[str, str]:
     `get_settings` falls back to here for a row a hand-edited database has lost. Computed rather than a
     constant because the **Library** default depends on the user's home directory.
     """
-    return {_BATCH_SIZE: str(DEFAULT_BATCH_SIZE), _LIBRARY_PATH: str(_default_library_path())}
+    return {
+        _BATCH_SIZE: str(DEFAULT_BATCH_SIZE),
+        _LIBRARY_PATH: str(_default_library_path()),
+        _POOL_TARGET_SIZE: str(DEFAULT_POOL_TARGET_SIZE),
+        _MIN_WIDTH: str(DEFAULT_MIN_WIDTH),
+        _MIN_HEIGHT: str(DEFAULT_MIN_HEIGHT),
+        _ALLOWED_RATIOS: ",".join(DEFAULT_ALLOWED_RATIOS),
+        _MIN_FAVOURITES: str(DEFAULT_MIN_FAVOURITES),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +155,21 @@ class Settings:
 
     batch_size: int
     library_path: Path
+    pool_target_size: int
+    min_width: int
+    min_height: int
+    allowed_ratios: tuple[str, ...]
+    min_favourites: int
+
+    @property
+    def atleast(self) -> str:
+        """The minimum resolution in Wallhaven's `WxH` spelling."""
+        return f"{self.min_width}x{self.min_height}"
+
+    @property
+    def ratios(self) -> str:
+        """The allowed ratios in Wallhaven's comma-separated spelling."""
+        return ",".join(self.allowed_ratios)
 
 
 @dataclass(frozen=True)
@@ -101,6 +185,18 @@ class SettingsRefused:
         BATCH_SIZE_OUT_OF_RANGE = "batch_size_out_of_range"
         LIBRARY_PATH_EMPTY = "library_path_empty"
         LIBRARY_PATH_NOT_ABSOLUTE = "library_path_not_absolute"
+        POOL_TARGET_SIZE_INVALID = "pool_target_size_invalid"
+        MIN_WIDTH_INVALID = "min_width_invalid"
+        MIN_HEIGHT_INVALID = "min_height_invalid"
+        ALLOWED_RATIOS_INVALID = "allowed_ratios_invalid"
+        MIN_FAVOURITES_INVALID = "min_favourites_invalid"
+        """One reason per **Filter** field rather than the two the batch size has.
+
+        The batch size separates "not a number" from "out of range" because the advice differs: one says
+        type a whole number, the other says which numbers are allowed. For the **Filters** both mistakes
+        have the same one-sentence answer — the sentence that names the accepted shape — so a second reason
+        would be a second branch on the page saying the same thing.
+        """
 
     reason: Reason
 
@@ -263,12 +359,29 @@ class CoreService:
             for row in self._connect().execute("SELECT key, value FROM settings")
         }
         defaults = _defaults()
-        batch_size = _validated_batch_size(stored.get(_BATCH_SIZE, defaults[_BATCH_SIZE]))
-        library_path = _validated_library_path(stored.get(_LIBRARY_PATH, defaults[_LIBRARY_PATH]))
+
+        def stored_or_seeded(key: str) -> str:
+            return stored.get(key, defaults[key])
+
+        def or_default[T](validated: T | SettingsRefused.Reason, fallback: T) -> T:
+            return fallback if isinstance(validated, SettingsRefused.Reason) else validated
+
         return Settings(
-            batch_size=DEFAULT_BATCH_SIZE if isinstance(batch_size, SettingsRefused.Reason) else batch_size,
-            library_path=(
-                _default_library_path() if isinstance(library_path, SettingsRefused.Reason) else library_path
+            batch_size=or_default(_validated_batch_size(stored_or_seeded(_BATCH_SIZE)), DEFAULT_BATCH_SIZE),
+            library_path=or_default(
+                _validated_library_path(stored_or_seeded(_LIBRARY_PATH)), _default_library_path()
+            ),
+            pool_target_size=or_default(
+                _validated_pool_target_size(stored_or_seeded(_POOL_TARGET_SIZE)),
+                DEFAULT_POOL_TARGET_SIZE,
+            ),
+            min_width=or_default(_validated_min_width(stored_or_seeded(_MIN_WIDTH)), DEFAULT_MIN_WIDTH),
+            min_height=or_default(_validated_min_height(stored_or_seeded(_MIN_HEIGHT)), DEFAULT_MIN_HEIGHT),
+            allowed_ratios=or_default(
+                _validated_allowed_ratios(stored_or_seeded(_ALLOWED_RATIOS)), DEFAULT_ALLOWED_RATIOS
+            ),
+            min_favourites=or_default(
+                _validated_min_favourites(stored_or_seeded(_MIN_FAVOURITES)), DEFAULT_MIN_FAVOURITES
             ),
         )
 
@@ -277,6 +390,11 @@ class CoreService:
         *,
         batch_size: int | str | None = None,
         library_path: Path | str | None = None,
+        pool_target_size: int | str | None = None,
+        min_width: int | str | None = None,
+        min_height: int | str | None = None,
+        allowed_ratios: Sequence[str] | str | None = None,
+        min_favourites: int | str | None = None,
     ) -> Settings | SettingsRefused:
         """Validate and persist the settings named, in one write transaction.
 
@@ -307,6 +425,33 @@ class CoreService:
             # Stored, not created. The **Library** writer creates the folder on its first write (#5);
             # creating it here would leave a folder behind for every path the user typed and undid.
             changes.append((_LIBRARY_PATH, str(validated_path)))
+        if pool_target_size is not None:
+            validated_target = _validated_pool_target_size(pool_target_size)
+            if isinstance(validated_target, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_target)
+            changes.append((_POOL_TARGET_SIZE, str(validated_target)))
+        if min_width is not None:
+            validated_width = _validated_min_width(min_width)
+            if isinstance(validated_width, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_width)
+            changes.append((_MIN_WIDTH, str(validated_width)))
+        if min_height is not None:
+            validated_height = _validated_min_height(min_height)
+            if isinstance(validated_height, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_height)
+            changes.append((_MIN_HEIGHT, str(validated_height)))
+        if allowed_ratios is not None:
+            validated_ratios = _validated_allowed_ratios(allowed_ratios)
+            if isinstance(validated_ratios, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_ratios)
+            # Stored tidy — trimmed, de-duplicated, in the order given — so the query string Wallhaven
+            # sees is the one the settings page shows.
+            changes.append((_ALLOWED_RATIOS, ",".join(validated_ratios)))
+        if min_favourites is not None:
+            validated_favourites = _validated_min_favourites(min_favourites)
+            if isinstance(validated_favourites, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_favourites)
+            changes.append((_MIN_FAVOURITES, str(validated_favourites)))
 
         with self._write() as write:
             write.executemany(_UPSERT_SETTING, changes)
@@ -695,6 +840,76 @@ def _validated_batch_size(value: int | str) -> int | SettingsRefused.Reason:
     if not MIN_BATCH_SIZE <= size <= MAX_BATCH_SIZE:
         return SettingsRefused.Reason.BATCH_SIZE_OUT_OF_RANGE
     return size
+
+
+def _whole_number(value: object) -> int | None:
+    """The value as a whole number, or `None` if it is not one.
+
+    `int` and never `float`: "1.5" and "1e3" are refused outright rather than silently becoming something
+    the user did not type. The form posts text, so the coercion belongs with the rule.
+    """
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _validated_pool_target_size(value: int | str) -> int | SettingsRefused.Reason:
+    """The **Pool** target size, or the reason it is not one."""
+    size = _whole_number(value)
+    if size is None or not MIN_POOL_TARGET_SIZE <= size <= MAX_POOL_TARGET_SIZE:
+        return SettingsRefused.Reason.POOL_TARGET_SIZE_INVALID
+    return size
+
+
+def _validated_min_width(value: int | str) -> int | SettingsRefused.Reason:
+    return _validated_pixels(value, SettingsRefused.Reason.MIN_WIDTH_INVALID)
+
+
+def _validated_min_height(value: int | str) -> int | SettingsRefused.Reason:
+    return _validated_pixels(value, SettingsRefused.Reason.MIN_HEIGHT_INVALID)
+
+
+def _validated_pixels(value: int | str, reason: SettingsRefused.Reason) -> int | SettingsRefused.Reason:
+    """One axis of the minimum resolution **Filter**, or the reason it is not one.
+
+    Zero is accepted: "no minimum on this axis" is a real answer, and turning a **Filter** off by emptying
+    it is better than a second setting saying whether it is on.
+    """
+    pixels = _whole_number(value)
+    if pixels is None or not 0 <= pixels <= MAX_FILTER_PIXELS:
+        return reason
+    return pixels
+
+
+def _validated_min_favourites(value: int | str) -> int | SettingsRefused.Reason:
+    """The minimum **Favourites** **Filter**, or the reason it is not one.
+
+    No ceiling: unlike a resolution there is no number above which this can only be a typo, and its effect
+    — a **Pool** that fills slowly or not at all — is visible on the **Batch** page's refill indicator.
+    """
+    favourites = _whole_number(value)
+    if favourites is None or favourites < 0:
+        return SettingsRefused.Reason.MIN_FAVOURITES_INVALID
+    return favourites
+
+
+def _validated_allowed_ratios(value: Sequence[str] | str) -> tuple[str, ...] | SettingsRefused.Reason:
+    """The allowed ratios, or the reason they are not.
+
+    Accepted as the comma-separated string the form posts or as a sequence, trimmed and de-duplicated with
+    the order kept. Checked against `WALLHAVEN_RATIOS` rather than against being a string, because an
+    unrecognised `ratios=` value is not an error Wallhaven reports — it is a search that quietly returns
+    something other than what was asked for.
+
+    An empty list is refused: "every ratio" is written as the full list, because a blank field is far more
+    likely to be a mistake than an intention.
+    """
+    parts = value.split(",") if isinstance(value, str) else list(value)
+    named = list(dict.fromkeys(part.strip() for part in parts))
+    if not named or any(part not in WALLHAVEN_RATIOS for part in named):
+        return SettingsRefused.Reason.ALLOWED_RATIOS_INVALID
+    return tuple(named)
 
 
 def _validated_library_path(value: Path | str) -> Path | SettingsRefused.Reason:
