@@ -12,10 +12,6 @@ dependencies = [
     "numpy>=2.1",
     "pydantic>=2.9",
     "httpx2>=2.13",
-]
-
-[project.optional-dependencies]
-similarity-embedding = [
     "onnxruntime>=1.20",
     "pillow>=11.0",
 ]

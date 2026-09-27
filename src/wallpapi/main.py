@@ -21,7 +21,11 @@ from wallpapi.core import CoreService
 from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import MetadataSimilarityProvider, SimilarityProvider
-from wallpapi.similarity_embedding import EmbeddingCache, EmbeddingSimilarityProvider
+from wallpapi.similarity_embedding import (
+    DownloadedModel,
+    EmbeddingCache,
+    EmbeddingSimilarityProvider,
+)
 from wallpapi.similarity_tags import TagCache, TagSimilarityProvider
 from wallpapi.wallhaven import WallhavenClient
 from wallpapi.web.app import create_app
@@ -29,45 +33,48 @@ from wallpapi.web.app import create_app
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
-DEFAULT_SIMILARITY = "metadata"
+DEFAULT_SIMILARITY = "embedding"
 """Which **Similarity provider** the app wires in unless `WALLPAPI_SIMILARITY` says otherwise.
 
-The baseline, and it stays the baseline until the maintainer settles #14. The other two are that spike's
-candidates: `tags` wants a filled tag cache, which costs an **API call** per **Wallpaper**, and
-`embedding` wants the `similarity-embedding` extra, the model file and a filled embedding cache. Both fall
-back to the baseline for any **Wallpaper** their cache has not reached, so either is safe to switch on
-against a half-filled cache — it simply behaves more like the baseline the emptier the cache is.
+Image embeddings, decided at #14 and recorded in ADR 0013. It fetches its own model on first boot and
+falls back to the baseline for every **Wallpaper** it has not embedded yet, so there is nothing to install
+and nothing to run first — a fresh wallpapi behaves exactly as the baseline did and gets better as its
+cache fills, with a line on the page while that is happening.
+
+The other two stay selectable because the maintainer has not yet seen all three against a real **Decision
+log**, only against the spike's synthetic one. `metadata` is the baseline and costs nothing. `tags` needs
+its cache filled by hand — about 2,000 **API calls** for a **Pool** at its default target size, out of
+Wallhaven's 45 a minute — and until it is filled it behaves as the baseline.
+"""
+
+MODEL_FILENAME = "clip-vit-b32-vision-quantized.onnx"
+"""The image tower's name on disk, under `models/` in the wallpapi home.
+
+Beside the **Decision log** rather than inside the package: 85MiB of weights that are fetched once, are
+not wallpapi's to ship, and can be deleted without reinstalling anything. Named for what it is, so that a
+future change of model is a new file rather than a silent change of meaning behind one name.
 """
 
 
 def wallpapi_home() -> Path:
-    """Where the **Decision log** and the **Thumbnail cache** live."""
+    """Where the **Decision log**, the **Thumbnail cache** and the model live."""
     configured = os.environ.get("WALLPAPI_HOME")
     return Path(configured) if configured else Path.home() / ".wallpapi"
 
 
-def model_path(home: Path | None = None) -> Path:
-    """Where the CLIP image tower the embedding provider needs is kept (#14).
-
-    Beside the **Decision log** rather than in the package: it is 85MiB of weights that are downloaded
-    once, are not wallpapi's to ship, and can be deleted without reinstalling anything.
-    """
-    root = wallpapi_home() if home is None else home
-    return root / "models" / "clip-vit-b32-vision-quantized.onnx"
-
-
 def build_similarity(root: Path) -> SimilarityProvider:
-    """Which **Similarity provider** to wire in, from `WALLPAPI_SIMILARITY` (#14).
+    """Which **Similarity provider** to wire in, from `WALLPAPI_SIMILARITY` (ADR 0013).
 
-    Each candidate owns its own SQLite cache beside `wallpapi.db`, which is why switching between them
-    needs no migration and deleting one is deleting a file. Neither candidate is wired to anything that
-    *fills* its cache: the app reads what is there and falls back to the baseline for the rest. Filling is
-    a step somebody runs on purpose, because one costs **API calls** out of the refill's 45 a minute and
-    the other costs a model run per **Wallpaper**, and neither belongs on the path of a page load.
+    Each provider owns its own SQLite cache beside `wallpapi.db`, which is why switching between them
+    needs no migration and deleting one is deleting a file.
 
-    An unrecognised name raises rather than falling back to the baseline. A typo that silently ran the
-    provider being compared *against* would make #14's whole comparison a lie, and this is the one line
-    that decides which one the numbers came from.
+    Only the embedding provider is wired to something that *fills* its cache, and even then not here: it
+    is handed a `ModelSource` and the background thread calls `catch_up`. Nothing on the path of a page
+    load ever downloads a model or runs one.
+
+    An unrecognised name raises rather than quietly falling back. The three behave differently and all
+    three look the same from the page — a typo that silently ran the baseline would be a wallpapi scoring
+    by colour with nothing anywhere saying so.
     """
     choice = os.environ.get("WALLPAPI_SIMILARITY", DEFAULT_SIMILARITY).strip().lower()
     if choice == "metadata":
@@ -75,7 +82,10 @@ def build_similarity(root: Path) -> SimilarityProvider:
     if choice == "tags":
         return TagSimilarityProvider(TagCache(root / "tags.db"))
     if choice == "embedding":
-        return EmbeddingSimilarityProvider(EmbeddingCache(root / "embeddings.db"))
+        return EmbeddingSimilarityProvider(
+            EmbeddingCache(root / "embeddings.db"),
+            model=DownloadedModel(root / "models" / MODEL_FILENAME),
+        )
     raise ValueError(f"WALLPAPI_SIMILARITY must be metadata, tags or embedding — not {choice!r}")
 
 

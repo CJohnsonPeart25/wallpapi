@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -52,10 +53,10 @@ from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
 from wallpapi.scoring import classify, zone_of
 from wallpapi.similarity import MetadataSimilarityProvider, SimilarityProvider
 from wallpapi.similarity_embedding import (
+    DownloadedModel,
     EmbeddingCache,
     EmbeddingSimilarityProvider,
     OnnxClipEmbedder,
-    download_model,
 )
 from wallpapi.similarity_tags import TagCache, TagSimilarityProvider
 from wallpapi.wallhaven import RateLimited, Tag, WallhavenClient
@@ -280,8 +281,13 @@ def thumbs(_: argparse.Namespace) -> None:
 
 
 def model(_: argparse.Namespace) -> None:
-    """Download the CLIP image tower once and verify it against the recorded checksum."""
-    path = download_model(MODEL)
+    """Download the CLIP image tower once and verify it against the recorded checksum.
+
+    The same `DownloadedModel` the app uses, so what the spike measured is what the app runs. The
+    `stop_event` it wants is one nothing will ever set: the app's is the background thread's, and here
+    Ctrl-C is the shutdown story.
+    """
+    path = DownloadedModel(MODEL).ensure(threading.Event())
     print(f"{path} — {path.stat().st_size / 1e6:.0f} MB")
 
 

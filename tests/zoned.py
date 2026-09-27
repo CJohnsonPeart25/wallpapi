@@ -48,10 +48,13 @@ _ADMITTING_WIDTH = 3000
 NEAR = 0.9
 """How alike a population **Wallpaper** is made to a seed to put it in that seed's **Zone**.
 
-Well inside the default radius of 0.5 — a distance of 0.1 — so the seed's +/-100 arrives at about
-`exp(-0.4)` of full strength, which is 67 either way. Nowhere near the boundary the **Zone** is read off,
-which is the point: these tests are about **Allocation**, and none of them should be able to fail because
-of the **Scoring** arithmetic underneath.
+Inside the default radius — a distance of 0.1 against a radius of 0.15 — so the seed's +/-100 arrives at
+about `exp(-0.4)` of full strength, which is 67 either way. Nowhere near the boundary the **Zone** is read
+off, which is the point: these tests are about **Allocation**, and none of them should be able to fail
+because of the **Scoring** arithmetic underneath.
+
+The margin narrowed when the radius default moved to 0.15 with the embedding provider (ADR 0013). A test
+here that wants to grade **Wallpapers** apart has to do it in steps small enough to stay inside it.
 """
 
 

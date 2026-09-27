@@ -31,6 +31,7 @@ nineteen other things, and Jaccard is the one that says so.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -39,7 +40,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from wallpapi.model import Wallpaper
-from wallpapi.similarity import MetadataSimilarityProvider, SimilarityProvider
+from wallpapi.similarity import NOTHING_TO_CATCH_UP, MetadataSimilarityProvider, SimilarityProvider
 from wallpapi.similarity_cache import SidecarDatabase
 from wallpapi.wallhaven import Tag
 
@@ -217,6 +218,29 @@ class TagSimilarityProvider:
         # Clipped for the baseline's reason: a **Wallpaper** against itself must come out at 1.0 and never
         # a rounding above it, or the **Score** maths' `1 - similarity` distance goes negative.
         return np.clip(blended, 0.0, 1.0).astype(np.float32)
+
+    def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
+        """Deliberately nothing, even though this is the provider whose cache most needs filling.
+
+        Filling it is one **API call** per **Wallpaper** out of Wallhaven's 45 a minute — about 2,000 of
+        them for a **Pool** at its default target size — and that is the same budget the refill spends
+        keeping the **Pool** stocked. Quietly taking half of it is not a decision a **Similarity
+        provider** gets to make on the user's behalf. So tagging stays an explicit step somebody runs
+        (`scripts/similarity_spike.py tags`), and this provider spends no **API calls** at all, whether or
+        not it is the selected one.
+        """
+        del thumbnails, stop_event
+        return NOTHING_TO_CATCH_UP
+
+    def notice(self) -> str | None:
+        """Nothing. An untagged **Wallpaper** falls back to the baseline and the page is still right.
+
+        It would be reasonable to say "n of the **Pool** is untagged" here, but this provider cannot know
+        how big the **Pool** is — it is handed the **Wallpapers** of one matrix and nothing else — and
+        guessing from the size of its own cache would be a number that means something different every
+        time it is read.
+        """
+        return None
 
 
 def _indicator(tag_sets: Sequence[tuple[int, ...]], columns: Mapping[int, int]) -> NDArray[np.float32]:

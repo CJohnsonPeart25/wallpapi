@@ -1,0 +1,16 @@
+{#
+  One line when the **Similarity provider** is not working at full strength, and nothing at all when it is.
+
+  The same shape and the same place as the refill indicator, because it answers the same kind of question:
+  the refill line says why the page is empty, and this one says why the **Zones** on it are cruder than
+  they will be. **Scores** computed from the fallback look exactly like **Scores** computed properly, so
+  without this a wallpapi that had never managed to fetch its model would be indistinguishable from one
+  working perfectly — for as long as nobody noticed the **Bangers** were only the right colour.
+
+  The Core service hands over a sentence, not a reason code, and nothing here branches on it: what can be
+  wrong is the provider's business, and the page's business is putting it where it will be read. A provider
+  with nothing to say sends `None` and this renders nothing, which is the usual case.
+#}
+{% if similarity_notice %}
+  <p class="refill similarity-notice">{{ similarity_notice }}</p>
+{% endif %}
