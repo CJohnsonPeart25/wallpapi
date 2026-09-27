@@ -22,7 +22,7 @@ from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
 from wallpapi.model import DecisionEntry, Verdict, Wallpaper
-from wallpapi.ratelimit import CALLS_PER_MINUTE, wait_needed
+from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
@@ -355,6 +355,16 @@ class CoreService:
         # refill thread writes it and request threads read it for the indicator.
         self._refill_lock = threading.Lock()
         self._api_call_times: deque[float] = deque(maxlen=CALLS_PER_MINUTE)
+        """The **API call** timestamps the limiter counts — only the ones still inside the window.
+
+        Trimmed by age on every append, because that is what the deque *means*: entries older than
+        `WINDOW_SECONDS` can never change what `wait_needed` returns, and a tool meant to run for months at
+        45 calls a minute would otherwise accumulate 65,000 floats a day.
+
+        `maxlen` as well as the trim, and not instead of it. The trim is by age and the cap is by count, and
+        only the cap holds when time does not move — a frozen clock in a test, or a monotonic clock that
+        somehow stalls. Neither alone is both correct and bounded.
+        """
         self._walk_seed: str | None = None
         self._walk_page = 1
         self._retry_not_before: float | None = None
@@ -623,6 +633,16 @@ class CoreService:
                 last_error_at=self._refill_last_error_at,
             )
 
+    def api_call_window(self) -> list[float]:
+        """The **API call** timestamps the limiter is currently counting, oldest first.
+
+        A copy, and a read rather than a field on `RefillStatus`: nothing on a page wants it, and the only
+        caller is the test that pins the window staying bounded over a long run. It is here rather than
+        being read off the attribute so that even that test enters through the seam (invariant 1).
+        """
+        with self._refill_lock:
+            return list(self._api_call_times)
+
     def refill_wait(self) -> float:
         """Seconds the refill should wait before calling `refill_step` again.
 
@@ -663,7 +683,7 @@ class CoreService:
 
         with self._refill_lock:
             seed, page_number = self._walk_seed, self._walk_page
-            self._api_call_times.append(self._clock.monotonic())
+            self._record_api_call(self._clock.monotonic())
         try:
             page = self._wallhaven.search(
                 sorting="random",
@@ -708,6 +728,17 @@ class CoreService:
         finally:
             with self._refill_lock:
                 self._refill_thread_running = False
+
+    def _record_api_call(self, at: float) -> None:
+        """Note an **API call**, dropping the ones that have aged out of the window.
+
+        Called with `self._refill_lock` already held. Trimming here rather than in `wait_needed` keeps the
+        limiter a pure function of what it is given (invariant 11) and keeps the deque's contents honest:
+        what it holds is the window, not every call ever made.
+        """
+        while self._api_call_times and at - self._api_call_times[0] >= WINDOW_SECONDS:
+            self._api_call_times.popleft()
+        self._api_call_times.append(at)
 
     def _mark_refill_run(self) -> None:
         with self._refill_lock:
@@ -763,22 +794,22 @@ class CoreService:
             write.executemany(_ADMIT_TO_POOL, [(w.id, fetched_at, POOL_SOURCE_RANDOM) for w in passing])
 
     def _prune_pool(self, write: sqlite3.Connection, settings: Settings) -> None:
-        """Drop undecided **Pool** members that no longer pass the **Filters**.
+        """Drop every **Pool** member that no longer passes the **Filters**.
 
-        The rule the **Pool** keeps is "no undecided **Wallpaper** that fails the current **Filters**", so
-        this runs after every settings write rather than only after one that named a **Filter** — one rule,
-        rather than a rule plus a list of which fields count. With nothing changed there is nothing to
-        prune.
+        The rule the **Pool** keeps is "no **Wallpaper** that fails the current **Filters**", so this runs
+        after every settings write rather than only after one that named a **Filter** — one rule, rather
+        than a rule plus a list of which fields count. With nothing changed there is nothing to prune.
 
-        Only the membership row goes. The `wallpapers` row and every **Decision log** entry stay, because
-        the log is append-only and **History** at #7 renders a thumbnail for each of them. A **Wallpaper**
-        that has been judged keeps its place too: tightening a **Filter** is not a reason to quietly undo a
-        decision, and a **Clearance** at #7 would expect to find it.
+        Decided **Wallpapers** go too. **Pool** membership governs only what may be *shown*, so a **Liked**
+        1080p **Wallpaper** must stop appearing once the minimum is raised to 1440p exactly as an undecided
+        one does — and an **Ignored** one certainly must. Nothing is lost by it: only the membership row
+        goes. The `wallpapers` row and every **Decision log** entry stay, so **History** at #7 still renders
+        each of them, and a **Clearance** there works on the log rather than on **Pool** membership.
 
         The live unsubmitted **Batch** is untouched for free — a **Batch** holds `batch_wallpapers` rows,
         not **Pool** membership — so nobody loses the **Draft Batch** they are part way through.
         """
-        rows = write.execute(_SELECT_UNDECIDED_POOL).fetchall()
+        rows = write.execute(_SELECT_POOL_WALLPAPERS).fetchall()
         failing = [
             (str(row["id"]),) for row in rows if not _passes_filters(_wallpaper_from_row(row), settings)
         ]
@@ -1398,16 +1429,6 @@ ORDER BY pool.rowid
 Ordered because the sample is drawn by the seeded random source: without an `ORDER BY`, SQLite's row order
 is an implementation detail and the same seed over the same **Pool** could produce a different **Batch**.
 """
-
-_SELECT_UNDECIDED_POOL = """
-SELECT w.*
-FROM pool
-JOIN wallpapers AS w ON w.id = pool.wallpaper_id
-WHERE NOT EXISTS (
-    SELECT 1 FROM decision_log WHERE decision_log.wallpaper_id = pool.wallpaper_id
-)
-"""
-"""The **Pool** members nothing has ever been recorded against — the only ones a **Filter** change evicts."""
 
 _SELECT_BATCH_WALLPAPERS = """
 SELECT w.*

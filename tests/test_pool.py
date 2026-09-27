@@ -205,12 +205,14 @@ def test_changing_the_filters_prunes_undecided_pool_wallpapers_that_no_longer_pa
     assert [w.id for w in batch.wallpapers] == ["huge"]
 
 
-def test_pruning_leaves_decided_wallpapers_and_their_log_entries_alone(db_path: Path) -> None:
-    """A tightened **Filter** is not a reason to quietly undo a decision.
+def test_pruning_drops_decided_wallpapers_too_and_keeps_their_log_entries(db_path: Path) -> None:
+    """A **Filter** governs what may be shown, and a **Verdict** does not exempt a **Wallpaper** from it.
 
-    The **Decision log** is append-only and **History** at #7 renders a thumbnail for every past
-    **Verdict**, so a **Wallpaper** that has been judged keeps both its entries and its place — a
-    **Clearance** at #7 would expect to find it there.
+    A **Liked** 1080p **Wallpaper** must stop appearing once the minimum is raised to 1440p exactly as an
+    undecided one does, and an **Ignored** one certainly must. Nothing is lost by it: only the **Pool**
+    membership row goes, so the **Decision log** is untouched, **Verdict resolution** is unchanged, and
+    **History** at #7 still renders it — a **Clearance** there works on the log rather than on **Pool**
+    membership.
     """
     harness = make_harness(
         db_path,
@@ -219,16 +221,19 @@ def test_pruning_leaves_decided_wallpapers_and_their_log_entries_alone(db_path: 
     first = harness.core.get_next_batch()
     assert isinstance(first, Batch)
     harness.core.set_draft_verdict(first.id, "judged", Verdict.LIKE)
-    harness.core.submit_batch(first.id)
-    entries_before = len(harness.core.list_history())
+    live = harness.core.submit_batch(first.id)
+    assert isinstance(live, Batch)
+    entries_before = harness.core.list_history()
 
     harness.core.update_settings(min_width=3840, min_height=2160)
 
-    assert len(harness.core.list_history()) == entries_before
+    assert harness.core.list_history() == entries_before, "the Decision log is append-only"
     assert harness.core.resolve_verdicts(["judged"])["judged"].verdict is Verdict.LIKE
-    following = harness.core.get_next_batch()
+    # The **Batch** already on screen keeps what it was built with, so the next one minted is where a
+    # prune shows. Submitting the live one is the only way past it (ADR 0002 — there is no skip).
+    following = harness.core.submit_batch(live.id)
     assert isinstance(following, Batch)
-    assert "judged" in {w.id for w in following.wallpapers}
+    assert [w.id for w in following.wallpapers] == ["huge"]
 
 
 def test_pruning_leaves_the_live_batch_alone(db_path: Path) -> None:
