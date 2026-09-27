@@ -27,6 +27,9 @@
         </p>
       {% endif %}
       {% if batch %}
+        {# Above the grid, because the switcher is about the **Batch** after this one and must not read
+           as a control that rearranges the tiles underneath it. #}
+        {% include "mix.html" %}
         {# One include, because the grid is also what a bulk mark swaps back in on its own. #}
         {% include "grid.html" %}
         {# The grid sits outside this form: the tiles post to /draft on their own, and submitting is the
