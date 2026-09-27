@@ -189,6 +189,12 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
 
     first = _live_batch_id(harness)
     harness.core.set_draft_verdict(first, loved, Verdict.FAVOURITE)
+    # The next **Batch** has to show the whole **Pool**, because the **Ban** below is on a **Wallpaper**
+    # the **Mix** would be unlikely to draw otherwise: the **Ignore** it picked up above makes it a
+    # **Dud**, and a **Dud** is five per cent of an **Explore** **Batch** (#10). Asking for as many as the
+    # **Pool** holds draws all of them whatever the **Mix** says, because a **Zone** that runs out is
+    # filled from the others. The test below arranges itself the same way, for its own reasons.
+    harness.core.update_settings(batch_size=POOL_SIZE)
     harness.core.submit_batch(first)
     assert _zones(harness)[swayed] is Zone.BANGER
 
