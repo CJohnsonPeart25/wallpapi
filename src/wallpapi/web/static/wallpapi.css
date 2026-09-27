@@ -1,0 +1,103 @@
+/*
+  The Batch page's own stylesheet. Vendored and served by the app, like htmx and the preview script.
+
+  Hover-to-enlarge is here rather than in JavaScript on purpose: it is a presentation rule, the browser
+  already knows when the pointer is over a tile, and a script version would have to re-attach itself after
+  every htmx swap.
+*/
+
+:root {
+  color-scheme: light dark;
+  --gap: 0.75rem;
+}
+
+body {
+  margin: 0;
+  font: 1rem/1.4 system-ui, sans-serif;
+}
+
+main {
+  padding: var(--gap);
+}
+
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: var(--gap);
+}
+
+.batch {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--gap);
+}
+
+.tile {
+  position: relative;
+  transition: transform 120ms ease;
+}
+
+.tile img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/*
+  The enlargement. `:focus-within` carries the same rule so tabbing through the controls enlarges the tile
+  too, and the raised stacking order is what keeps the enlarged tile above its neighbours instead of
+  sliding under the next row.
+*/
+.tile:hover,
+.tile:focus-within {
+  transform: scale(1.6);
+  z-index: 2;
+}
+
+.tile .verdicts,
+.tile .links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+}
+
+.tile .verdict.marked {
+  font-weight: 700;
+  outline: 2px solid currentColor;
+}
+
+#preview-dialog {
+  max-width: 100vw;
+  max-height: 100vh;
+  width: 100vw;
+  height: 100vh;
+  padding: 0;
+  border: 0;
+  background: #000;
+}
+
+#preview-dialog img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+#preview-close {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile {
+    transition: none;
+  }
+}

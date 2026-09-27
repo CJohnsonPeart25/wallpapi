@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wallpapi</title>
     {# Vendored, never a third-party script tag: this page renders the **Decision log**, and a personal
-       tool should not stop working because somebody else's host is unreachable. #}
+       tool should not stop working because somebody else's host is unreachable. The same goes for the
+       stylesheet and the preview script, which is a few dozen lines of vanilla JS and no build step. #}
+    <link rel="stylesheet" href="/static/wallpapi.css" />
     <script src="/static/htmx.min.js" defer></script>
+    <script src="/static/wallpapi.js" defer></script>
   </head>
   <body>
     <main>
@@ -23,12 +26,8 @@
         </p>
       {% endif %}
       {% if batch %}
-        <ul class="batch">
-          {% for wallpaper in batch.wallpapers %}
-            {% set draft = batch.drafts.get(wallpaper.id) %}
-            {% include "tile.html" %}
-          {% endfor %}
-        </ul>
+        {# One include, because the grid is also what a bulk mark swaps back in on its own. #}
+        {% include "grid.html" %}
         {# The grid sits outside this form: the tiles post to /draft on their own, and submitting is the
            one plain form post left. A refresh that resubmits is refused rather than silently absorbed. #}
         <form method="post" action="/submit">
@@ -49,5 +48,19 @@
         <p><a href="/">Try again</a></p>
       {% endif %}
     </main>
+    {#
+      The fullscreen preview. One dialog for the whole page rather than one per tile: only one
+      **Wallpaper** is ever being looked at, and 32 dialogs would be 32 copies of the same markup.
+
+      The image carries no `src` here on purpose. wallpapi.js sets it when the dialog opens and removes it
+      when it closes, so the full-resolution file is fetched from Wallhaven only when somebody asks to see
+      it — invariant 8 is about not hotlinking a **Batch**, not about never fetching anything.
+
+      Escape dismisses it natively; the close button and a click on the backdrop do the same.
+    #}
+    <dialog id="preview-dialog">
+      <img id="preview-image" alt="" />
+      <button type="button" id="preview-close" autofocus>close</button>
+    </dialog>
   </body>
 </html>

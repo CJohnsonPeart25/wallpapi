@@ -1,6 +1,7 @@
 {#
-  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, and its three **Explicit Verdict**
-  controls. Included by batch.html and rendered on its own as the htmx swap for a mark.
+  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, its three **Explicit Verdict**
+  controls, a fullscreen preview and a link to its Wallhaven page. Included by grid.html and rendered on
+  its own as the htmx swap for a mark.
 
   Each control posts the **Verdict** the tile should *end up* with rather than "flip this one", so a
   replayed or duplicated click lands on the same state (invariant 6). The control that is currently marked
@@ -8,6 +9,10 @@
 
   **Ignore** has no control. It is derived for everything unmarked at submit, and a button for it would be
   a second way to say what leaving a tile alone already says.
+
+  `data-full-url` is the full-resolution source the preview dialog loads when it opens. Deliberately not an
+  `<img src>`: invariant 8 forbids hotlinking a **Batch** of thumbnails, and what makes one
+  user-asked-for full-size image a different case is that nothing is fetched until it is asked for.
 #}
 <li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}">
   <img
@@ -29,7 +34,18 @@
         hx-target="closest .tile"
         hx-swap="outerHTML"
         hx-sync="this:replace"
+        hx-disabled-elt=".bulk-verdict"
       >{{ choice }}</button>
     {% endfor %}
+  </div>
+  <div class="links">
+    <button type="button" class="preview" data-full-url="{{ wallpaper.full_url }}">preview</button>
+    {# A new tab, so judging a **Batch** is not interrupted, and with no handle back and no referrer. #}
+    <a
+      class="source"
+      href="{{ wallpaper.page_url }}"
+      target="_blank"
+      rel="noopener noreferrer"
+    >wallhaven</a>
   </div>
 </li>
