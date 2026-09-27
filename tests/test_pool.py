@@ -37,12 +37,14 @@ def test_the_refill_searches_with_every_filter_and_the_fixed_masks(harness: Harn
     Asserted against the fake's recorded call rather than an outcome, which is normally an anti-pattern and
     is justified here for the reason #3's version was: the Wallhaven client is a pre-agreed injected seam,
     and "searched with these parameters" has no other observable. The minimum **Favourites** is absent on
-    purpose — Wallhaven has no parameter for it, so it is applied locally.
+    purpose — Wallhaven has no parameter for it, so it is applied locally. So is `q`: a random search asks
+    for nothing in particular, and the like: strategy (#13) is what fills it in.
     """
     assert harness.wallhaven.searches[0] == {
         "sorting": "random",
         "purity": "100",
         "categories": "111",
+        "query": None,
         "page": 1,
         "seed": None,
         "atleast": "2560x1440",

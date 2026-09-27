@@ -8,7 +8,7 @@ asserted.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +61,7 @@ def make_harness(
     fail_from_call: int | None = None,
     rate_limited_calls: int = 0,
     retry_after: float | None = None,
+    like_results: Mapping[str, Sequence[Wallpaper]] | None = None,
     fill_pool: int = 1,
 ) -> Harness:
     """Build a Core service over `db_path`, with the **Pool** already primed.
@@ -80,6 +81,7 @@ def make_harness(
         fail_from_call=fail_from_call,
         rate_limited_calls=rate_limited_calls,
         retry_after=retry_after,
+        like_results=like_results,
     )
     library = FakeLibraryWriter()
     similarity = FakeSimilarityProvider()

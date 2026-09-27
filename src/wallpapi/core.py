@@ -58,7 +58,31 @@ cheapest correct thing to do is to stop spending the budget for one whole window
 """
 
 POOL_SOURCE_RANDOM = "random"
-"""How a **Pool** member got there. #13 adds `'like'` when the refill starts searching for lookalikes."""
+POOL_SOURCE_LIKE = "like"
+"""How a **Pool** member got there: a random walk, or a like: search on a **Favourite** (#13)."""
+
+LIKE_QUERY_PREFIX = "like:"
+"""Wallhaven's own spelling for "wallpapers similar to this one", sent as the `q` of a search.
+
+It lives here rather than in `wallhaven.py` because *which* expression to send is the refill's decision;
+the client carries whatever `query` it is handed.
+"""
+
+LIKE_SORTING = "relevance"
+"""How a like: search is sorted, against `random` for the other strategy.
+
+The point of a like: search is the most similar **Wallpapers** first — the walk is capped at
+`LIKE_PAGES_PER_FAVOURITE` precisely because the tail is only weakly similar, and a random sort would mix
+that tail through the pages that are worth having. Wallhaven's default of `date_added` would do the same.
+"""
+
+LIKE_PAGES_PER_FAVOURITE = 3
+"""How far a like: walk goes before moving on to the next **Favourite**.
+
+Three pages is 72 **Wallpapers** at Wallhaven's listing size, which is more lookalikes than most
+**Wallpapers** have any real claim to. Paging to the end instead would spend an unbounded share of the
+budget on one **Favourite**'s weakly similar tail while the others waited their turn.
+"""
 
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 64
@@ -264,6 +288,21 @@ class BatchUnavailable:
     error_at: dt.datetime | None = None
 
 
+class RefillStrategy(StrEnum):
+    """Which search a refill step makes — and, because they are the same fact, the `source` it tags what
+    it admits to the **Pool** with.
+
+    Two strategies feeding two halves of the **Pool**: the random walk (#6) keeps the **Unknown** **Zone**
+    stocked with **Wallpapers** nobody has an opinion about, and the like: walk (#13) grows the **Banger**
+    **Zone** out of what the user has already **Favourited**. They take strict turns while both have work,
+    which is what keeps either from starving the other, and they share one step so that the
+    45-calls-per-minute budget covers both without a second limiter.
+    """
+
+    RANDOM = POOL_SOURCE_RANDOM
+    LIKE = POOL_SOURCE_LIKE
+
+
 @dataclass(frozen=True, slots=True)
 class RefillStatus:
     """What the background **Pool** refill is doing, for the indicator on the **Batch** page.
@@ -278,6 +317,13 @@ class RefillStatus:
     last_run_at: dt.datetime | None
     last_error: str | None
     last_error_at: dt.datetime | None
+    last_strategy: RefillStrategy | None
+    """Which of the two searches the last step made, or `None` before any has run.
+
+    On the indicator because "refill fetching" says nothing about *what*, and the two strategies answer
+    different questions about an unmoving **Pool**: a stalled like: rotation means there are no
+    **Favourites** yet, and that is a thing the user can fix.
+    """
 
     @property
     def at_target(self) -> bool:
@@ -367,6 +413,19 @@ class CoreService:
         """
         self._walk_seed: str | None = None
         self._walk_page = 1
+
+        # The like: walk, kept entirely apart from the random one. They interleave step by step, so a
+        # single seed and page shared between them would have each clobbering the other's place every
+        # other call — the random walk would restart for ever and the like: walk would page through
+        # somebody else's results.
+        self._like_subject: str | None = None
+        """The **Favourite** whose lookalikes are being walked, or `None` between walks."""
+        self._like_seed: str | None = None
+        self._like_page = 1
+        self._like_walked: set[str] = set()
+        """The **Favourites** already walked this cycle, so every one has a turn before any has a second."""
+        self._last_strategy: RefillStrategy | None = None
+
         self._retry_not_before: float | None = None
         self._refill_last_run: dt.datetime | None = None
         self._refill_last_error: str | None = None
@@ -631,7 +690,18 @@ class CoreService:
                 last_run_at=self._refill_last_run,
                 last_error=self._refill_last_error,
                 last_error_at=self._refill_last_error_at,
+                last_strategy=self._last_strategy,
             )
+
+    def pool_sources(self) -> dict[str, int]:
+        """How many **Pool** members each refill strategy put there, keyed by `source`.
+
+        A read of its own rather than a field on `RefillStatus`, for the reason `api_call_window` is one:
+        nothing on a page wants the breakdown, and the tests that pin which strategy admitted what need it
+        to come through the seam rather than out of storage (invariant 1).
+        """
+        rows = self._connect().execute("SELECT source, COUNT(*) AS members FROM pool GROUP BY source")
+        return {str(row["source"]): int(row["members"]) for row in rows.fetchall()}
 
     def api_call_window(self) -> list[float]:
         """The **API call** timestamps the limiter is currently counting, oldest first.
@@ -668,6 +738,12 @@ class CoreService:
         function call with a fake clock and no thread, no sleeping and no race. The thread (`refill.py`) is
         a loop around this and `refill_wait` and nothing else.
 
+        **Two strategies take strict turns.** A random walk stocks the **Unknown** **Zone** and a like:
+        search on a **Favourite** grows the **Banger** one (#13). Alternating step by step is what keeps
+        either from starving the other, and it keeps the combined refill inside the one limiter for
+        nothing: a step is one **API call** whichever strategy takes it. With no **Favourites** there is
+        nothing to alternate with and every step is random.
+
         Never raises, because the thread must not die (#15): a transport failure or a non-200 is recorded
         as the refill's last error, the walk keeps its place so the same page is retried, and the caller
         backs off. The **Pool** being empty because Wallhaven is down is a **Batch unavailable** page, not
@@ -676,17 +752,26 @@ class CoreService:
         settings = self.get_settings()
         self._mark_refill_run()
         if self._pool_size() >= settings.pool_target_size:
-            # At target: the walk is over. The next one starts from a fresh seed, because reusing a seed
-            # across walks returns the same **Wallpapers**.
+            # At target: the random walk is over. The next one starts from a fresh seed, because reusing a
+            # seed across walks returns the same **Wallpapers**.
             self._reset_walk()
             return
 
+        favourites = self._favourites()
         with self._refill_lock:
-            seed, page_number = self._walk_seed, self._walk_page
+            strategy = _alternated(self._last_strategy, has_favourites=bool(favourites))
+            self._last_strategy = strategy
+            if strategy is RefillStrategy.LIKE:
+                subject = self._take_up_a_like_walk(favourites)
+                seed, page_number = self._like_seed, self._like_page
+            else:
+                subject = None
+                seed, page_number = self._walk_seed, self._walk_page
             self._record_api_call(self._clock.monotonic())
         try:
             page = self._wallhaven.search(
-                sorting="random",
+                sorting="random" if subject is None else LIKE_SORTING,
+                query=None if subject is None else f"{LIKE_QUERY_PREFIX}{subject}",
                 purity=SFW_PURITY,
                 categories=ALL_CATEGORIES,
                 page=page_number,
@@ -706,8 +791,11 @@ class CoreService:
             self._record_refill_failure(failure, ERROR_BACKOFF_SECONDS)
             return
 
-        self._admit_to_pool(page.wallpapers, settings)
-        self._advance_walk(page)
+        self._admit_to_pool(page.wallpapers, settings, source=strategy)
+        if strategy is RefillStrategy.LIKE:
+            self._advance_like_walk(page)
+        else:
+            self._advance_walk(page)
         with self._refill_lock:
             self._retry_not_before = None
             self._refill_last_error = None
@@ -771,10 +859,72 @@ class CoreService:
             self._walk_page += 1
 
     def _reset_walk(self) -> None:
+        """Forget where the random walk had got to. The like: walk keeps its place deliberately.
+
+        Only the random walk has a reason to start over: its seed is what stops a walk repeating itself,
+        and a seed reused across walks returns the same **Wallpapers**. A like: walk has no such trap —
+        `like:<id>` answers the same way whenever it is asked — so dropping its place would only mean
+        re-fetching page one of a **Favourite** already half walked once the **Pool** falls below target.
+        """
         with self._refill_lock:
             self._walk_seed, self._walk_page = None, 1
 
-    def _admit_to_pool(self, wallpapers: Sequence[Wallpaper], settings: Settings) -> None:
+    def _favourites(self) -> list[str]:
+        """Every **Wallpaper** whose *resolved* **Verdict** is **Favourite**, in a fixed order.
+
+        Resolved rather than merely recorded, which is what makes a **Favourite** replaced by a **Like**
+        or a **Ban** — or **Cleared** at #7 — drop out of the like: rotation by itself. There is no list
+        of subjects kept anywhere to fall out of step with the **Decision log**.
+
+        Ordered, because the subject of the next walk is drawn by the seeded random source: over an
+        unordered query the same seed and the same **Favourites** could pick differently.
+        """
+        rows = self._connect().execute(_FAVOURITED_AT_LEAST_ONCE, (Verdict.FAVOURITE.value,)).fetchall()
+        candidates = [str(row["wallpaper_id"]) for row in rows]
+        resolved = self.resolve_verdicts(candidates)
+        return [c for c in candidates if resolved[c].verdict is Verdict.FAVOURITE]
+
+    def _take_up_a_like_walk(self, favourites: Sequence[str]) -> str:
+        """The **Favourite** whose lookalikes the next like: search asks for. Lock already held.
+
+        Carries on with the walk in progress while its subject is still a **Favourite**, and otherwise
+        starts one on a **Favourite** that has not had a turn this cycle. When all of them have, the cycle
+        restarts — which is the rule that stops a seeded draw spending every like: step on one
+        **Wallpaper** while the rest of the user's taste goes unasked about.
+        """
+        current = self._like_subject
+        if current is not None and current in favourites:
+            return current
+        # Either there is no walk in progress, or the one there was has stopped being a **Favourite**
+        # mid-way. Either way this is a fresh subject, from page one.
+        self._like_walked.intersection_update(favourites)
+        remaining = [f for f in favourites if f not in self._like_walked]
+        if not remaining:
+            self._like_walked.clear()
+            remaining = list(favourites)
+        chosen = self._random.sample(remaining, 1)[0]
+        self._like_subject, self._like_seed, self._like_page = chosen, None, 1
+        return chosen
+
+    def _advance_like_walk(self, page: SearchPage) -> None:
+        """Page on through one **Favourite**'s lookalikes, or hand the next **Favourite** its turn.
+
+        A like: result set is small and its tail is only weakly similar, so the walk ends at whichever
+        comes first: an empty page, or `LIKE_PAGES_PER_FAVOURITE`. The subject is then marked as having
+        had its turn and the next step picks another.
+        """
+        with self._refill_lock:
+            if page.wallpapers and self._like_page < LIKE_PAGES_PER_FAVOURITE:
+                self._like_seed = page.seed or self._like_seed
+                self._like_page += 1
+                return
+            if self._like_subject is not None:
+                self._like_walked.add(self._like_subject)
+            self._like_subject, self._like_seed, self._like_page = None, None, 1
+
+    def _admit_to_pool(
+        self, wallpapers: Sequence[Wallpaper], settings: Settings, *, source: RefillStrategy
+    ) -> None:
         """Put the **Wallpapers** that pass every **Filter** into the **Pool**.
 
         Checked locally against all of them and not only the minimum **Favourites**, which is the one
@@ -784,6 +934,10 @@ class CoreService:
         The `wallpapers` row is upserted and the `pool` row inserted separately, because **Pool**
         membership is its own table: a **Wallpaper** leaves the **Pool** while its **Decision log** entries
         go on referring to it for ever.
+
+        `source` is the strategy that found it. A **Wallpaper** the other strategy already put in the
+        **Pool** keeps the `source` and the `fetched_at` it arrived with — meeting it again is not a second
+        arrival — which is what `_ADMIT_TO_POOL`'s `DO NOTHING` is for.
         """
         passing = [w for w in _distinct(wallpapers) if _passes_filters(w, settings)]
         if not passing:
@@ -791,7 +945,7 @@ class CoreService:
         fetched_at = self._clock.now().isoformat()
         with self._write() as write:
             write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in passing])
-            write.executemany(_ADMIT_TO_POOL, [(w.id, fetched_at, POOL_SOURCE_RANDOM) for w in passing])
+            write.executemany(_ADMIT_TO_POOL, [(w.id, fetched_at, source.value) for w in passing])
 
     def _prune_pool(self, write: sqlite3.Connection, settings: Settings) -> None:
         """Drop every **Pool** member that no longer passes the **Filters**.
@@ -1100,6 +1254,19 @@ class CoreService:
         ]
 
 
+def _alternated(last: RefillStrategy | None, *, has_favourites: bool) -> RefillStrategy:
+    """Whichever strategy did not take the last step, while both have work to do.
+
+    Strict turns rather than a share of the budget or a schedule: with one **API call** per step, "take
+    turns" *is* an even split, and there is no second number for anyone to get wrong. Without a
+    **Favourite** there is no like: search to make, so every step is random — and because the last
+    strategy is still recorded, the first step after something is **Favourited** is the like: one.
+    """
+    if not has_favourites or last is RefillStrategy.LIKE:
+        return RefillStrategy.RANDOM
+    return RefillStrategy.RANDOM if last is None else RefillStrategy.LIKE
+
+
 def _validated_batch_size(value: int | str) -> int | SettingsRefused.Reason:
     """The batch size, or the reason it is not one.
 
@@ -1276,6 +1443,16 @@ having it in two places is how the two would come to disagree.
 
 Ordered so that what a reconciliation reports is in a fixed order rather than whatever the query planner
 felt like — nothing depends on the order of the work itself.
+"""
+
+_FAVOURITED_AT_LEAST_ONCE = """
+SELECT DISTINCT wallpaper_id FROM decision_log WHERE verdict = ? ORDER BY wallpaper_id
+"""
+"""Every **Wallpaper** that could possibly resolve to **Favourite**, and nothing else.
+
+A superset, not an answer: **Verdict resolution** decides which of them still count, and it lives in
+`resolve_verdicts` rather than being written a second time in SQL here — two spellings of one rule is how
+the two come to disagree. Same shape, and the same reasoning, as `_LIBRARY_CANDIDATES`.
 """
 
 _RECORD_LIBRARY_FILE = """
