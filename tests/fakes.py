@@ -27,6 +27,7 @@ def wallpaper(
     height: int = 2160,
     favourites: int = 100,
     category: str = "general",
+    colours: tuple[str, ...] = ("#660000", "#000000"),
 ) -> Wallpaper:
     """A Wallpaper shaped like one Wallhaven's search endpoint returns."""
     return Wallpaper(
@@ -37,7 +38,7 @@ def wallpaper(
         category=category,
         purity="sfw",
         favourites=favourites,
-        colours=("#660000", "#000000"),
+        colours=colours,
         thumbnail_url=f"https://th.wallhaven.cc/small/{wallhaven_id[:2]}/{wallhaven_id}.jpg",
         full_url=f"https://w.wallhaven.cc/full/{wallhaven_id[:2]}/wallhaven-{wallhaven_id}.jpg",
         page_url=f"https://wallhaven.cc/w/{wallhaven_id}",
@@ -205,18 +206,31 @@ class FakeLibraryWriter:
 
 
 class FakeSimilarityProvider:
-    """Hand-defined distances. Unused in #2 — Scoring and Zones arrive at #9."""
+    """Hand-defined similarities, keyed by `(pool wallpaper id, decided wallpaper id)`.
 
-    def __init__(self, distances: dict[tuple[str, str], float] | None = None) -> None:
-        self.distances = distances or {}
+    Takes whole **Wallpapers**, as the protocol does — the real provider reads their colours and category —
+    but keys on the IDs, so arranging a similarity in a test is still a pair of strings and a number.
+
+    A **Wallpaper** against itself is 1.0 unless a test says otherwise, because that is what the protocol
+    promises and because "a **Favourite** still in the **Pool** scores its own value at distance 0" should
+    not have to be arranged. Everything not named is 0.0: nothing in common.
+    """
+
+    def __init__(self, similarities: dict[tuple[str, str], float] | None = None) -> None:
+        self.similarity_by_pair = similarities or {}
         self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
 
-    def similarities(self, pool_ids: Sequence[str], decided_ids: Sequence[str]) -> NDArray[np.float32]:
-        self.calls.append((tuple(pool_ids), tuple(decided_ids)))
+    def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
+        self.calls.append((tuple(p.id for p in pool), tuple(d.id for d in decided)))
         return np.array(
-            [[self.distances.get((p, d), 0.0) for d in decided_ids] for p in pool_ids],
-            dtype=np.float32,
-        )
+            [[self._between(p.id, d.id) for d in decided] for p in pool], dtype=np.float32
+        ).reshape(len(pool), len(decided))
+
+    def _between(self, pool_id: str, decided_id: str) -> float:
+        named = self.similarity_by_pair.get((pool_id, decided_id))
+        if named is not None:
+            return named
+        return 1.0 if pool_id == decided_id else 0.0
 
 
 class FakeClock:

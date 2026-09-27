@@ -20,7 +20,7 @@ from wallpapi.clock import SystemClock
 from wallpapi.core import CoreService
 from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.rng import SeededRandom
-from wallpapi.similarity import UnbuiltSimilarityProvider
+from wallpapi.similarity import MetadataSimilarityProvider
 from wallpapi.wallhaven import WallhavenClient
 from wallpapi.web.app import create_app
 
@@ -47,7 +47,7 @@ def build_core(home: Path | None = None) -> CoreService:
         db_path=root / "wallpapi.db",
         wallhaven=WallhavenClient(),
         library=DownloadingLibraryWriter(),
-        similarity=UnbuiltSimilarityProvider(),
+        similarity=MetadataSimilarityProvider(),
         random_source=SeededRandom(int(pinned) if pinned else secrets.randbits(64)),
         clock=SystemClock(),
     )
