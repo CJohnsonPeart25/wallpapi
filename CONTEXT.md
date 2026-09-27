@@ -153,7 +153,7 @@ The slots a zone was allocated and cannot fill, because it holds fewer eligible 
 _Avoid_: deficit, underfill, fallback
 
 **Revisit weight**:
-The setting that reduces how often a wallpaper with an explicit verdict reappears in a batch.
+The setting that reduces how often a wallpaper with an explicit verdict reappears in a batch. A multiplier from 0 to 1 on that wallpaper's selection weight, read when a batch is minted: 1 is no reduction at all, and 0 puts it last in its zone, so it never comes round again while there is anything else to show. Ignores are not explicit verdicts and are untouched by it; a ban is an exclusion rather than a weight, and no setting can soften one.
 _Avoid_: cooldown, decay, penalty
 
 ### Output
@@ -177,7 +177,7 @@ _Avoid_: engine, manager, API, backend
 ### Configuration
 
 **Settings**:
-Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, and the active mix today; the revisit weight joins them later. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
+Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, the thumbnail cache limit, the revisit weight and the active mix. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
 _Avoid_: config, preferences, options
 
 **Batch size**:
