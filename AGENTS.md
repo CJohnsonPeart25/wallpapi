@@ -150,15 +150,35 @@ Each of these is one careless line away from being silently violated.
    so an over-eager eviction costs a request and a too-timid one costs disk. See
    `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`.
 
-9. **Store the absolute path of every Library file written.** The **Library** path is a setting that can
-   change; removing a **Favourite** must delete the file where it was actually written, not a path recomputed
-   from current settings. Deletion must only ever target a path wallpapi itself recorded — never an unguarded
-   `os.remove` on a derived path. Deletion must tolerate the file already being gone: the spec guarantees
-   "**Library** file deleted in Explorer, **Decision log** unchanged" is a reachable state.
+9. **Store the absolute path of every Library file written, and never touch a path outside the Library
+   folder.** The **Library** path is a setting that can change; removing a **Favourite** must delete the
+   file where it was actually written, not a path recomputed from current settings. Deletion must only ever
+   target a path wallpapi itself recorded — never an unguarded `os.remove` on a derived path. Deletion must
+   tolerate the file already being gone: the spec guarantees "**Library** file deleted in Explorer,
+   **Decision log** unchanged" is a reachable state.
+
+   Recorded is necessary and, since #14, not sufficient. **Every write and every deletion goes through
+   `core.confined_to_library`, and uses the path it returns.** It answers `None` unless the name matches
+   `LIBRARY_FILE_NAME` — a Wallhaven ID and one short lowercase extension, so a name can never be a
+   traversal — and the path, `Path.resolve(strict=False)`d, lies strictly inside the resolved **Library**
+   folder. Resolving is the whole point: a symlink or a Windows junction sitting in the folder is inside it
+   by every syntactic measure and outside it in fact. Compared through `os.path.normcase` and by path
+   component, never by string prefix — `Library2` is not inside `Library`. It **returns the resolved path**
+   because that is the path the caller must then use; checking one path and writing another (invariant 10's
+   temp file is a sibling of whatever it is handed) would leave the gap the guard exists to close.
+
+   A recorded path that fails the guard is **dropped from `library_files` and left on disk** — the setting
+   may have changed, or the row may be hand-edited, and neither is a licence to delete. The row goes so the
+   refusal happens once rather than on every submission. On the writer's side, only a **regular file** is
+   ever unlinked: a directory, junction or symlink is declined, which is the half of the guarantee only the
+   filesystem can answer. The **Library** is still never listed and never read back; `download_favourites`
+   asks the disk one question only — does *this recorded path* exist — and never deletes.
 
 10. **Library writes are atomic** — temp file plus `os.replace`. The temp file must be created **in the
     Library folder**, not in `%TEMP%`: `os.replace` is only atomic within one filesystem and raises across
-    drives on Windows.
+    drives on Windows. Both it and the `os.replace` are siblings of the destination they are given, so the
+    destination handed to the writer must already be the confined, resolved path from invariant 9 —
+    otherwise the atomic write lands somewhere the guard never looked at.
 
 11. **Rate limit.** Wallhaven's documented 45/min applies to **API calls** (`wallhaven.cc/api`); images come
     from separate hosts (`th.wallhaven.cc`, `w.wallhaven.cc`). Still throttle image fetches modestly — those
@@ -200,7 +220,7 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 
 | What | Lands in | Note |
 | --- | --- | --- |
-| Telling the user a **Library** write failed | #15 | `reconcile_library` collects failures rather than raising — a **Favourite** is recorded whether or not its download worked — and `submit_batch` currently discards the report. Because the **Library** is derived, the retry needs no UI; saying so does. |
+| Telling the user a **Library** write failed *at submission* | #15 | `reconcile_library` collects failures rather than raising — a **Favourite** is recorded whether or not its download worked — and `submit_batch` still discards the report. #14 gave the *asked-for* half a voice: `download_favourites` reports written, skipped and failed, and the settings page says all three. The submit path has no such surface yet. Because the **Library** is derived, the retry needs no UI; saying so does. |
 | Caching full-resolution images | never | #8's fullscreen preview loads `full_url` straight from Wallhaven on demand. The only full-resolution files wallpapi keeps are **Favourites** in the **Library** (#5). See `docs/adr/0003-the-preview-loads-full-resolution-from-wallhaven.md`. |
 | Restarting a refill thread that has died | later | #6 landed the thread, its clean shutdown and the indicator. There is no supervisor: `refill_step` never raises and `refill_wait` only reads locally, so the loop has nothing to die of short of SQLite being gone — and `refill_status().running` puts that on the page rather than hiding it. Build a supervisor when something is actually seen to kill it. |
 | Throttling thumbnail and full-resolution fetches | later | Invariant 11 asks for modest throttling of `th.wallhaven.cc` and `w.wallhaven.cc`, which are not the 45-per-minute hosts. Deliberately not built at #6: those fetches happen on a request thread, which has no `stop_event` to wait on cancellably (invariant 12), and the **Thumbnail cache** already means each tile is fetched once ever. It needs the fetches to move off the request path first. |
