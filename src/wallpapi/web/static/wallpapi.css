@@ -220,7 +220,9 @@ body:has(#batch-grid) .refill {
   portrait, the edges of an ultrawide — and a verdict given on a cropped wallpaper is a verdict on
   something else. Black bars cost nothing but screen.
 
-  16:9 because that is what most of Wallhaven is, so the common case is the one with no bars at all.
+  The box's shape is the **Allowed ratios** setting, rendered onto the grid as `--tile-ratio`: with one
+  allowed ratio, which is to say one screen, a thumbnail fills its box exactly and there are no bars at
+  all. 16:9 is only the fallback.
 */
 .tile img {
   display: block;
@@ -229,7 +231,7 @@ body:has(#batch-grid) .refill {
      presentational hints: without this, the hint sets a 2160px height and the aspect ratio below never
      gets a say. */
   height: auto;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: var(--tile-ratio, 16 / 9);
   object-fit: contain;
   border-radius: var(--radius);
   background: #15151a; /* the letterbox: darker than the page, so the bars read as frame, not as tile */

@@ -7,7 +7,7 @@ smoke test inject the fake Wallhaven client.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -57,6 +57,37 @@ class _DownloadCounts:
     written: int
     skipped: int
     failed: int
+
+
+FALLBACK_TILE_RATIO = "16 / 9"
+"""The shape of a tile when the **Allowed ratios** setting cannot name one. Wallhaven's commonest."""
+
+
+def tile_ratio(allowed_ratios: Sequence[str]) -> str:
+    """The aspect ratio of a tile's box, in CSS's spelling, from the **Allowed ratios** setting.
+
+    A thumbnail is fitted inside its box whole rather than cropped to fill it, so the box's shape decides
+    how much of each tile is letterbox. With one **Allowed ratio** — the usual case, because most people
+    have one screen — the box is that shape exactly and no tile has a bar on it at all.
+
+    With several, **the tallest wins**. A box at least as tall as every wallpaper it has to hold is one
+    where every wallpaper is limited by the column width rather than by the box, which is to say: as
+    large as the grid can draw it. A wider box would letterbox some of them down the sides, and a tile
+    that could have been bigger is a worse trade than a bar of background nobody is judging.
+
+    An unparseable setting falls back rather than raising: the ratio vocabulary is validated where it is
+    stored, and a **Batch** page is not the place to discover otherwise.
+    """
+    tallest: tuple[float, str] | None = None
+    for ratio in allowed_ratios:
+        width, _, height = ratio.partition("x")
+        try:
+            shape = int(width) / int(height)
+        except ValueError, ZeroDivisionError:
+            continue
+        if tallest is None or shape < tallest[0]:
+            tallest = (shape, f"{int(width)} / {int(height)}")
+    return tallest[1] if tallest else FALLBACK_TILE_RATIO
 
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -272,6 +303,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         context: dict[str, object] = {
             "status": core.refill_status(),
             "similarity_notice": core.similarity_notice(),
+            "tile_ratio": tile_ratio(core.get_settings().allowed_ratios),
             **_mix_context(core),
         }
         if isinstance(result, Batch):
@@ -380,7 +412,12 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         live = core.get_next_batch()
         if not isinstance(live, Batch):
             return render(request, live)
-        return templates.TemplateResponse(request, "grid.html", {"batch": live})
+        # The tile ratio comes with it: this swaps the whole grid, and the grid is what carries it.
+        return templates.TemplateResponse(
+            request,
+            "grid.html",
+            {"batch": live, "tile_ratio": tile_ratio(core.get_settings().allowed_ratios)},
+        )
 
     def render_history_row(request: Request, wallpaper_id: str) -> HTMLResponse:
         """The one row an edit or a **Clearance** changed, swapped back into the listing.

@@ -18,8 +18,22 @@
 (function () {
   "use strict";
 
-  var ASPECT = 16 / 9; // must match the aspect-ratio on .tile img in wallpapi.css
+  var FALLBACK_ASPECT = 16 / 9; // only for a grid with no --tile-ratio on it at all
   var BOTTOM_MARGIN = 24; // a little air under the last row, rather than flush to the viewport edge
+
+  /*
+    The shape of a tile, read off the grid rather than repeated here.
+
+    The template renders it from the **Allowed ratios** setting as `--tile-ratio: 16 / 9`, and the
+    stylesheet uses the same property, so the number the column count is worked out from is the number
+    the browser will actually lay the tiles out with. A copy of it in this file would be a copy to keep
+    in step with a setting.
+  */
+  function aspectOf(grid) {
+    var declared = window.getComputedStyle(grid).getPropertyValue("--tile-ratio").split("/");
+    var shape = parseFloat(declared[0]) / parseFloat(declared[1] || "1");
+    return shape > 0 ? shape : FALLBACK_ASPECT;
+  }
 
   /* ---------- sizing the grid ---------- */
 
@@ -36,12 +50,12 @@
     whole now, so a taller box only adds letterbox — the wallpaper is as big as the column width lets
     it be, and nothing below that line changes it.
   */
-  function layouts(tiles, width, height, gap) {
+  function layouts(tiles, width, height, gap, aspect) {
     var fits = [];
     for (var columns = 1; columns <= tiles; columns++) {
       var rows = Math.ceil(tiles / columns);
       var tileWidth = (width - gap * (columns - 1)) / columns;
-      if (rows * (tileWidth / ASPECT) + gap * (rows - 1) <= height) {
+      if (rows * (tileWidth / aspect) + gap * (rows - 1) <= height) {
         fits.push({ columns: columns, rows: rows, width: tileWidth, empty: columns * rows - tiles });
       }
     }
@@ -66,7 +80,7 @@
       (parseFloat(styles.paddingBottom) || 0) -
       BOTTOM_MARGIN;
 
-    var fits = layouts(tiles, width, height, gap);
+    var fits = layouts(tiles, width, height, gap, aspectOf(grid));
     // Nothing fits — a big batch in a short window. One tile per column and let the page scroll, which
     // is the honest answer rather than tiles too small to judge.
     var layout = fits.length ? fits[0] : { columns: tiles, rows: 1, empty: 0, width: width / tiles };
