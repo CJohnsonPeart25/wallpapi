@@ -1,4 +1,4 @@
-# 3. Settings are a typed view over key-value rows, validated in the Core service
+# 4. Settings are a typed view over key-value rows, validated in the Core service
 
 Date: 2026-09-27
 

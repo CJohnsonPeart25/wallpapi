@@ -17,7 +17,7 @@ import uvicorn
 
 from wallpapi.clock import SystemClock
 from wallpapi.core import CoreService
-from wallpapi.library import UnbuiltLibraryWriter
+from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import UnbuiltSimilarityProvider
 from wallpapi.wallhaven import WallhavenClient
@@ -45,7 +45,7 @@ def build_core(home: Path | None = None) -> CoreService:
     return CoreService(
         db_path=root / "wallpapi.db",
         wallhaven=WallhavenClient(),
-        library=UnbuiltLibraryWriter(),
+        library=DownloadingLibraryWriter(),
         similarity=UnbuiltSimilarityProvider(),
         random_source=SeededRandom(int(pinned) if pinned else secrets.randbits(64)),
         clock=SystemClock(),
