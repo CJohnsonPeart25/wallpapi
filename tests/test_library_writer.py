@@ -118,6 +118,9 @@ def test_deleting_a_library_file_in_explorer_changes_nothing(tmp_path: Path) -> 
         clock=FakeClock(FIXED_NOW),
     )
     core.update_settings(batch_size=1, library_path=library_path)
+    # A **Batch** is drawn from the **Pool** (#6), so the **Pool** has to have something in it. One refill
+    # step is one page, which is the fake's whole catalogue here.
+    core.refill_step()
     batch = core.get_next_batch()
     assert isinstance(batch, Batch)
     shown = batch.wallpapers[0].id

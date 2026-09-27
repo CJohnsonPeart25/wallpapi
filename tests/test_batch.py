@@ -73,44 +73,18 @@ def test_batch_timestamp_comes_from_the_clock_as_utc(harness: Harness) -> None:
     assert dt.datetime.fromisoformat(batch.created_at.isoformat()) == expected
 
 
-def test_wallhaven_is_searched_with_random_sorting_and_sfw_purity(harness: Harness) -> None:
-    """Acceptance criterion: the Batch comes from a Wallhaven random, SFW search.
-
-    This asserts against the fake's recorded call rather than an outcome, which is normally an
-    anti-pattern. It is justified here because the Wallhaven client is a pre-agreed injected seam rather
-    than an internal collaborator, and "random, SFW" has no other observable. Filters — atleast, ratios,
-    minimum favourites — are #6 and must not appear yet.
-
-    The first call of a walk carries no seed: it is the call that asks Wallhaven for one. Later pages
-    carrying it back is test_the_walk_carries_the_seed_wallhaven_returned.
-    """
-    harness.core.get_next_batch()
-
-    assert harness.wallhaven.searches == [
-        {
-            "sorting": "random",
-            "purity": "100",
-            "categories": None,
-            "page": 1,
-            "seed": None,
-            "atleast": None,
-            "ratios": None,
-        }
-    ]
-
-
-def test_batch_is_unavailable_when_wallhaven_returns_nothing(db_path: Path) -> None:
+def test_batch_is_unavailable_when_the_pool_holds_nothing(db_path: Path) -> None:
     """Returning a result beats raising, so the UI has one branch rather than an exception path.
 
-    Unreachable at #2 in practice — a live random search always returns something — but the branch and its
-    test exist from day one so that #6 adds a reason code instead of a new control path.
+    The branch existed from #2, which is what let #6 add reason codes rather than a new control path. The
+    reasons themselves, and the error a failed refill carries with them, are `test_refill.py`.
     """
     harness = make_harness(db_path, catalogue=())
 
     result = harness.core.get_next_batch()
 
     assert isinstance(result, BatchUnavailable)
-    assert result.reason
+    assert result.reason is BatchUnavailable.Reason.POOL_EMPTY
 
 
 def test_asking_again_returns_the_live_batch_rather_than_minting_another(harness: Harness) -> None:
@@ -119,6 +93,8 @@ def test_asking_again_returns_the_live_batch_rather_than_minting_another(harness
     A **Batch** is only worth storing once it can be decided on, and a refresh is not a decision. Minting
     one per page load leaves a **Batch** and its rows behind for ever, and silently swaps out the
     **Wallpapers** the user was looking at. There is at most one unsubmitted **Batch** at a time.
+
+    The one recorded search is the harness priming the **Pool**. Neither page load adds to it.
     """
     first = harness.core.get_next_batch()
     second = harness.core.get_next_batch()
