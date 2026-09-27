@@ -7,6 +7,10 @@
 
   A plain line and not a poll: the numbers move slowly, the page is reloaded often, and htmx polling this
   would be a request a second for something nobody is watching.
+
+  The last run says which of the two strategies made it (#13), because "fetching" says nothing about what:
+  a pool that only ever grows at random is a pool with no favourites in the decision log yet, and that is
+  something the person reading this line can do something about.
 #}
 <p class="refill" data-pool-size="{{ status.pool_size }}">
   Pool {{ status.pool_size }} of {{ status.target_size }}.
@@ -23,6 +27,8 @@
       {{ status.last_error }}.
     </span>
   {% elif status.last_run_at %}
-    Last run {{ status.last_run_at.strftime("%H:%M") }} UTC.
+    Last run {{ status.last_run_at.strftime("%H:%M") }} UTC{%
+      if status.last_strategy == "like" %}, searching for lookalikes of a favourite{%
+      elif status.last_strategy %}, searching at random{% endif %}.
   {% endif %}
 </p>
