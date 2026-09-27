@@ -27,7 +27,13 @@ class LibraryWriter(Protocol):
         ...
 
     def remove(self, path: Path) -> None:
-        """Delete a path wallpapi itself recorded. Tolerates the file already being gone."""
+        """Delete a path wallpapi itself recorded, if it is a regular file.
+
+        Tolerates the file already being gone, and declines anything that is not a plain file — a
+        directory, a junction or a symlink is not something wallpapi wrote, whatever a row says (#14).
+        The Core service has already confined the path to the **Library** folder; this is the half of the
+        guarantee that only the filesystem can answer.
+        """
         ...
 
 
@@ -62,11 +68,19 @@ class DownloadingLibraryWriter:
         return destination
 
     def remove(self, path: Path) -> None:
-        """Delete a recorded path, tolerating the file already being gone.
+        """Delete a recorded path if it is a regular file, tolerating it already being gone.
 
-        `missing_ok` rather than an existence check: "**Library** file deleted in Explorer" is a state the
-        spec guarantees is reachable, and checking first would still race with the user's file manager.
+        Only regular files (#14). `is_symlink` first and on its own, because `is_file` follows the link
+        and would answer for whatever is on the far end of it; a Windows junction is not a symlink to
+        Python but is a directory, so `is_file` is what turns that one away. Neither is something wallpapi
+        wrote, and unlinking one would be deleting a name the user made for something of their own.
+
+        `missing_ok` as well as the check, not instead of it: "**Library** file deleted in Explorer" is a
+        state the spec guarantees is reachable, and the stat above still races with the user's file
+        manager however carefully it is written.
         """
+        if path.is_symlink() or not path.is_file():
+            return
         path.unlink(missing_ok=True)
 
     def close(self) -> None:
