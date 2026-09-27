@@ -125,7 +125,7 @@ _Avoid_: new, unseen, undecided
 ### Building a batch
 
 **Mix**:
-The zone percentages used to build a batch. Three whole numbers summing to a hundred, under a name. Stored rather than written into the code, so they can be edited and added to.
+The zone percentages used to build a batch. Three whole numbers summing to a hundred, under a name. Stored rather than written into the code, so they can be edited and added to. A mix is identified by its name: saving one under a name that already exists edits that mix, and saving it under a new name makes another.
 _Avoid_: ratio, blend, profile, strategy
 
 **Active mix**:
@@ -133,11 +133,11 @@ The mix the next batch will be built from. A setting, read when a batch is minte
 _Avoid_: current mix, selected mix, mode
 
 **Explore**:
-The default mix for casting a wide net — mostly unknowns.
+The default mix for casting a wide net — mostly unknowns. Its percentages can be edited; it cannot be deleted.
 _Avoid_: discovery mode, wide mode
 
 **Refine**:
-The default mix for narrowing down — mostly bangers.
+The default mix for narrowing down — mostly bangers. Editable and, like explore, permanent.
 _Avoid_: focus mode, exploit mode
 
 **Allocation**:
