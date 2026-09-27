@@ -86,7 +86,17 @@ def test_wallhaven_is_searched_with_random_sorting_and_sfw_purity(harness: Harne
     """
     harness.core.get_next_batch()
 
-    assert harness.wallhaven.searches == [{"sorting": "random", "purity": "100", "page": 1, "seed": None}]
+    assert harness.wallhaven.searches == [
+        {
+            "sorting": "random",
+            "purity": "100",
+            "categories": None,
+            "page": 1,
+            "seed": None,
+            "atleast": None,
+            "ratios": None,
+        }
+    ]
 
 
 def test_batch_is_unavailable_when_wallhaven_returns_nothing(db_path: Path) -> None:

@@ -83,7 +83,8 @@ def test_the_walk_carries_the_seed_wallhaven_returned(db_path: Path) -> None:
 
     walk = harness.wallhaven.searches[1:]
     assert walk[0]["seed"] is None
-    assert walk[1] == {"sorting": "random", "purity": "100", "page": 2, "seed": "seed-1"}
+    assert walk[1]["page"] == 2
+    assert walk[1]["seed"] == "seed-1"
 
 
 def test_the_walk_stops_at_four_api_calls_and_ships_the_smaller_batch(db_path: Path) -> None:
