@@ -7,6 +7,7 @@ Storage lives here too: SQLite is an in-process detail of the Core service, not 
 from __future__ import annotations
 
 import datetime as dt
+import math
 import sqlite3
 import threading
 from collections import deque
@@ -21,13 +22,14 @@ from uuid import uuid4
 from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
-from wallpapi.model import DecisionEntry, Verdict, Wallpaper
+from wallpapi.model import DecisionEntry, Verdict, Wallpaper, Zone
 from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
 from wallpapi.rng import SeededRandom
+from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off.
@@ -136,6 +138,27 @@ DEFAULT_MIN_FAVOURITES = 10
 """Enough to skip the long tail nobody has ever looked at, low enough not to collapse the **Pool** to a few
 hundred famous images. Applied locally — Wallhaven's search has no parameter for it."""
 
+DEFAULT_SIMILARITY_RADIUS = 0.5
+"""How far a decided **Wallpaper**'s influence reaches, as a distance in `[0, 1]`.
+
+A starting point, not a tuned number — nothing has been measured against a real **Decision log** yet, and
+that is exactly why it is a setting. Half the range says "**Wallpapers** more different than alike tell you
+nothing about each other", which is the shape of the rule; the number itself is a guess to be corrected on
+the settings page.
+"""
+
+DEFAULT_SIMILARITY_DECAY = 4.0
+"""How fast that influence fades with distance, as the rate in `exp(-decay * distance)`.
+
+Also a starting point. Four means a **Wallpaper** at the default radius of 0.5 carries `exp(-2)`, about an
+eighth of the value it would at distance 0 — a clear falling-off without a cliff. Zero would make every
+**Wallpaper** inside the radius count equally, which is the degenerate case the setting deliberately allows.
+"""
+
+MAX_SIMILARITY_DECAY = 50.0
+"""The largest decay worth accepting. `exp(-50 * d)` is already under `1e-21` at a hundredth of the range,
+so anything above it is a **Pool** of **Unknowns** with nothing on the page to explain why."""
+
 WALLHAVEN_RATIOS = frozenset(
     {"16x9", "16x10", "21x9", "32x9", "48x9", "9x16", "10x16", "9x18", "1x1", "3x2", "4x3", "5x4"}
 )
@@ -162,6 +185,8 @@ _MIN_WIDTH = "min_width"
 _MIN_HEIGHT = "min_height"
 _ALLOWED_RATIOS = "allowed_ratios"
 _MIN_FAVOURITES = "min_favourites"
+_SIMILARITY_RADIUS = "similarity_radius"
+_SIMILARITY_DECAY = "similarity_decay"
 """The `settings` keys. One row per key, with `Settings` as the typed view over them."""
 
 
@@ -189,6 +214,8 @@ def _defaults() -> dict[str, str]:
         _MIN_HEIGHT: str(DEFAULT_MIN_HEIGHT),
         _ALLOWED_RATIOS: ",".join(DEFAULT_ALLOWED_RATIOS),
         _MIN_FAVOURITES: str(DEFAULT_MIN_FAVOURITES),
+        _SIMILARITY_RADIUS: str(DEFAULT_SIMILARITY_RADIUS),
+        _SIMILARITY_DECAY: str(DEFAULT_SIMILARITY_DECAY),
     }
 
 
@@ -208,6 +235,8 @@ class Settings:
     min_height: int
     allowed_ratios: tuple[str, ...]
     min_favourites: int
+    similarity_radius: float
+    similarity_decay: float
 
     @property
     def atleast(self) -> str:
@@ -238,6 +267,8 @@ class SettingsRefused:
         MIN_HEIGHT_INVALID = "min_height_invalid"
         ALLOWED_RATIOS_INVALID = "allowed_ratios_invalid"
         MIN_FAVOURITES_INVALID = "min_favourites_invalid"
+        SIMILARITY_RADIUS_INVALID = "similarity_radius_invalid"
+        SIMILARITY_DECAY_INVALID = "similarity_decay_invalid"
         """One reason per **Filter** field rather than the two the batch size has.
 
         The batch size separates "not a number" from "out of range" because the advice differs: one says
@@ -256,6 +287,11 @@ class Batch:
     `drafts` carries the **Draft Batch** alongside the **Wallpapers**, keyed by **Wallpaper** ID and holding
     only the ones actually marked — absence is an **Ignore**, so there is nothing to store for the rest. It
     is what the page renders its controls from, so a load after a partial draft shows the marks already set.
+
+    `zones` is the same shape: the **Zone** each **Wallpaper** was drawn from, as it was at mint time.
+    Absence means "this **Batch** was minted before **Zones** existed" and the tile renders without a label
+    — not a **Zone** of its own, and never recomputed here, because what the tile says is what the draw
+    actually used rather than what the **Decision log** says now.
     """
 
     id: str
@@ -263,6 +299,7 @@ class Batch:
     created_at: dt.datetime
     wallpapers: tuple[Wallpaper, ...]
     drafts: Mapping[str, Verdict]
+    zones: Mapping[str, Zone]
 
 
 @dataclass(frozen=True)
@@ -342,6 +379,19 @@ class ResolvedVerdict:
 
     verdict: Verdict | None
     value: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScoredWallpaper:
+    """One **Pool** **Wallpaper**, its **Score** and the **Zone** that **Score** puts it in.
+
+    Derived on every call and never stored (invariant 2). A **Banned** **Wallpaper** is never one of these:
+    it is in no **Zone**, so there is no value of `zone` that could describe it.
+    """
+
+    wallpaper: Wallpaper
+    score: float
+    zone: Zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +538,9 @@ class CoreService:
             if applied < 5:
                 for statement, parameters in _migration_5():
                     write.execute(statement, parameters)
+            if applied < 6:
+                for statement, parameters in _migration_6():
+                    write.execute(statement, parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -528,6 +581,13 @@ class CoreService:
             min_favourites=or_default(
                 _validated_min_favourites(stored_or_seeded(_MIN_FAVOURITES)), DEFAULT_MIN_FAVOURITES
             ),
+            similarity_radius=or_default(
+                _validated_similarity_radius(stored_or_seeded(_SIMILARITY_RADIUS)),
+                DEFAULT_SIMILARITY_RADIUS,
+            ),
+            similarity_decay=or_default(
+                _validated_similarity_decay(stored_or_seeded(_SIMILARITY_DECAY)), DEFAULT_SIMILARITY_DECAY
+            ),
         )
 
     def update_settings(
@@ -540,6 +600,8 @@ class CoreService:
         min_height: int | str | None = None,
         allowed_ratios: Sequence[str] | str | None = None,
         min_favourites: int | str | None = None,
+        similarity_radius: float | str | None = None,
+        similarity_decay: float | str | None = None,
     ) -> Settings | SettingsRefused:
         """Validate and persist the settings named, in one write transaction.
 
@@ -597,6 +659,16 @@ class CoreService:
             if isinstance(validated_favourites, SettingsRefused.Reason):
                 return SettingsRefused(reason=validated_favourites)
             changes.append((_MIN_FAVOURITES, str(validated_favourites)))
+        if similarity_radius is not None:
+            validated_radius = _validated_similarity_radius(similarity_radius)
+            if isinstance(validated_radius, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_radius)
+            changes.append((_SIMILARITY_RADIUS, str(validated_radius)))
+        if similarity_decay is not None:
+            validated_decay = _validated_similarity_decay(similarity_decay)
+            if isinstance(validated_decay, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_decay)
+            changes.append((_SIMILARITY_DECAY, str(validated_decay)))
 
         with self._write() as write:
             write.executemany(_UPSERT_SETTING, changes)
@@ -619,9 +691,14 @@ class CoreService:
         no network call on the page load path left to fail — and it is why the four-call walk this method
         used to do is gone rather than dormant. See ADR 0005.
 
-        A uniform random sample of the **Pool**, minus anything whose resolved **Verdict** is **Ban**.
-        **Wallpapers** with other **Verdicts** may reappear; the revisit weight at #11 is what tunes how
-        often, and **Zones** and **Mixes** at #9 and #10 replace the uniform draw entirely.
+        The **Pool** is classified once — **Score** and **Zone** for every member that is not **Banned** —
+        and the **Batch** is drawn from that. The draw itself is still a uniform random sample: **Allocation**
+        by **Mix** is #10, which replaces `_choose` and nothing else. **Wallpapers** with a **Verdict** may
+        reappear; the revisit weight at #11 is what tunes how often.
+
+        Each chosen **Wallpaper**'s **Zone** is recorded against the **Batch** row in the same transaction
+        as the **Batch** itself, so the tile shows the **Zone** it was actually drawn from rather than one
+        recomputed from a **Decision log** that has moved on since.
 
         The batch size is read when a **Batch** is minted and not afterwards, so changing it applies to the
         next **Batch** rather than rebuilding the one on screen and discarding its **Draft Batch**.
@@ -631,18 +708,18 @@ class CoreService:
             return live
 
         size = self.get_settings().batch_size
-        candidates = self._without_bans(self._pool_wallpapers())
-        if not candidates:
+        classified = self.classify_pool()
+        if not classified:
             return self._nothing_to_show()
 
-        chosen = self._random.sample(candidates, min(size, len(candidates)))
+        chosen = self._choose(classified, size)
         created_at = self._clock.now()
         batch_id = uuid4().hex
 
         with self._write() as write:
             # Re-read under the write lock (ADR 0002): two tabs opened at once must not each mint a
-            # **Batch**. Cheaper than it was — the sampling above is local reads rather than a network
-            # call — but the race it closes is the same one.
+            # **Batch**. Cheaper than it was — the classification above is local reads and arithmetic
+            # rather than a network call — but the race it closes is the same one.
             contended = _load_live_batch(write)
             if contended is not None:
                 return contended
@@ -651,8 +728,11 @@ class CoreService:
                 (batch_id, created_at.isoformat(), len(chosen)),
             )
             write.executemany(
-                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position) VALUES (?, ?, ?)",
-                [(batch_id, w.id, position) for position, w in enumerate(chosen)],
+                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone) VALUES (?, ?, ?, ?)",
+                [
+                    (batch_id, scored.wallpaper.id, position, scored.zone.value)
+                    for position, scored in enumerate(chosen)
+                ],
             )
 
         # A freshly minted **Batch** has nothing marked on it yet.
@@ -660,8 +740,67 @@ class CoreService:
             id=batch_id,
             size=len(chosen),
             created_at=created_at,
-            wallpapers=tuple(chosen),
+            wallpapers=tuple(scored.wallpaper for scored in chosen),
             drafts={},
+            zones={scored.wallpaper.id: scored.zone for scored in chosen},
+        )
+
+    def _choose(self, classified: Sequence[ScoredWallpaper], size: int) -> list[ScoredWallpaper]:
+        """Which of the classified **Pool** a **Batch** shows.
+
+        A uniform random sample, deliberately ignoring the **Zones** it was handed. **Allocation** by
+        **Mix** — so many **Bangers**, so many **Unknowns** — is #10, and this is the one method it has to
+        replace: the classification above it and the write transaction below it are already the shape it
+        needs, and neither has to change.
+        """
+        return self._random.sample(classified, min(size, len(classified)))
+
+    # -- scoring and zones -----------------------------------------------------------------------------
+
+    def classify_pool(self) -> tuple[ScoredWallpaper, ...]:
+        """Every **Pool** **Wallpaper** that is not **Banned**, with its **Score** and its **Zone**.
+
+        One call for the whole **Pool**, never one per **Wallpaper**: that is what invariant 2's matrix
+        interface is for, and it is why `resolve_verdicts` is plural. Recomputed from the **Decision log**
+        every time and cached nowhere, so an edit to the log — a **Batch** submitted, a **Verdict** changed
+        at #7 — changes the next classification with nothing to invalidate and no restart.
+
+        The decided set is every **Wallpaper** the **Decision log** mentions whose resolved value is
+        non-zero, whether or not it is still in the **Pool**: a **Favourite** that a **Filter** change
+        pruned still says something about what the user likes. **Ignores** are in it — they are mild
+        negatives, and they spread like anything else. A **Wallpaper** whose **Ignores** were wiped out by
+        a later **Explicit Verdict**, or whose resolution came to zero, is not: it would contribute a
+        weighted nothing to every **Score** and only widen the matrix.
+
+        **Banned** **Wallpapers** are excluded from the rows, because a **Banned** **Wallpaper** is in no
+        **Zone**. They stay in the *columns*, though — a **Ban** spreads like any other **Verdict**, and
+        that is the whole point of banning something.
+        """
+        pool = self._pool_wallpapers()
+        if not pool:
+            return ()
+        judged = [_wallpaper_from_row(row) for row in self._connect().execute(_SELECT_DECIDED_WALLPAPERS)]
+        # One call over the **Pool** and the decided set together — `resolve_verdicts` is plural for
+        # exactly this, and two calls would be two scans of the **Decision log** for one answer.
+        resolved = self.resolve_verdicts([w.id for w in pool] + [w.id for w in judged])
+
+        candidates = [w for w in pool if resolved[w.id].verdict is not Verdict.BAN]
+        decided = [w for w in judged if resolved[w.id].value != 0]
+        if not candidates:
+            return ()
+
+        settings = self.get_settings()
+        classification = classify(
+            self._similarity.similarities(candidates, decided),
+            [resolved[w.id].value for w in decided],
+            radius=settings.similarity_radius,
+            decay=settings.similarity_decay,
+        )
+        return tuple(
+            ScoredWallpaper(wallpaper=wallpaper, score=float(score), zone=zone)
+            for wallpaper, score, zone in zip(
+                candidates, classification.scores, classification.zones, strict=True
+            )
         )
 
     def _nothing_to_show(self) -> BatchUnavailable:
@@ -977,15 +1116,6 @@ class CoreService:
         """Every **Wallpaper** in the **Pool**, ordered so a seeded random source draws the same sample."""
         rows = self._connect().execute(_SELECT_POOL_WALLPAPERS).fetchall()
         return [_wallpaper_from_row(row) for row in rows]
-
-    def _without_bans(self, wallpapers: Sequence[Wallpaper]) -> list[Wallpaper]:
-        """Drop the **Wallpapers** whose resolved **Verdict** is **Ban**.
-
-        Resolved rather than merely recorded: a **Ban** that a later **Explicit Verdict** replaces is no
-        longer a **Ban**, which is what #7 makes reachable when a past **Verdict** can be changed.
-        """
-        resolved = self.resolve_verdicts([w.id for w in wallpapers])
-        return [w for w in wallpapers if resolved[w.id].verdict is not Verdict.BAN]
 
     def _live_batch(self) -> Batch | None:
         """The unsubmitted **Batch**, if there is one."""
@@ -1385,6 +1515,46 @@ def _validated_min_favourites(value: int | str) -> int | SettingsRefused.Reason:
     return favourites
 
 
+def _decimal_number(value: object) -> float | None:
+    """The value as a finite decimal number, or `None` if it is not one.
+
+    `float` here where every other setting is an `int`, because a radius and a decay are genuinely
+    fractional — 0.5 and 4.0 are the defaults, and rounding either to a whole number would make half the
+    usable range unreachable. Infinities and NaN are refused: `float("nan")` parses, and a NaN radius would
+    silently make every comparison against it false and every **Wallpaper** an **Unknown**.
+    """
+    try:
+        number = float(str(value).strip())
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _validated_similarity_radius(value: float | str) -> float | SettingsRefused.Reason:
+    """The similarity radius, or the reason it is not one.
+
+    Bounded to `[0, 1]` because it is compared against `1 - similarity`, and a similarity is in `[0, 1]`:
+    above 1 nothing is ever outside the radius, so the setting would silently stop doing anything. Zero is
+    accepted and means "only a **Wallpaper** identical to this one counts".
+    """
+    number = _decimal_number(value)
+    if number is None or not 0.0 <= number <= 1.0:
+        return SettingsRefused.Reason.SIMILARITY_RADIUS_INVALID
+    return number
+
+
+def _validated_similarity_decay(value: float | str) -> float | SettingsRefused.Reason:
+    """The similarity decay, or the reason it is not one.
+
+    Non-negative: a negative decay would make distant **Wallpapers** count for *more* than near ones, which
+    is not a setting, it is the rule inverted. Capped at `MAX_SIMILARITY_DECAY`.
+    """
+    number = _decimal_number(value)
+    if number is None or not 0.0 <= number <= MAX_SIMILARITY_DECAY:
+        return SettingsRefused.Reason.SIMILARITY_DECAY_INVALID
+    return number
+
+
 def _validated_allowed_ratios(value: Sequence[str] | str) -> tuple[str, ...] | SettingsRefused.Reason:
     """The allowed ratios, or the reason they are not.
 
@@ -1525,6 +1695,9 @@ def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
         created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
         wallpapers=tuple(_wallpaper_from_row(row) for row in rows),
         drafts=_load_drafts(connection, str(batch["id"])),
+        # Only the rows that have one. A **Batch** minted before migration 6 has NULL here, and the tile
+        # renders without a label rather than being given a **Zone** nobody classified it into.
+        zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
     )
 
 
@@ -1607,8 +1780,25 @@ Ordered because the sample is drawn by the seeded random source: without an `ORD
 is an implementation detail and the same seed over the same **Pool** could produce a different **Batch**.
 """
 
-_SELECT_BATCH_WALLPAPERS = """
+_SELECT_DECIDED_WALLPAPERS = """
 SELECT w.*
+FROM wallpapers AS w
+WHERE w.id IN (SELECT wallpaper_id FROM decision_log)
+ORDER BY w.id
+"""
+"""Every **Wallpaper** the **Decision log** mentions, whether or not it is still in the **Pool**.
+
+The whole row and not just the ID, because the **Similarity provider** is handed **Wallpapers**: it reads
+their colours and their category, and a provider that had to fetch them itself would be a second seam into
+storage. Ordered so that the matrix's columns — and so every **Score** — are the same from one call to the
+next, which is what makes a classification reproducible.
+
+Resolution is not expressed here. Which of these actually count is `resolve_verdicts`' answer, and having
+the rule in two places is how the two would come to disagree.
+"""
+
+_SELECT_BATCH_WALLPAPERS = """
+SELECT w.*, bw.zone AS zone
 FROM batch_wallpapers AS bw
 JOIN wallpapers AS w ON w.id = bw.wallpaper_id
 WHERE bw.batch_id = ?
@@ -1766,8 +1956,10 @@ CREATE TABLE pool (
 """
 """**Pool** membership as its own table, never a column on `wallpapers`.
 
-A **Wallpaper** leaves the **Pool** — pruned by a **Filter** change, and evicted by the **Zones** work at
-#9 — while the **Decision log** goes on referring to its `wallpapers` row for ever. A `in_pool` column
+A **Wallpaper** leaves the **Pool** — pruned by a **Filter** change — while the **Decision log** goes on
+referring to its `wallpapers` row for ever. (#9 turned out to evict nothing: a **Dud** keeps its place and
+is simply not drawn, because a **Score** is derived and the next **Verdict** can make it a **Banger**
+again.) An `in_pool` column
 would make "is it in the **Pool**" and "does this row exist" the same question, and there would be nowhere
 to put `fetched_at` or `source` without widening a table that is about the image itself.
 
@@ -1785,3 +1977,23 @@ def _migration_5() -> tuple[tuple[str, tuple[str, ...]], ...]:
     A step of its own rather than an edit to 3: that one is already applied to live databases.
     """
     return ((_CREATE_POOL, ()), *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()))
+
+
+def _migration_6() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Migration 6: the **Zone** a **Batch** showed each **Wallpaper** from, and the two similarity
+    settings.
+
+    `zone` is nullable, and deliberately so. **Scores** are never stored (invariant 2) — this column is not
+    a **Score** and not a cache of one, it is the record of which **Zone** the **Wallpaper** was drawn from
+    at mint time, which is a fact about the **Batch** rather than about the **Wallpaper**. A **Batch**
+    minted before this migration has no such fact, so its rows are NULL and its tiles render without a
+    label rather than claiming a **Zone** nobody classified them into.
+
+    Paired with parameters like migrations 3 and 5, because the seeds come from `_defaults()` and are
+    inserted as text rather than interpolated into SQL. `DO NOTHING` again: this also runs on databases
+    that already hold settings chosen by hand.
+    """
+    return (
+        ("ALTER TABLE batch_wallpapers ADD COLUMN zone TEXT", ()),
+        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
+    )

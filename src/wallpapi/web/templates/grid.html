@@ -40,6 +40,7 @@
   <ul class="batch">
     {% for wallpaper in batch.wallpapers %}
       {% set draft = batch.drafts.get(wallpaper.id) %}
+      {% set zone = batch.zones.get(wallpaper.id) %}
       {% include "tile.html" %}
     {% endfor %}
   </ul>

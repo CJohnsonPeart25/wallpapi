@@ -13,6 +13,10 @@
   `data-full-url` is the full-resolution source the preview dialog loads when it opens. Deliberately not an
   `<img src>`: invariant 8 forbids hotlinking a **Batch** of thumbnails, and what makes one
   user-asked-for full-size image a different case is that nothing is fetched until it is asked for.
+
+  `zone` is the **Zone** the **Wallpaper** was drawn from, recorded against the **Batch** when it was
+  minted. It is absent on a **Batch** minted before **Zones** existed, and the label is then simply not
+  rendered — the tile says nothing rather than claiming a **Zone** nobody classified it into.
 #}
 <li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}">
   <img
@@ -22,6 +26,9 @@
     width="{{ wallpaper.width }}"
     height="{{ wallpaper.height }}"
   />
+  {% if zone %}
+    <span class="zone" data-zone="{{ zone }}">{{ zone }}</span>
+  {% endif %}
   <div class="verdicts">
     {% for choice in ["favourite", "like", "ban"] %}
       <button
