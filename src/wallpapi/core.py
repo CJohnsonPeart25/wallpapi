@@ -7,7 +7,6 @@ Storage lives here too: SQLite is an in-process detail of the Core service, not 
 from __future__ import annotations
 
 import datetime as dt
-import os
 import sqlite3
 import threading
 from collections.abc import Generator, Mapping, Sequence
@@ -19,13 +18,14 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from wallpapi.clock import Clock
+from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
 from wallpapi.model import DecisionEntry, Verdict, Wallpaper
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import Wallhaven
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off."""
@@ -144,6 +144,20 @@ class ResolvedVerdict:
     value: int
 
 
+@dataclass(frozen=True, slots=True)
+class LibraryReconciliation:
+    """What one pass at making the **Library** agree with the **Decision log** did, by **Wallpaper** ID.
+
+    A result rather than nothing, because the pass runs after the **Decision log** has already committed
+    and so cannot raise (see `CoreService.reconcile_library`). `failed` is the only way a caller — or a
+    test — can tell "there was nothing to do" from "it was tried and it did not work".
+    """
+
+    written: tuple[str, ...]
+    removed: tuple[str, ...]
+    failed: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class SubmissionRefused:
     """The submission did not happen, and this is why. Never a silent no-op — two tabs is a real case."""
@@ -230,6 +244,9 @@ class CoreService:
             if applied < 3:
                 for statement, parameters in _migration_3():
                     write.execute(statement, parameters)
+            if applied < 4:
+                for statement in _MIGRATION_4:
+                    write.execute(statement)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -505,7 +522,83 @@ class CoreService:
             write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
             write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at, batch_id))
 
+        # Outside the transaction above, deliberately. Downloading a **Favourite** is a network call and no
+        # network call belongs inside a write transaction; and a **Favourite** is a fact about taste, not
+        # about a download succeeding, so nothing the **Library** does may roll the **Decision log** back.
+        # The reconciliation is idempotent, so a failure here is picked up by the next submission.
+        self.reconcile_library()
         return self.get_next_batch()
+
+    # -- library ---------------------------------------------------------------------------------------
+
+    def reconcile_library(self) -> LibraryReconciliation:
+        """Make the **Library** folder agree with the **Decision log**, and report what that took.
+
+        Derived, not a side effect of a click. Every **Wallpaper** whose resolved **Verdict** is
+        **Favourite** and which has no recorded **Library** file gets one; every recorded file whose
+        **Wallpaper** is no longer a **Favourite** — replaced by a **Like** or a **Ban** now, **Cleared**
+        at #7 — is deleted. Nothing else is touched.
+
+        That makes this idempotent, which is the whole point. Calling it twice writes once. A download that
+        fails is not bookkept as failed and retried later; it is simply still a **Favourite** with no file,
+        so the next call picks it up. And because the condition is read from the **Decision log** rather
+        than from a queue, there is no state that can drift out of step with it.
+
+        Failures are collected rather than raised. This runs at the tail of `submit_batch`, after the
+        **Decision log** transaction has committed: a raise here would turn a recorded **Batch** into an
+        error page, and the **Verdicts** would be right while the user was told they were not. They are
+        reported instead, so a caller that wants to say something can, and so a test can see the
+        difference between "nothing to do" and "tried and failed".
+
+        The **Library** is never read back, so a file deleted in Explorer is not noticed and not replaced.
+        """
+        library_path = self.get_settings().library_path
+        rows = self._connect().execute(_LIBRARY_CANDIDATES, (Verdict.FAVOURITE.value,)).fetchall()
+        resolved = self.resolve_verdicts([str(row["wallpaper_id"]) for row in rows])
+
+        written: list[str] = []
+        removed: list[str] = []
+        failed: list[str] = []
+        for row in rows:
+            wallpaper_id = str(row["wallpaper_id"])
+            recorded = None if row["path"] is None else Path(str(row["path"]))
+            wanted = resolved[wallpaper_id].verdict is Verdict.FAVOURITE
+            try:
+                if wanted and recorded is None:
+                    self._add_to_library(wallpaper_id, str(row["full_url"]), library_path)
+                    written.append(wallpaper_id)
+                elif not wanted and recorded is not None:
+                    self._drop_from_library(wallpaper_id, recorded)
+                    removed.append(wallpaper_id)
+            except Exception:
+                # The writer is across a seam that declares no error type, so there is nothing narrower to
+                # catch: a download can fail with anything httpx2 raises and a write with anything the
+                # filesystem does. Leaving the row as it was is what makes the next call retry.
+                failed.append(wallpaper_id)
+        return LibraryReconciliation(written=tuple(written), removed=tuple(removed), failed=tuple(failed))
+
+    def _add_to_library(self, wallpaper_id: str, source_url: str, library_path: Path) -> None:
+        """Download one **Favourite** and record where it landed.
+
+        The destination is computed from the **Library** setting as it is *now*, and the path recorded is
+        the one the writer returned rather than the one it was handed — the writer is what knows where the
+        bytes actually went.
+        """
+        destination = library_path / f"{wallpaper_id}{_url_suffix(source_url)}"
+        written = self._library.write(wallpaper_id, source_url, destination)
+        with self._write() as write:
+            write.execute(_RECORD_LIBRARY_FILE, (wallpaper_id, str(written), self._clock.now().isoformat()))
+
+    def _drop_from_library(self, wallpaper_id: str, recorded: Path) -> None:
+        """Delete a recorded **Library** file and forget it.
+
+        `recorded` comes from the row, never from the current **Library** setting (invariant 9): the path
+        is where the file was actually written, and the setting may have changed since. The row goes only
+        once the writer has returned, so a failed deletion is retried rather than forgotten about.
+        """
+        self._library.remove(recorded)
+        with self._write() as write:
+            write.execute("DELETE FROM library_files WHERE wallpaper_id = ?", (wallpaper_id,))
 
     # -- thumbnails ------------------------------------------------------------------------------------
 
@@ -535,8 +628,7 @@ class CoreService:
             return destination
 
         data = self._wallhaven.fetch_thumbnail(source_url)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomically(destination, data)
+        write_atomically(destination, data)
         return destination
 
     # -- verdict resolution ----------------------------------------------------------------------------
@@ -627,6 +719,38 @@ INSERT INTO settings (key, value) VALUES (?, ?)
 ON CONFLICT (key) DO UPDATE SET value = excluded.value
 """
 
+_LIBRARY_CANDIDATES = """
+SELECT w.id AS wallpaper_id, w.full_url AS full_url, f.path AS path
+FROM wallpapers AS w
+LEFT JOIN library_files AS f ON f.wallpaper_id = w.id
+WHERE f.wallpaper_id IS NOT NULL
+   OR w.id IN (SELECT wallpaper_id FROM decision_log WHERE verdict = ?)
+ORDER BY w.id
+"""
+"""Everything a reconciliation could possibly have to do something about, and nothing else.
+
+Two halves, because the work has two directions. A **Wallpaper** can only *resolve* to **Favourite** if it
+was **Favourited** at least once, so the **Decision log** half is a superset of what might need writing —
+**Verdict resolution** then decides which of them still count. The `library_files` half is everything that
+might need deleting. Resolution is not expressed in SQL here: the rule lives in `resolve_verdicts` and
+having it in two places is how the two would come to disagree.
+
+Ordered so that what a reconciliation reports is in a fixed order rather than whatever the query planner
+felt like — nothing depends on the order of the work itself.
+"""
+
+_RECORD_LIBRARY_FILE = """
+INSERT INTO library_files (wallpaper_id, path, written_at) VALUES (?, ?, ?)
+ON CONFLICT (wallpaper_id) DO UPDATE SET path = excluded.path, written_at = excluded.written_at
+"""
+"""An upsert rather than an insert.
+
+A write only happens when there is no row — the removal that precedes a re-**Favourite** deletes it — so
+the conflict branch is unreachable as things stand. It is here because the alternative to reaching it is an
+`IntegrityError` that would be counted as a failed write and retried for ever, and because the row's job is
+to say where the file is: the last write wins is the only answer that can be right.
+"""
+
 _ABSENT = ResolvedVerdict(verdict=None, value=0)
 """A **Wallpaper** with no **Decision log** entries at all."""
 
@@ -715,20 +839,6 @@ def _wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
 def _url_suffix(url: str, *, default: str = ".jpg") -> str:
     """The file extension of a URL's path, ignoring any query string."""
     return PurePosixPath(urlsplit(url).path).suffix or default
-
-
-def _write_atomically(destination: Path, data: bytes) -> None:
-    """Write via a temp file in the same directory, then `os.replace`.
-
-    The temp file must be a sibling: `os.replace` is only atomic within one filesystem and raises across
-    drives on Windows. A half-written file must never be servable.
-    """
-    temporary = destination.with_name(f"{destination.name}.{uuid4().hex}.part")
-    try:
-        temporary.write_bytes(data)
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _distinct(wallpapers: Sequence[Wallpaper]) -> list[Wallpaper]:
@@ -870,6 +980,28 @@ CREATE TABLE draft_batch (
 
 Keyed `(batch_id, wallpaper_id)`, which enforces one **Verdict** per **Wallpaper** per submission for free.
 A separate step rather than an edit to migration 1: that one is already applied to live databases.
+"""
+
+
+_MIGRATION_4 = (
+    """
+CREATE TABLE library_files (
+    wallpaper_id TEXT PRIMARY KEY REFERENCES wallpapers (id),
+    path         TEXT NOT NULL,
+    written_at   TEXT NOT NULL
+)
+""",
+)
+"""Migration 4, the absolute path of every **Library** file written — the deferred decision #4 left here.
+
+Keyed by **Wallpaper**, because the **Library** holds at most one file per **Favourite**. `path` is the
+absolute path the writer actually returned, not one derived from the **Library** setting, because that
+setting can change and the file does not move with it (invariant 9). `written_at` is display and diagnosis
+only; nothing resolves against it, and like every timestamp here it is an ISO 8601 UTC string from the
+injected clock (invariant 5).
+
+A row is the one record that a file exists. There is no reading of the folder to check: the **Library** is
+write-only, and a file deleted in Explorer is deliberately invisible to wallpapi.
 """
 
 

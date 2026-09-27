@@ -1,14 +1,22 @@
-"""The **Library** writer seam.
+"""The **Library** writer seam, and the writer behind it.
 
-The **Library** is write-only: **Favourites** go in, nothing is ever read back. Nothing at #2 writes to it —
-**Ignores** download nothing — so only the seam is defined here. The atomic write (invariant 10) and the
-recorded absolute path (invariant 9) arrive with the writer itself at #5.
+The **Library** is write-only: **Favourites** go in, nothing is ever read back. That is what makes deleting
+a file in Explorer a state wallpapi cannot and should not notice, and it is why the writer has no "does this
+exist" method — the Core service answers that from the path it recorded (invariant 9), never from the disk.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Protocol
+
+import httpx2
+
+from wallpapi.files import write_atomically
+
+REQUEST_TIMEOUT = 10.0
+"""Seconds, matching the Wallhaven client's. Must stay below the shutdown join timeout, so shutdown cannot
+hang mid-download (invariant 12)."""
 
 
 class LibraryWriter(Protocol):
@@ -23,16 +31,43 @@ class LibraryWriter(Protocol):
         ...
 
 
-class UnbuiltLibraryWriter:
-    """Stands in until the real writer arrives at #5.
+class DownloadingLibraryWriter:
+    """The real writer: full-resolution bytes from `w.wallhaven.cc` onto the disk, atomically.
 
-    Unreachable at #2: **Favourites** need a **Draft Batch**, which is #3, so every submitted **Batch** is
-    all **Ignores**. It raises rather than quietly doing nothing, because a **Favourite** that silently
-    fails to download is worse than a crash.
+    Not an **API call** (invariant 11). Full-resolution images come from `w.wallhaven.cc`, a separate host
+    from `wallhaven.cc/api`, so these must not be counted against the documented 45-per-minute limit. They
+    do want throttling of their own, which belongs with the **Pool** refill at #6; here a **Favourite** is
+    one download and the **Library** is only written when the **Decision log** says it is out of date, so
+    the rate is a handful per **Batch** at worst.
+
+    Streamed to disk rather than held in memory: a 5120x2880 wallpaper is megabytes, and there is nothing
+    to do with the bytes but write them.
     """
 
+    def __init__(self, client: httpx2.Client | None = None) -> None:
+        self._client = httpx2.Client(timeout=REQUEST_TIMEOUT) if client is None else client
+
     def write(self, wallpaper_id: str, source_url: str, destination: Path) -> Path:
-        raise NotImplementedError("the Library writer arrives at #5")
+        """Download to `destination`, creating the **Library** folder if this is its first file.
+
+        `wallpaper_id` is not used here. It stays in the protocol because it is what the Core service keys
+        the recorded path by, and because a fake — or a later writer that names its files differently —
+        needs it. The path returned is what gets recorded, so such a writer would still be deleted from
+        correctly.
+        """
+        del wallpaper_id
+        with self._client.stream("GET", source_url) as response:
+            response.raise_for_status()
+            write_atomically(destination, response.iter_bytes())
+        return destination
 
     def remove(self, path: Path) -> None:
-        raise NotImplementedError("the Library writer arrives at #5")
+        """Delete a recorded path, tolerating the file already being gone.
+
+        `missing_ok` rather than an existence check: "**Library** file deleted in Explorer" is a state the
+        spec guarantees is reachable, and checking first would still race with the user's file manager.
+        """
+        path.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        self._client.close()
