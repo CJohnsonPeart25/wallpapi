@@ -15,8 +15,20 @@ The wallpapers fetched and stored locally that passed the filters and are eligib
 _Avoid_: cache, candidates, queue
 
 **Filters**:
-The hard rules a wallpaper must satisfy before it enters the pool: minimum resolution, allowed ratios, SFW only, and minimum Wallhaven favourites. Distinct from scoring — filters exclude outright, scores only rank.
+The hard rules a wallpaper must satisfy before it enters the pool: minimum resolution, allowed ratios, SFW only, and minimum Wallhaven favourites. Distinct from scoring — filters exclude outright, scores only rank. Checked locally on the way in, whether or not the search already asked for them.
 _Avoid_: criteria, constraints, preferences
+
+**Refill**:
+The background work that keeps the pool stocked: random Wallhaven searches, filtered, at up to 45 API calls a minute while the pool is below its target size. A thread, started with the app and stopped with it, and the only thing in wallpapi that searches Wallhaven.
+_Avoid_: fetcher, crawler, scraper, sync
+
+**Pool target size**:
+How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. A setting.
+_Avoid_: quota, capacity, limit, threshold
+
+**Walk**:
+One continuous sweep of random search pages, carrying the seed Wallhaven returned so the pages do not repeat each other. A walk ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed.
+_Avoid_: crawl, scan, sweep, pass
 
 **Batch**:
 The n wallpapers shown at once. A pair is simply a batch of 2.
@@ -137,7 +149,7 @@ _Avoid_: engine, manager, API, backend
 ### Configuration
 
 **Settings**:
-Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size and the library path today; filters, mixes, the pool target size, the revisit weight and the similarity radius and decay join them later.
+Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters and the pool target size today; mixes, the revisit weight and the similarity radius and decay join them later.
 _Avoid_: config, preferences, options
 
 **Batch size**:

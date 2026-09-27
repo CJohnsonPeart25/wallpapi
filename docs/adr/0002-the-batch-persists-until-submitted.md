@@ -59,6 +59,18 @@ Consequences that follow and are not optional:
   **Wallpapers** a background thread has already topped up, and the page load path costs zero **API
   calls** — at which point the walk is deleted rather than unpicked.
 
+  **Amended again at issue #6, and the walk is gone.** **Batch** building samples the **Pool**, and
+  `get_next_batch` makes no **API call** at all. `_gather_candidates`, `MAX_SEARCHES_PER_BATCH` and the
+  mid-walk rescue were deleted rather than left dormant behind the **Pool**, along with their tests. The
+  four-call cap went with them: it bounded how long a page load could block, and a page load no longer
+  blocks on anything but SQLite.
+
+  The original consequence is stronger than ever rather than merely intact. A **Batch** minted costs zero
+  **API calls**, and the whole 45-per-minute budget belongs to the background refill. **Bans** that leave a
+  **Batch** short no longer send anybody anywhere: the **Pool** holds thousands of candidates, so a **Ban**
+  simply removes one of them from the draw, and only a **Pool** with nothing drawable left in it is a
+  **Batch unavailable**. See `docs/adr/0005-the-pool-and-its-refill.md`.
+
 ## Consequences
 
 Closing a tab and coming back resumes where you were rather than throwing the **Batch** away, which is the
