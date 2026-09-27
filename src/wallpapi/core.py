@@ -30,7 +30,7 @@ from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off.
@@ -160,6 +160,18 @@ MAX_SIMILARITY_DECAY = 50.0
 """The largest decay worth accepting. `exp(-50 * d)` is already under `1e-21` at a hundredth of the range,
 so anything above it is a **Pool** of **Unknowns** with nothing on the page to explain why."""
 
+DEFAULT_REVISIT_WEIGHT = 0.2
+"""How much of its selection weight a **Wallpaper** with an **Explicit Verdict** keeps.
+
+A multiplier in `[0, 1]`: `1` is no reduction at all, and `0` puts a decided **Wallpaper** last in its
+**Zone**, so it never comes round again while there is anything else to show. A fifth by default, because
+"markedly rarer, not gone" is what the spec asks for — a **Wallpaper** you **Liked** is still worth seeing
+occasionally, and its **Score** can have moved since. **Ignores** are not an **Explicit Verdict** and are
+untouched by this.
+
+A starting point rather than a tuned number, like the similarity settings, which is why it is a setting.
+"""
+
 DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
 """The **Thumbnail cache**'s size cap, as a backstop behind verdict-aware eviction (invariant 8).
 
@@ -252,6 +264,7 @@ _MIN_FAVOURITES = "min_favourites"
 _SIMILARITY_RADIUS = "similarity_radius"
 _SIMILARITY_DECAY = "similarity_decay"
 _THUMBNAIL_CACHE_MAX_MB = "thumbnail_cache_max_mb"
+_REVISIT_WEIGHT = "revisit_weight"
 _ACTIVE_MIX = "active_mix"
 """The `settings` keys. One row per key, with `Settings` as the typed view over them."""
 
@@ -283,6 +296,7 @@ def _defaults() -> dict[str, str]:
         _SIMILARITY_RADIUS: str(DEFAULT_SIMILARITY_RADIUS),
         _SIMILARITY_DECAY: str(DEFAULT_SIMILARITY_DECAY),
         _THUMBNAIL_CACHE_MAX_MB: str(DEFAULT_THUMBNAIL_CACHE_MAX_MB),
+        _REVISIT_WEIGHT: str(DEFAULT_REVISIT_WEIGHT),
         _ACTIVE_MIX: DEFAULT_ACTIVE_MIX,
     }
 
@@ -306,6 +320,13 @@ class Settings:
     similarity_radius: float
     similarity_decay: float
     thumbnail_cache_max_mb: int
+    revisit_weight: float
+    """How much of its draw weight a **Wallpaper** with an **Explicit Verdict** keeps, in `[0, 1]`.
+
+    Read when a **Batch** is minted, like the batch size and the active **Mix**, so changing it applies to
+    the next **Batch** rather than the one on screen.
+    """
+
     active_mix: str
     """Which **Mix** the *next* **Batch** is built from, by name.
 
@@ -358,6 +379,11 @@ class SettingsRefused:
 
         THUMBNAIL_CACHE_MAX_MB_INVALID = "thumbnail_cache_max_mb_invalid"
         """The **Thumbnail cache** cap, on the same one-reason-per-field rule as the **Filters**."""
+
+        REVISIT_WEIGHT_INVALID = "revisit_weight_invalid"
+        """The **Revisit weight** is not a number in `[0, 1]`. One reason, again: both ways of getting it
+        wrong have the same one-sentence answer."""
+
         ACTIVE_MIX_UNKNOWN = "active_mix_unknown"
         """No stored **Mix** goes by that name. Refused rather than stored and ignored: a switcher that
         accepted anything would leave the **Batch** page naming a **Mix** the draw has never heard of."""
@@ -755,6 +781,9 @@ class CoreService:
             if applied < 7:
                 for statement, mix_parameters in _migration_7():
                     write.execute(statement, mix_parameters)
+            if applied < 8:
+                for statement, parameters in _migration_8():
+                    write.execute(statement, parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -806,6 +835,9 @@ class CoreService:
                 _validated_thumbnail_cache_max_mb(stored_or_seeded(_THUMBNAIL_CACHE_MAX_MB)),
                 DEFAULT_THUMBNAIL_CACHE_MAX_MB,
             ),
+            revisit_weight=or_default(
+                _validated_revisit_weight(stored_or_seeded(_REVISIT_WEIGHT)), DEFAULT_REVISIT_WEIGHT
+            ),
             # Not checked against the `mixes` table here, on purpose: this view never refuses and never
             # queries a second table. A name whose **Mix** has been deleted survives as far as
             # `active_mix()`, which is where it falls back — and falling back there rather than here means
@@ -826,6 +858,7 @@ class CoreService:
         similarity_radius: float | str | None = None,
         similarity_decay: float | str | None = None,
         thumbnail_cache_max_mb: int | str | None = None,
+        revisit_weight: float | str | None = None,
         active_mix: str | None = None,
     ) -> Settings | SettingsRefused:
         """Validate and persist the settings named, in one write transaction.
@@ -899,6 +932,11 @@ class CoreService:
             if isinstance(validated_cap, SettingsRefused.Reason):
                 return SettingsRefused(reason=validated_cap)
             changes.append((_THUMBNAIL_CACHE_MAX_MB, str(validated_cap)))
+        if revisit_weight is not None:
+            validated_weight = _validated_revisit_weight(revisit_weight)
+            if isinstance(validated_weight, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_weight)
+            changes.append((_REVISIT_WEIGHT, str(validated_weight)))
         if active_mix is not None:
             # The one setting whose validity is a question about another table rather than about the value
             # itself, so it is checked here rather than in a `_validated_*` function of its own. Checked
@@ -1025,7 +1063,7 @@ class CoreService:
 
         The **Pool** is classified once — **Score** and **Zone** for every member that is not **Banned** —
         and the **Batch** is drawn from that by the active **Mix** (`_choose`). **Wallpapers** with a
-        **Verdict** may reappear; the revisit weight at #11 is what tunes how often.
+        **Verdict** may reappear; the **Revisit weight** is what tunes how often.
 
         Each chosen **Wallpaper**'s **Zone** is recorded against the **Batch** row in the same transaction
         as the **Batch** itself, so the tile shows the **Zone** it was actually drawn from rather than one
@@ -1107,7 +1145,8 @@ class CoreService:
         user never asked to see.
         """
         slots = allocate(self.active_mix(), size, self._random)
-        orders = {zone: self._draw_order(zone, classified) for zone in ZONE_ORDER}
+        weights = self._revisit_weights(classified)
+        orders = {zone: self._draw_order(zone, classified, weights) for zone in ZONE_ORDER}
         taken = dict.fromkeys(ZONE_ORDER, 0)
         chosen: list[ScoredWallpaper] = []
 
@@ -1127,39 +1166,60 @@ class CoreService:
             shortfall -= take(zone, shortfall)
         return self._random.sample(chosen, len(chosen))
 
-    def _draw_order(self, zone: Zone, classified: Sequence[ScoredWallpaper]) -> list[ScoredWallpaper]:
+    def _draw_order(
+        self, zone: Zone, classified: Sequence[ScoredWallpaper], weights: Mapping[str, float]
+    ) -> list[ScoredWallpaper]:
         """The order one **Zone** gives its **Wallpapers** up in, best first.
 
         An order rather than a sample, so that "take `k`" and "take `k` more because another **Zone** fell
         short" are the same operation and no **Wallpaper** can come out twice.
 
-        **Bangers** are sorted by **Score**, highest first, over an already randomly ordered list — which
-        is how ties are broken by the random source rather than by whatever order the **Pool** query
-        returned, while staying reproducible under the seed. `sort` is stable, so the random order is what
-        survives inside a run of equal **Scores**. **Unknown** and **Dud** keep the random order they were
-        given: there is no "best" **Unknown**, and preferring the least negative **Dud** would be ranking
-        by a number the user is not being shown.
+        **Bangers** are sorted by **Score** *times* the **Revisit weight**, highest first, over an already
+        randomly ordered list — which is how ties are broken by the random source rather than by whatever
+        order the **Pool** query returned, while staying reproducible under the seed. `sort` is stable, so
+        the random order is what survives inside a run of equal rankings. **Unknown** and **Dud** keep the
+        random order they were given: there is no "best" **Unknown**, and preferring the least negative
+        **Dud** would be ranking by a number the user is not being shown.
+
+        **The weight has to reach the Banger ranking, and multiplying the Score is how (#11).** A
+        **Banger**'s place is a ranking rather than a draw, so a weight that only tilted the random order
+        would do nothing here at all — and a **Banger** is exactly where a **Wallpaper** the user has
+        already judged would otherwise sit at the top of every **Batch** for ever. Every **Banger**'s
+        **Score** is positive by definition, so multiplying by a factor in `[0, 1]` is a demotion that
+        cannot reorder two **Wallpapers** carrying the same weight and puts a weight of nothing behind
+        every one of them. "Highest **Score** first" survives as the rule among comparable **Wallpapers**,
+        which is every comparison the user could have an opinion about.
         """
         members = [scored for scored in classified if scored.zone is zone]
-        ordered = weighted_order(members, [self._revisit_weight(scored) for scored in members], self._random)
+        ordered = weighted_order(members, [weights[scored.wallpaper.id] for scored in members], self._random)
         if zone is Zone.BANGER:
-            ordered.sort(key=lambda scored: scored.score, reverse=True)
+            ordered.sort(key=lambda scored: scored.score * weights[scored.wallpaper.id], reverse=True)
         return ordered
 
-    def _revisit_weight(self, scored: ScoredWallpaper) -> float:
-        """How strongly this **Wallpaper** is preferred within its **Zone**'s draw order. 1.0, for now.
+    def _revisit_weights(self, classified: Sequence[ScoredWallpaper]) -> dict[str, float]:
+        """How much draw weight each classified **Wallpaper** keeps: the **Revisit weight**, or 1.0.
 
-        The seam #11 lands on. The revisit weight is the setting that makes a **Wallpaper** the user has
-        already given an **Explicit Verdict** reappear less often, and it belongs here: one weight per
-        **Wallpaper**, multiplied into the draw order, with nothing above or below it to restructure.
-        Every weight being 1.0 makes `weighted_order` exactly a shuffle, which is what the **Unknown** and
-        **Dud** slots are meant to be until #11 says otherwise.
+        A **Wallpaper** qualifies for the reduction when its resolved **Verdict** is present and is not an
+        **Ignore**. That rule is `resolve_verdicts` and is never restated here (invariant 4): **Ignores**
+        stack into a resolved **Ignore** and are not an **Explicit Verdict**, and a **Clearance** withdraws
+        one so that the **Wallpaper** counts as undecided again (#7). A second "has it been judged" query
+        would have to learn both of those and would drift from the first the day either changed.
 
-        A method rather than a constant so that #11 has the Core service — and so the **Decision log** —
-        already in hand at the point it needs it.
+        Plural for the reason `resolve_verdicts` is plural (invariant 2): one query for the whole **Pool**,
+        never one per **Wallpaper**. It is a second pass over the **Decision log** in the same mint —
+        `classify_pool` made the first — and that is the price of keeping the two independent: the
+        classification is about **Scores** and this is about how often something is shown, and nothing but
+        a **Batch** being minted needs them together.
+
+        **Banned** **Wallpapers** never reach here: `classify_pool` leaves them out entirely, so a **Ban**
+        is an exclusion rather than a weight and no setting can soften it.
         """
-        del scored
-        return 1.0
+        weight = self.get_settings().revisit_weight
+        resolved = self.resolve_verdicts([scored.wallpaper.id for scored in classified])
+        return {
+            scored.wallpaper.id: weight if _is_explicit(resolved[scored.wallpaper.id]) else 1.0
+            for scored in classified
+        }
 
     # -- scoring and zones -----------------------------------------------------------------------------
 
@@ -2176,6 +2236,23 @@ def _validated_similarity_decay(value: float | str) -> float | SettingsRefused.R
     return number
 
 
+def _validated_revisit_weight(value: float | str) -> float | SettingsRefused.Reason:
+    """The **Revisit weight**, or the reason it is not one.
+
+    Bounded to `[0, 1]` because it is a *reduction*: above 1 it would make a **Wallpaper** the user has
+    already judged more likely to come round than one they have not, which is the feature inverted rather
+    than a stronger setting for it. Both ends are accepted and both mean something — 0 is "never again"
+    and 1 is "no reduction" — which is why neither is excluded.
+
+    `nan` and `inf` are refused here rather than left to the draw. `float()` accepts both, and a NaN weight
+    would make every draw-order key a NaN, which sorts the **Zone** by nothing at all.
+    """
+    number = _decimal_number(value)
+    if number is None or not 0.0 <= number <= 1.0:
+        return SettingsRefused.Reason.REVISIT_WEIGHT_INVALID
+    return number
+
+
 def _validated_thumbnail_cache_max_mb(value: int | str) -> int | SettingsRefused.Reason:
     """The **Thumbnail cache** size cap in megabytes, or the reason it is not one.
 
@@ -2345,6 +2422,19 @@ def _entry_from(stored: object) -> Verdict | Clearance:
     """
     text = str(stored)
     return Clearance.CLEARED if text == Clearance.CLEARED.value else Verdict(text)
+
+
+def _is_explicit(resolved: ResolvedVerdict) -> bool:
+    """Whether what stands against a **Wallpaper** is an **Explicit Verdict** — the **Revisit weight**'s
+    question, asked of an already-resolved answer rather than of the **Decision log**.
+
+    Present and not an **Ignore**, which is the whole rule. Everything difficult about it has already
+    happened in `_RESOLUTION_CTE`: stacked **Ignores** resolve to an **Ignore** and are not explicit, and a
+    **Clearance** that withdrew an **Explicit Verdict** resolves to nothing at all, so the **Wallpaper**
+    counts as undecided again (#7). A **Ban** would answer `True` and never be asked — `classify_pool`
+    leaves **Banned** **Wallpapers** out of the draw entirely.
+    """
+    return resolved.verdict is not None and resolved.verdict is not Verdict.IGNORE
 
 
 def _resolved_from(resolved: object, ignores: int) -> ResolvedVerdict:
@@ -2886,3 +2976,15 @@ def _migration_7() -> tuple[tuple[str, tuple[str | int, ...]], ...]:
         *((_SEED_MIX, (mix.name, mix.unknown, mix.banger, mix.dud)) for mix in DEFAULT_MIXES),
         *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
     )
+
+
+def _migration_8() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Migration 8: the **Revisit weight** as a seeded `settings` row.
+
+    No table and no column — a setting is a row, and `Settings` is the typed view over those rows (ADR
+    0004), so this is a seed and nothing else. `DO NOTHING` like migrations 3, 5, 6 and 7, because it runs
+    on databases that already hold settings chosen by hand and a migration must not undo one.
+
+    A step of its own rather than an edit to any of those: they are already applied to live databases.
+    """
+    return tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
