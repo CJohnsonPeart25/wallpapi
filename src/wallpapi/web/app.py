@@ -24,6 +24,7 @@ from wallpapi.core import (
     MAX_BATCH_SIZE,
     MAX_FILTER_PIXELS,
     MAX_POOL_TARGET_SIZE,
+    MAX_SIMILARITY_DECAY,
     MIN_BATCH_SIZE,
     MIN_POOL_TARGET_SIZE,
     WALLHAVEN_RATIOS,
@@ -98,6 +99,8 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
         "min_height": str(current.min_height),
         "allowed_ratios": current.ratios,
         "min_favourites": str(current.min_favourites),
+        "similarity_radius": str(current.similarity_radius),
+        "similarity_decay": str(current.similarity_decay),
     }
 
 
@@ -198,7 +201,12 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "tile.html",
-            {"batch": live, "wallpaper": marked, "draft": live.drafts.get(wallpaper_id)},
+            {
+                "batch": live,
+                "wallpaper": marked,
+                "draft": live.drafts.get(wallpaper_id),
+                "zone": live.zones.get(wallpaper_id),
+            },
         )
 
     @app.post("/draft/all", response_class=HTMLResponse)
@@ -257,6 +265,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 "min_pool_target_size": MIN_POOL_TARGET_SIZE,
                 "max_pool_target_size": MAX_POOL_TARGET_SIZE,
                 "max_filter_pixels": MAX_FILTER_PIXELS,
+                "max_similarity_decay": MAX_SIMILARITY_DECAY,
                 "wallhaven_ratios": ", ".join(sorted(WALLHAVEN_RATIOS)),
             },
             status_code=status_code,
@@ -277,6 +286,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         min_height: Annotated[str | None, Form()] = None,
         allowed_ratios: Annotated[str | None, Form()] = None,
         min_favourites: Annotated[str | None, Form()] = None,
+        similarity_radius: Annotated[str | None, Form()] = None,
+        similarity_decay: Annotated[str | None, Form()] = None,
     ) -> Response:
         """Save the settings, or come back with the reason they were refused.
 
@@ -303,6 +314,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 ("min_height", min_height),
                 ("allowed_ratios", allowed_ratios),
                 ("min_favourites", min_favourites),
+                ("similarity_radius", similarity_radius),
+                ("similarity_decay", similarity_decay),
             )
             if value is not None
         }

@@ -54,3 +54,19 @@ class DecisionEntry:
     batch_id: str | None
     verdict: Verdict
     recorded_at: dt.datetime
+
+
+class Zone(StrEnum):
+    """Where a **Pool** **Wallpaper**'s **Score** puts it.
+
+    Three and only three, and a **Banned** **Wallpaper** is in none of them — which is why this has no
+    fourth member: "**Banned**" is not a **Zone** a **Wallpaper** can be shown from, it is the reason it is
+    never classified at all.
+
+    `StrEnum` for the same reason `Verdict` is one: the value recorded against a **Batch** row, and read
+    back off it, is the glossary term rather than an opaque integer.
+    """
+
+    BANGER = "banger"
+    DUD = "dud"
+    UNKNOWN = "unknown"
