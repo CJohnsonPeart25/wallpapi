@@ -157,6 +157,7 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | What | Lands in | Note |
 | --- | --- | --- |
 | Absolute **Library** file path column | #5 | Not in migration 1. Needs its own numbered migration step alongside the **Library** writer. |
+| Creating the **Library** folder | #5 | #4 validates the path as non-empty and absolute and stores it, deliberately without touching the filesystem — a path is allowed not to exist yet. The **Library** writer creates it on its first write, and its temp file must be a sibling inside it (invariant 10). |
 | Verdict-aware thumbnail eviction and size cap | #7 | #2 ships the serving seam and an unevicted directory. |
 | Caching full-resolution images | never | #8's fullscreen preview loads `full_url` straight from Wallhaven on demand. The only full-resolution files wallpapi keeps are **Favourites** in the **Library** (#5). See `docs/adr/0003-the-preview-loads-full-resolution-from-wallhaven.md`. |
 | Refill thread supervision, restart and a visible indicator | #6 | #2 has no **Pool**, so no refill thread. Clean shutdown arrives with the thread. |
