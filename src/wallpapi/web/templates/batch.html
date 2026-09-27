@@ -27,17 +27,29 @@
         </p>
       {% endif %}
       {% if batch %}
-        {# Above the grid, because the switcher is about the **Batch** after this one and must not read
-           as a control that rearranges the tiles underneath it. #}
-        {% include "mix.html" %}
+        {#
+          Submit and the **Mix** share a dock, floating clear of the page in the top-right corner.
+
+          Submit is there rather than under the grid because a button below a grid of thumbnails is a
+          button you reach for a tile and hit by mistake — and submitting a **Batch** is the one action
+          on this page that cannot be taken back.
+
+          The **Mix** switcher keeps its place above the grid for the reason it always had: it is about
+          the **Batch** after this one, and must not read as a control that rearranges the tiles
+          underneath it.
+        #}
+        <div class="top-bar">
+          {# The grid sits outside this form: the tiles post to /draft on their own, and submitting is
+             the one plain form post left. A refresh that resubmits is refused rather than silently
+             absorbed. #}
+          <form method="post" action="/submit" class="submit-form">
+            <input type="hidden" name="batch_id" value="{{ batch.id }}" />
+            <button type="submit" class="submit">Submit batch</button>
+          </form>
+          {% include "mix.html" %}
+        </div>
         {# One include, because the grid is also what a bulk mark swaps back in on its own. #}
         {% include "grid.html" %}
-        {# The grid sits outside this form: the tiles post to /draft on their own, and submitting is the
-           one plain form post left. A refresh that resubmits is refused rather than silently absorbed. #}
-        <form method="post" action="/submit">
-          <input type="hidden" name="batch_id" value="{{ batch.id }}" />
-          <button type="submit">Submit batch</button>
-        </form>
       {% elif refused %}
         <p class="refused">
           {% if refused.reason.value == "already_submitted" %}
@@ -72,18 +84,38 @@
       {% include "similarity.html" %}
     </main>
     {#
-      The fullscreen preview. One dialog for the whole page rather than one per tile: only one
-      **Wallpaper** is ever being looked at, and 32 dialogs would be 32 copies of the same markup.
+      The preview. One dialog for the whole page rather than one per tile: only one **Wallpaper** is
+      ever being looked at, and 32 dialogs would be 32 copies of the same markup.
 
       The image carries no `src` here on purpose. wallpapi.js sets it when the dialog opens and removes it
       when it closes, so the full-resolution file is fetched from Wallhaven only when somebody asks to see
       it — invariant 8 is about not hotlinking a **Batch**, not about never fetching anything.
 
-      Escape dismisses it natively; the close button and a click on the backdrop do the same.
+      There is no close button: a click anywhere in the preview dismisses it, and Escape does the same
+      natively. What is left in the corner is fullscreen, with the way out to Wallhaven beside it —
+      which is where judging a **Wallpaper** at size tends to end, and it is a tile's link no longer.
     #}
     <dialog id="preview-dialog">
       <img id="preview-image" alt="" />
-      <button type="button" id="preview-close" autofocus>close</button>
+      {# Fullscreen hard against the top-right corner, with the Wallhaven link to its left. #}
+      <div id="preview-bar">
+        <a id="preview-source" href="#" target="_blank" rel="noopener noreferrer">wallhaven</a>
+        <button type="button" id="preview-fullscreen" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+      </div>
+      {#
+        The preview's own **Verdict** rail, below the image rather than over it: the preview exists to
+        show the whole **Wallpaper**, and a rail across its foot would cover the part of it you came
+        here to look at. The frame gives up the height instead.
+
+        It posts nothing of its own. wallpapi.js clicks the matching control on the tile behind it, so
+        there is one route, one swap and one marked state rather than a second way to draft a **Verdict**
+        that could disagree with the first. Marking does not dismiss the preview.
+      #}
+      <div id="preview-verdicts">
+        {% for choice in ["favourite", "like", "ban"] %}
+          <button type="button" class="preview-verdict" data-verdict="{{ choice }}">{{ choice }}</button>
+        {% endfor %}
+      </div>
     </dialog>
   </body>
 </html>

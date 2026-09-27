@@ -1,7 +1,6 @@
 {#
-  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, its three **Explicit Verdict**
-  controls, a fullscreen preview and a link to its Wallhaven page. Included by grid.html and rendered on
-  its own as the htmx swap for a mark.
+  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, and its three **Explicit
+  Verdict** controls. Included by grid.html and rendered on its own as the htmx swap for a mark.
 
   Each control posts the **Verdict** the tile should *end up* with rather than "flip this one", so a
   replayed or duplicated click lands on the same state (invariant 6). The control that is currently marked
@@ -10,9 +9,15 @@
   **Ignore** has no control. It is derived for everything unmarked at submit, and a button for it would be
   a second way to say what leaving a tile alone already says.
 
-  `data-full-url` is the full-resolution source the preview dialog loads when it opens. Deliberately not an
-  `<img src>`: invariant 8 forbids hotlinking a **Batch** of thumbnails, and what makes one
-  user-asked-for full-size image a different case is that nothing is fetched until it is asked for.
+  `data-full-url` is the full-resolution source the preview dialog loads when it opens, and it is on the
+  thumbnail because the thumbnail is what opens the preview — there is no preview button to aim at.
+  Deliberately not an `<img src>`: invariant 8 forbids hotlinking a **Batch** of thumbnails, and what
+  makes one user-asked-for full-size image a different case is that nothing is fetched until it is asked
+  for.
+
+  The link to the **Wallpaper**'s Wallhaven page is rendered but not shown. It belongs in the preview,
+  where the wallpaper has actually been looked at, and the preview reads the URL off this link when it
+  opens — one source for it rather than the same string in two places.
 
   `zone` is the **Zone** the **Wallpaper** was drawn from, recorded against the **Batch** when it was
   minted. It is absent on a **Batch** minted before **Zones** existed, and the label is then simply not
@@ -23,6 +28,7 @@
     src="/thumb/{{ wallpaper.id }}"
     alt=""
     loading="lazy"
+    data-full-url="{{ wallpaper.full_url }}"
     width="{{ wallpaper.width }}"
     height="{{ wallpaper.height }}"
   />
@@ -46,7 +52,6 @@
     {% endfor %}
   </div>
   <div class="links">
-    <button type="button" class="preview" data-full-url="{{ wallpaper.full_url }}">preview</button>
     {# A new tab, so judging a **Batch** is not interrupted, and with no handle back and no referrer. #}
     <a
       class="source"

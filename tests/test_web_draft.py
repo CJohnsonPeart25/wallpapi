@@ -51,9 +51,11 @@ def test_every_tile_carries_favourite_like_and_ban_controls(db_path: Path) -> No
     with TestClient(app) as client:
         body = client.get("/").text
 
-    assert body.count('data-verdict="favourite"') == 8
-    assert body.count('data-verdict="like"') == 8
-    assert body.count('data-verdict="ban"') == 8
+    # Nine of each, not eight: one per tile, plus the preview's own rail, which is the same three
+    # controls for whichever **Wallpaper** the preview is open on.
+    for choice in ("favourite", "like", "ban"):
+        assert body.count(f'data-verdict="{choice}"') == 9
+    assert body.count('class="preview-verdict"') == 3
     assert 'data-verdict="ignore"' not in body
 
 
