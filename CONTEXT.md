@@ -73,7 +73,7 @@ The verdicts marked against a batch that hasn't been submitted yet. Held against
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:
-The rule that turns a wallpaper's verdicts into one value: the latest explicit verdict wins outright and all its ignores are disregarded; without one, ignores stack.
+The rule that turns a wallpaper's decision log entries into one value: the latest entry that is not an ignore decides. An explicit verdict counts alone and every ignore on the wallpaper is disregarded, before it and after it alike; a clearance, or no such entry, lets every ignore stack.
 _Avoid_: aggregation, tallying
 
 **Decision log**:
@@ -155,7 +155,7 @@ Making the library agree with the decision log: every favourite with no file get
 _Avoid_: sync, download queue, flush, refresh
 
 **Thumbnail cache**:
-The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails for any wallpaper that has been shown or decided, not full-resolution favourites.
+The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails for any wallpaper that has been shown or decided, not full-resolution favourites. A thumbnail is kept for as long as any page might show it — for ever, once the wallpaper has an explicit verdict, because history renders one.
 _Avoid_: image cache, thumbs, local store, static files
 
 **Core service**:

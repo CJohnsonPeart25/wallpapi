@@ -101,7 +101,17 @@ Each of these is one careless line away from being silently violated.
 
 4. **Verdict resolution orders by sequence, not timestamp.** Every **Decision log** row written in one submit
    transaction can share a timestamp, so "the latest **Explicit Verdict** wins" is only well defined against an
-   autoincrement sequence. Timestamp is display-only.
+   autoincrement sequence. Timestamp is display-only. A **Clearance** and an edit made from **History** share
+   one too — the clock has whole-second granularity and both are clicks — so this is not only about the rows
+   of one transaction.
+
+   The rule itself, extended at #7 for the **Clearance**, lives in one SQL fragment (`_RESOLUTION_CTE`)
+   because **History** filters and pages over the resolved **Verdict** and cannot resolve a log of thousands
+   of rows in Python first. The latest entry that is not an **Ignore** decides: an **Explicit Verdict** counts
+   alone and disregards every **Ignore** before and after it; a **Clearance**, or no such entry, lets every
+   **Ignore** stack. Anything needing resolution in a `WHERE` clause builds on that fragment rather than
+   spelling the rule a second time. See
+   `docs/adr/0008-a-clearance-is-an-entry-and-resolution-is-decided-in-sql.md`.
 
 5. **Timestamps are ISO 8601 UTC strings.** Register no `sqlite3` adapters — the default `datetime` adapters
    have been deprecated since Python 3.12. On 3.14 they still work but emit a `DeprecationWarning`, and 3.14
@@ -125,10 +135,18 @@ Each of these is one careless line away from being silently violated.
 
 8. **Thumbnail cache, with verdict-aware eviction.** Cache thumbnails locally and serve them from the app;
    do not hotlink 32 tiles per **Batch**. Separate directory from the **Library** (which is favourites-only and
-   write-only). Eviction is *not* "when it leaves the **Pool**": **History** (#7) renders a thumbnail for every
+   write-only). Eviction is *not* "when it leaves the **Pool**": **History** renders a thumbnail for every
    past **Verdict**, and **Banned** **Wallpapers** leave every **Zone** immediately and permanently. Keep
    thumbnails for anything with an **Explicit Verdict**; evict only undecided **Wallpapers** that left the
    **Pool**; size cap as a backstop.
+
+   Built at #7 as `evict_thumbnails()`, run at the tail of `submit_batch`. Two passes: everything with no
+   **Explicit Verdict** standing, not in the **Pool** and not in the live **Batch** goes outright; then, over
+   `thumbnail_cache_max_mb`, the oldest-modified of the still-to-be-shown ones go until the cache is under it.
+   **The cap may never evict an Explicit Verdict**, so a cache over the cap on **Favourites** alone stays over
+   it and says so. Safe to be wrong about in one direction only: `get_thumbnail` re-fetches what is missing,
+   so an over-eager eviction costs a request and a too-timid one costs disk. See
+   `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`.
 
 9. **Store the absolute path of every Library file written.** The **Library** path is a setting that can
    change; removing a **Favourite** must delete the file where it was actually written, not a path recomputed
@@ -181,9 +199,8 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | What | Lands in | Note |
 | --- | --- | --- |
 | Telling the user a **Library** write failed | #15 | `reconcile_library` collects failures rather than raising — a **Favourite** is recorded whether or not its download worked — and `submit_batch` currently discards the report. Because the **Library** is derived, the retry needs no UI; saying so does. |
-| Verdict-aware thumbnail eviction and size cap | #7 | #2 ships the serving seam and an unevicted directory. |
 | Caching full-resolution images | never | #8's fullscreen preview loads `full_url` straight from Wallhaven on demand. The only full-resolution files wallpapi keeps are **Favourites** in the **Library** (#5). See `docs/adr/0003-the-preview-loads-full-resolution-from-wallhaven.md`. |
 | Restarting a refill thread that has died | later | #6 landed the thread, its clean shutdown and the indicator. There is no supervisor: `refill_step` never raises and `refill_wait` only reads locally, so the loop has nothing to die of short of SQLite being gone — and `refill_status().running` puts that on the page rather than hiding it. Build a supervisor when something is actually seen to kill it. |
 | Throttling thumbnail and full-resolution fetches | later | Invariant 11 asks for modest throttling of `th.wallhaven.cc` and `w.wallhaven.cc`, which are not the 45-per-minute hosts. Deliberately not built at #6: those fetches happen on a request thread, which has no `stop_event` to wait on cancellably (invariant 12), and the **Thumbnail cache** already means each tile is fetched once ever. It needs the fetches to move off the request path first. |
 | **Decision log** backup procedure | later | Cheap because the database is a single file at a known path: `VACUUM INTO`. |
-| Sweeping up **Batches** abandoned before **Batch** reuse existed | #7 | `get_next_batch` hands back the unsubmitted **Batch** rather than minting one per page load, so from #2 onwards at most one exists and every stored **Wallpaper** either has a **Verdict** or is in it. Databases written before that change still hold **Batches** that can never be submitted, **Wallpapers** with neither, and the thumbnails those **Wallpapers** left in the cache. Eviction at #7 is where it gets swept up. See `docs/adr/0002-the-batch-persists-until-submitted.md`. |
+| Evicting a thumbnail the moment a **Clearance** withdraws its **Verdict** | later | #7 evicts at the tail of `submit_batch` only. A **History** edit is a single-row htmx post and a directory scan does not belong on one; the next submission picks the file up. See `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`. |
