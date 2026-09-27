@@ -95,8 +95,16 @@ A wallpaper's derived value, calculated from the decision log with each resolved
 _Avoid_: rating, weight, rank, affinity
 
 **Similarity provider**:
-The component that measures how alike wallpapers are. Its method is deliberately left open.
+The component that measures how alike wallpapers are. Its method is deliberately left open. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair.
 _Avoid_: embedder, model, comparator
+
+**Similarity radius**:
+How far a verdict reaches, as a distance from 0 to 1. Beyond it a decided wallpaper counts for nothing at all, which is what makes a wallpaper with nothing decided nearby an unknown. A setting.
+_Avoid_: threshold, cutoff, neighbourhood
+
+**Similarity decay**:
+How fast a verdict fades with distance inside the radius. The radius is a cliff; the decay is the slope up to it. A setting.
+_Avoid_: falloff, gamma, damping
 
 **Zone**:
 The category a pool wallpaper falls into: banger, dud or unknown.
@@ -157,7 +165,7 @@ _Avoid_: engine, manager, API, backend
 ### Configuration
 
 **Settings**:
-Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters and the pool target size today; mixes, the revisit weight and the similarity radius and decay join them later.
+Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size and the similarity radius and decay today; mixes and the revisit weight join them later.
 _Avoid_: config, preferences, options
 
 **Batch size**:
