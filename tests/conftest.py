@@ -63,6 +63,7 @@ def make_harness(
     retry_after: float | None = None,
     like_results: Mapping[str, Sequence[Wallpaper]] | None = None,
     fill_pool: int = 1,
+    similarities: dict[tuple[str, str], float] | None = None,
 ) -> Harness:
     """Build a Core service over `db_path`, with the **Pool** already primed.
 
@@ -73,6 +74,9 @@ def make_harness(
     **Batch** is drawn from the **Pool** and a test that only wants "a **Batch** exists" should not have to
     say so; one step is a whole page, which is 24 **Wallpapers** at the default page size. Pass `0` in the
     tests that care what an empty **Pool** does.
+
+    `similarities` goes straight to the fake **Similarity provider**: `{(pool id, decided id): value}`, with
+    a **Wallpaper** against itself 1.0 and everything unnamed 0.0.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
@@ -84,7 +88,7 @@ def make_harness(
         like_results=like_results,
     )
     library = FakeLibraryWriter()
-    similarity = FakeSimilarityProvider()
+    similarity = FakeSimilarityProvider(similarities)
     clock = FakeClock(now)
     core = CoreService(
         db_path=db_path,

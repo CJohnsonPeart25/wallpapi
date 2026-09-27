@@ -63,11 +63,22 @@ Each of these is one careless line away from being silently violated.
 
 2. **Scores are never stored.** Always derived from the **Decision log**. That only stays affordable as an
    array operation across the whole **Pool**, so the **Similarity provider** interface is
-   `similarities(pool_ids, decided_ids) -> ndarray` — a matrix, never a pairwise call. A pairwise interface
+   `similarities(pool, decided) -> ndarray` — a matrix, never a pairwise call. A pairwise interface
    forces a Python loop over a 10k **Pool**, which is seconds per **Batch**, which makes caching **Scores**
    tempting, which breaks the rule. The matrix is **Pool** x decided (decided is small), never **Pool** x
    **Pool** — 10k x 10k is 800MB of float64 and is never needed. `numpy` must be a direct dependency, not
    transitive via onnxruntime; onnxruntime does not arrive until the #14 spike, which may never merge.
+
+   Both sides are `Sequence[Wallpaper]` and not IDs, since #9: the baseline provider reads `.colours` and
+   `.category`, and one handed only IDs would have to open a second seam into storage to get them.
+   `CoreService.classify_pool()` is the one operation — whole **Pool**, one call, nothing memoised. The
+   `zone` column on `batch_wallpapers` is *not* a stored **Score**: it records which **Zone** a **Batch**
+   drew a **Wallpaper** from, which is a fact about the **Batch** and not about the **Wallpaper**. See
+   `docs/adr/0007-scores-are-derived-in-one-pass-over-the-whole-pool.md`.
+
+   Sum the weighted values with `(weights * values).sum(axis=1)`, never `weights @ values`. BLAS may
+   reorder its terms and use fused multiply-add, so equal and opposite contributions come out at a few
+   times 1e-15 rather than at zero — and **Unknown** is the *exact* zero of the **Score**.
 
 3. **SQLite.** `journal_mode=WAL` is set once at migration time — it persists in the database file.
    `synchronous` and `foreign_keys` are **per-connection** and do not persist. `busy_timeout` comes from

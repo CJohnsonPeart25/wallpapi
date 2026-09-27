@@ -47,6 +47,10 @@
             {{ wallhaven_ratios }}.
           {% elif refused.reason.value == "min_favourites_invalid" %}
             Minimum favourites must be a whole number, 0 or more.
+          {% elif refused.reason.value == "similarity_radius_invalid" %}
+            Similarity radius must be a number from 0 to 1.
+          {% elif refused.reason.value == "similarity_decay_invalid" %}
+            Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
           {% else %}
             That value was refused ({{ refused.reason.value }}).
           {% endif %}
@@ -138,6 +142,39 @@
           />
           <span class="hint">How many filtered wallpapers to keep waiting. The background refill fetches at
             full speed until the pool reaches this, then idles.</span>
+        </p>
+
+        <h2>Scoring</h2>
+        <p class="hint">How far a verdict spreads to wallpapers that look like it. Every score is worked out
+          from the decision log each time a batch is built, so changing these two takes effect on the next
+          batch and nothing has to be rebuilt. Both are starting points rather than tuned numbers.</p>
+        <p>
+          <label for="similarity_radius">Similarity radius</label>
+          <input
+            type="number"
+            id="similarity_radius"
+            name="similarity_radius"
+            min="0"
+            max="1"
+            step="0.01"
+            value="{{ similarity_radius }}"
+          />
+          <span class="hint">From 0 to 1. How different two wallpapers can be and still tell you anything
+            about each other — beyond it, a verdict counts for nothing at all.</span>
+        </p>
+        <p>
+          <label for="similarity_decay">Similarity decay</label>
+          <input
+            type="number"
+            id="similarity_decay"
+            name="similarity_decay"
+            min="0"
+            max="{{ max_similarity_decay }}"
+            step="0.1"
+            value="{{ similarity_decay }}"
+          />
+          <span class="hint">From 0 to {{ max_similarity_decay }}. How fast a verdict fades with distance.
+            Higher is fussier; 0 counts everything inside the radius equally.</span>
         </p>
         <button type="submit">Save settings</button>
       </form>
