@@ -22,6 +22,9 @@ from wallpapi.wallhaven import RateLimited, WallhavenClient
 FIXTURE = Path(__file__).parent / "fixtures" / "wallhaven_search.json"
 RECORDED: dict[str, Any] = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
+WALLPAPER_FIXTURE = Path(__file__).parent / "fixtures" / "wallhaven_wallpaper.json"
+WALLPAPER_RECORDED: dict[str, Any] = json.loads(WALLPAPER_FIXTURE.read_text(encoding="utf-8"))
+
 
 def test_search_parses_a_recorded_wallhaven_response() -> None:
     """The client maps Wallhaven's spelling onto the domain's, and carries `meta.seed` through."""
@@ -165,3 +168,58 @@ def test_any_other_non_200_still_raises() -> None:
 
     with pytest.raises(httpx2.HTTPStatusError):
         client.search(sorting="random", purity="100", categories="111")
+
+
+def test_fetch_tags_reads_the_single_wallpaper_endpoint() -> None:
+    """#14: tags come only from `GET /api/v1/w/{id}`, one **API call** per **Wallpaper**.
+
+    `tests/fixtures/wallhaven_wallpaper.json` is a genuine response for `oxkzwm` — the same **Wallpaper**
+    the search fixture's first entry is — captured on 2026-09-27 with `tags` trimmed to three entries. The
+    ids and names below are read off Wallhaven's own payload, so the test disagrees with the mapping if
+    the mapping is wrong rather than recomputing it.
+    """
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json=WALLPAPER_RECORDED)
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    tags = client.fetch_tags("oxkzwm")
+
+    assert seen[0].url.path == "/api/v1/w/oxkzwm"
+    assert [(tag.id, tag.name) for tag in tags] == [
+        (267, "Ford"),
+        (27713, "Ford Mustang Mach 1"),
+        (314, "car"),
+    ]
+
+
+def test_fetch_tags_tolerates_a_wallpaper_with_no_tags() -> None:
+    """Wallhaven has plenty. An empty tuple rather than a failure, because the cache's whole job is to be
+    able to say "asked, and there were none" (#14)."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json={"data": {"id": "oxkzwm", "tags": []}})
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    assert client.fetch_tags("oxkzwm") == ()
+
+
+def test_fetch_tags_raises_rate_limited_on_a_429() -> None:
+    """The tags endpoint is on `wallhaven.cc/api` and so is inside the same 45-a-minute budget: a fill
+    step that ignored a 429 here would spend the **Pool** refill's allowance for it."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(429, headers={"Retry-After": "9"}, json={})
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    with pytest.raises(RateLimited) as raised:
+        client.fetch_tags("oxkzwm")
+
+    assert raised.value.retry_after == 9.0
