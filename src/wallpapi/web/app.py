@@ -159,6 +159,7 @@ def create_app(core: CoreService) -> FastAPI:
         if not isinstance(live, Batch):
             return render(request, live)
         return templates.TemplateResponse(request, "grid.html", {"batch": live})
+
     def render_settings(
         request: Request,
         *,
