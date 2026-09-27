@@ -223,6 +223,25 @@ MIX_TOTAL = 100
 """What a **Mix**'s three percentages must sum to. Exactly, never approximately — the slack in an
 **Allocation** is the leftover roll, and a **Mix** summing to 99 would make that roll systematic."""
 
+MAX_MIX_NAME_LENGTH = 40
+"""How long a **Mix** name may be.
+
+A **Mix** name is a button on the **Batch** page beside every other **Mix**'s, so the limit is about the
+switcher staying readable rather than about storage. Generous enough for anything descriptive — "mostly
+unknowns, a few duds" is 26 characters — and short enough that one name cannot push the others off the
+row.
+"""
+
+UNDELETABLE_MIXES = frozenset(mix.name for mix in DEFAULT_MIXES)
+"""The **Mixes** that can be edited but never deleted.
+
+**Explore** and **Refine** are the two the spec names, and `CONTEXT.md` gives each a definition of its
+own. Editing one is changing what "explore" means to this user, which is what #12 is for; deleting one
+would leave the vocabulary with nothing behind it and let the table be emptied to the point where
+`list_mixes` is falling back to values nothing stored. Derived from `DEFAULT_MIXES` rather than written
+out a second time, so the seed and the protection cannot drift apart.
+"""
+
 _BATCH_SIZE = "batch_size"
 _LIBRARY_PATH = "library_path"
 _POOL_TARGET_SIZE = "pool_target_size"
@@ -345,14 +364,30 @@ class SettingsRefused:
 
         MIX_NAME_INVALID = "mix_name_invalid"
         MIX_PERCENTAGES_INVALID = "mix_percentages_invalid"
-        """The two ways `validated_mix` can refuse a **Mix**.
+        """The two ways `validated_mix` can refuse a **Mix**, and what `save_mix` answers with (#12).
 
-        Nothing reaches them through `update_settings` in this ticket — no path writes to the `mixes`
-        table but the migration that seeds it, and creating and editing **Mixes** is #12. The reasons live
-        here with the rest so that #12's form has the one error branch every other field already has, and
-        so that the validator has somewhere to say *which* of the two went wrong: a name that is not a
-        name and three numbers that do not add up have nothing to say to each other.
+        Two and not one, so the validator can say *which* of them went wrong: a name that is not a name
+        and three numbers that do not add up have nothing to say to each other, and the form's one error
+        branch has to put the sentence next to the field it is about.
         """
+
+        MIX_UNKNOWN = "mix_unknown"
+        """No stored **Mix** goes by that name, so there is nothing to delete.
+
+        A refusal rather than a silent no-op, for the reason submitting an already-submitted **Batch** is
+        one: the second tab needs to be told why nothing happened.
+        """
+
+        MIX_IN_USE = "mix_in_use"
+        """That **Mix** is the active one. Switch away first.
+
+        The draw does fall back to the first **Mix** there is when the setting names nothing, so deleting
+        the active one *could* be allowed — but a delete button that silently changed what the next
+        **Batch** is made of is not a delete button, and switching first is one click.
+        """
+
+        MIX_NOT_DELETABLE = "mix_not_deletable"
+        """**Explore** and **Refine** are editable and permanent (`UNDELETABLE_MIXES`)."""
 
     reason: Reason
 
@@ -868,8 +903,10 @@ class CoreService:
             # The one setting whose validity is a question about another table rather than about the value
             # itself, so it is checked here rather than in a `_validated_*` function of its own. Checked
             # *before* the write transaction opens, which is the same read-then-write race every other
-            # settings field is free of — and harmless here because the only thing that can delete a
-            # **Mix** is #12, in this same single-writer process.
+            # settings field is free of. `delete_mix` (#12) is the only thing that can invalidate the
+            # answer, it refuses to delete the active **Mix**, and both run on the one writer — so the
+            # window is a second tab selecting a **Mix** the first is deleting, which leaves `active_mix`
+            # naming nothing and `active_mix()` falling back rather than the page failing.
             if active_mix.strip() not in {mix.name for mix in self.list_mixes()}:
                 return SettingsRefused(reason=SettingsRefused.Reason.ACTIVE_MIX_UNKNOWN)
             changes.append((_ACTIVE_MIX, active_mix.strip()))
@@ -911,13 +948,66 @@ class CoreService:
         """The **Mix** the next **Batch** will be built from.
 
         The resolved companion to `get_settings().active_mix`, which is only the name. Falls back to the
-        first **Mix** there is if the stored name matches none — a hand-edited setting, or a **Mix** #12
-        deleted while it was selected — because the alternative is a **Batch** page that cannot mint a
-        **Batch**, and "your chosen **Mix** is gone" is not worth more than a **Batch**.
+        first **Mix** there is if the stored name matches none, because the alternative is a **Batch**
+        page that cannot mint a **Batch**, and "your chosen **Mix** is gone" is not worth more than a
+        **Batch**.
+
+        Hard to reach on purpose: `update_settings` refuses a name no **Mix** answers to and `delete_mix`
+        refuses to delete the active one (#12), so the fallback is for a hand-edited database and for the
+        one race those two leave — a second tab selecting a **Mix** the first tab is deleting.
         """
         mixes = self.list_mixes()
         name = self.get_settings().active_mix
         return next((mix for mix in mixes if mix.name == name), mixes[0])
+
+    def save_mix(
+        self, name: str, *, unknown: int | str, banger: int | str, dud: int | str
+    ) -> Mix | SettingsRefused:
+        """Store a **Mix** under that name, replacing the one already there. Issue #12.
+
+        Creating and editing are one operation because they are one write: a **Mix** is identified by its
+        name, and whether a row was already there is not a question the form can sensibly ask the user.
+        So the edit rows on the settings page and the add row post to the same place, and saving
+        **Explore**'s percentages under a new name makes a second **Mix** rather than renaming the first.
+
+        `validated_mix` decides what a **Mix** is — the same function `list_mixes` drops a hand-edited row
+        with, and deliberately not a second copy of the rule here. A refusal writes nothing at all.
+
+        **The edit applies to the next Batch minted, not the one on screen.** Nothing has to be done to
+        make that true: `active_mix()` reads this table when a **Batch** is drawn, exactly as the batch
+        size is read then (#4). A save that rerolled the live **Batch** would throw away a **Draft Batch**
+        the user was part way through.
+        """
+        mix = validated_mix(name, unknown=unknown, banger=banger, dud=dud)
+        if isinstance(mix, SettingsRefused.Reason):
+            return SettingsRefused(reason=mix)
+        with self._write() as write:
+            write.execute(_UPSERT_MIX, (mix.name, mix.unknown, mix.banger, mix.dud))
+        return mix
+
+    def delete_mix(self, name: str) -> SettingsRefused | None:
+        """Remove a **Mix**, or say why it stays. Issue #12.
+
+        Three refusals, checked in this order. A name no **Mix** answers to is `MIX_UNKNOWN` — a refusal
+        and not a silent no-op, because the second tab needs to be told why nothing happened.
+        **Explore** and **Refine** are `MIX_NOT_DELETABLE`, checked before the active one so that the
+        answer for a **Mix** that can *never* be deleted is the permanent reason rather than the one the
+        user could work around. The active **Mix** is `MIX_IN_USE`: the draw would fall back, but a
+        delete that quietly changed what the next **Batch** is made of is not a delete.
+
+        `None` on success, in the style of `set_draft_verdict` and `clear_verdict` — there is no value to
+        hand back, and the caller re-reads `list_mixes` to render.
+        """
+        trimmed = name.strip()
+        if trimmed not in {mix.name for mix in self.list_mixes()}:
+            return SettingsRefused(reason=SettingsRefused.Reason.MIX_UNKNOWN)
+        if trimmed in UNDELETABLE_MIXES:
+            return SettingsRefused(reason=SettingsRefused.Reason.MIX_NOT_DELETABLE)
+        if trimmed == self.get_settings().active_mix:
+            return SettingsRefused(reason=SettingsRefused.Reason.MIX_IN_USE)
+        with self._write() as write:
+            write.execute(_DELETE_MIX, (trimmed,))
+        return None
 
     # -- batches ---------------------------------------------------------------------------------------
 
@@ -2144,9 +2234,9 @@ def validated_mix(
 
     **The one place that decides what a Mix is.** Three callers, and they must not be allowed to disagree:
     `list_mixes` reads rows that could have been hand-edited, the tests that pin the rule call it directly,
-    and #12's form will call it with whatever the user typed. A rule enforced in the dataclass instead
-    would turn "the user typed 30/30/30" into a traceback, and a rule enforced only at the form would let
-    a hand-edited row into the draw.
+    and `save_mix` calls it with whatever the user typed into the form (#12). A rule enforced in the
+    dataclass instead would turn "the user typed 30/30/30" into a traceback, and a rule enforced only at
+    the form would let a hand-edited row into the draw.
 
     Whole percentages summing to exactly `MIX_TOTAL`, none of them negative. Exactly, because the slack in
     an **Allocation** is the leftover roll: a **Mix** summing to 99 would leave one slot rolled on every
@@ -2154,11 +2244,16 @@ def validated_mix(
     A **Zone** at zero per cent is allowed and means it — **Refine** without any **Duds** at all is a
     **Mix** somebody may well want.
 
+    A name is what is left after trimming, is not empty, and is no longer than `MAX_MIX_NAME_LENGTH`.
+    Trimmed because the surrounding whitespace is the form's rather than the user's; compared
+    case-sensitively everywhere else, because "Night" and "night" are two things the user typed and this
+    is not the place to decide they meant one.
+
     Accepted as text as well as typed, for the reason every other validator here is: the form posts text,
     SQLite hands back whatever the column holds, and the coercion rule belongs with the rule.
     """
     trimmed = name.strip()
-    if not trimmed:
+    if not trimmed or len(trimmed) > MAX_MIX_NAME_LENGTH:
         return SettingsRefused.Reason.MIX_NAME_INVALID
     percentages = [_whole_number(value) for value in (unknown, banger, dud)]
     if any(share is None or share < 0 for share in percentages):
@@ -2173,6 +2268,21 @@ _UPSERT_SETTING = """
 INSERT INTO settings (key, value) VALUES (?, ?)
 ON CONFLICT (key) DO UPDATE SET value = excluded.value
 """
+
+_UPSERT_MIX = """
+INSERT INTO mixes (name, unknown, banger, dud) VALUES (?, ?, ?, ?)
+ON CONFLICT (name) DO UPDATE
+SET unknown = excluded.unknown, banger = excluded.banger, dud = excluded.dud
+"""
+"""One statement for creating a **Mix** and for editing one (#12).
+
+The name is the key, so "save this **Mix**" is the same write either way and the form does not have to
+know which it is doing. It also means there is no rename: saving **Explore**'s percentages under a new
+name makes a second **Mix** rather than moving the first, which is the honest reading of a form whose
+name field is what identifies the row.
+"""
+
+_DELETE_MIX = "DELETE FROM mixes WHERE name = ?"
 
 _LIBRARY_CANDIDATES = """
 SELECT w.id AS wallpaper_id, w.full_url AS full_url, f.path AS path

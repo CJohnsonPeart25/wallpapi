@@ -22,6 +22,9 @@
       {% if saved %}
         <p class="saved">Settings saved.</p>
       {% endif %}
+      {% if deleted %}
+        <p class="saved">Mix deleted.</p>
+      {% endif %}
       {% if refused %}
         {# The Core service's refusal reason, said in words. One branch per reason; the last branch is a
            fallback that names the reason rather than guessing, so a reason added later is visibly
@@ -53,6 +56,16 @@
             Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
           {% elif refused.reason.value == "thumbnail_cache_max_mb_invalid" %}
             The thumbnail cache limit must be a whole number of megabytes, 0 or more.
+          {% elif refused.reason.value == "mix_percentages_invalid" %}
+            Mix percentages must be whole numbers, 0 or more, that add up to {{ mix_total }}.
+          {% elif refused.reason.value == "mix_name_invalid" %}
+            A mix needs a name, of no more than {{ max_mix_name_length }} characters.
+          {% elif refused.reason.value == "mix_unknown" %}
+            No mix goes by that name — it may have been deleted in another tab.
+          {% elif refused.reason.value == "mix_in_use" %}
+            That is the active mix. Switch to another on the batch page before deleting it.
+          {% elif refused.reason.value == "mix_not_deletable" %}
+            Explore and refine can be edited but cannot be deleted.
           {% else %}
             That value was refused ({{ refused.reason.value }}).
           {% endif %}
@@ -188,6 +201,69 @@
             is fetched again the next time it is shown.</span>
         </p>
         <button type="submit">Save settings</button>
+      </form>
+
+      {#
+        Mixes (#12). Outside the settings form and not inside it: each row is a form of its own, HTML
+        does not nest forms, and a mix row posts four fields under names every other row posts too — so
+        one big form would send three copies of "unknown" and the server would have to guess.
+
+        Editing and adding post to the same route. A mix is saved under its name, and whether one was
+        already there is not a question worth asking the user; that also means there is no rename —
+        saving under a new name makes a second mix.
+
+        No delete control on explore, on refine, or on the active mix. All three are refusals the core
+        service makes anyway, and a page that offers a button which cannot work is a page telling the
+        user something untrue — the same reason history renders no clear control on a row with nothing
+        to clear.
+      #}
+      <h2>Mixes</h2>
+      <p class="hint">How much of a batch comes from each zone — unknown, banger and dud — as whole
+        percentages adding up to {{ mix_total }}. Edits apply to the next batch; the one on screen keeps
+        the mix it was built with. Switch between mixes on the batch page.</p>
+      {% for row in mix_rows %}
+        <form method="post" action="/settings/mixes" class="mix-row" data-mix-row="{{ row.name }}">
+          <input type="hidden" name="name" value="{{ row.name }}" />
+          <strong{% if row.active %} data-mix-active="{{ row.name }}"{% endif %}>{{ row.name }}</strong>
+          {% if row.active %}<span class="hint">active — the next batch is built from this one</span>{% endif %}
+          <label>Unknown
+            <input type="number" name="unknown" min="0" max="{{ mix_total }}" step="1"
+              value="{{ row.unknown }}" />
+          </label>
+          <label>Banger
+            <input type="number" name="banger" min="0" max="{{ mix_total }}" step="1"
+              value="{{ row.banger }}" />
+          </label>
+          <label>Dud
+            <input type="number" name="dud" min="0" max="{{ mix_total }}" step="1" value="{{ row.dud }}" />
+          </label>
+          <button type="submit">Save {{ row.name }}</button>
+        </form>
+        {% if row.deletable %}
+          <form method="post" action="/settings/mixes/delete" class="mix-delete">
+            <input type="hidden" name="name" value="{{ row.name }}" />
+            <button type="submit" data-mix-delete="{{ row.name }}">Delete {{ row.name }}</button>
+          </form>
+        {% endif %}
+      {% endfor %}
+      <form method="post" action="/settings/mixes" class="mix-row" data-mix-new>
+        <label>New mix
+          <input type="text" name="name" size="24" maxlength="{{ max_mix_name_length }}"
+            value="{{ new_mix.name }}" />
+        </label>
+        <label>Unknown
+          <input type="number" name="unknown" min="0" max="{{ mix_total }}" step="1"
+            value="{{ new_mix.unknown }}" />
+        </label>
+        <label>Banger
+          <input type="number" name="banger" min="0" max="{{ mix_total }}" step="1"
+            value="{{ new_mix.banger }}" />
+        </label>
+        <label>Dud
+          <input type="number" name="dud" min="0" max="{{ mix_total }}" step="1"
+            value="{{ new_mix.dud }}" />
+        </label>
+        <button type="submit">Add mix</button>
       </form>
     </main>
   </body>

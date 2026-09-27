@@ -23,10 +23,13 @@ from starlette.types import Lifespan
 from wallpapi.core import (
     MAX_BATCH_SIZE,
     MAX_FILTER_PIXELS,
+    MAX_MIX_NAME_LENGTH,
     MAX_POOL_TARGET_SIZE,
     MAX_SIMILARITY_DECAY,
     MIN_BATCH_SIZE,
     MIN_POOL_TARGET_SIZE,
+    MIX_TOTAL,
+    UNDELETABLE_MIXES,
     WALLHAVEN_RATIOS,
     Batch,
     BatchUnavailable,
@@ -35,7 +38,7 @@ from wallpapi.core import (
     SettingsRefused,
     SubmissionRefused,
 )
-from wallpapi.model import Verdict
+from wallpapi.model import Mix, Verdict
 from wallpapi.refill import RefillThread
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -164,6 +167,48 @@ def _mix_context(core: CoreService) -> dict[str, object]:
     quietly claim the fallback was the choice.
     """
     return {"mixes": core.list_mixes(), "active_mix": core.get_settings().active_mix}
+
+
+def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> dict[str, object]:
+    """The **Mixes** section of the settings page: a row per **Mix**, plus the row that adds one.
+
+    Built here rather than in the template because three facts have to be combined per row — what is
+    stored, what the user has just typed, and whether the row may be deleted — and a template deciding
+    any of them would be a second place that knows the rules.
+
+    `posted` is the save that was refused, put back over the row it came from so that fixing one number
+    is not retyping three. A posted name that matches no stored **Mix** belongs to the add row, which is
+    where it was typed; that includes the empty name, which is the only way `MIX_NAME_INVALID` is
+    reached.
+
+    A row is deletable when it is neither **Explore** nor **Refine** (`UNDELETABLE_MIXES`) nor the active
+    **Mix**. Both are refusals the Core service makes anyway; not rendering the control is the page
+    declining to offer a button that cannot work, the same way **History** renders no clear control on a
+    row with nothing to clear.
+    """
+    typed = dict(posted or {})
+    typed_name = typed.get("name", "").strip()
+    stored = core.list_mixes()
+    active = core.get_settings().active_mix
+
+    def fields(mix: Mix) -> dict[str, object]:
+        edited = typed if typed_name == mix.name else {}
+        return {
+            "name": mix.name,
+            "unknown": edited.get("unknown", str(mix.unknown)),
+            "banger": edited.get("banger", str(mix.banger)),
+            "dud": edited.get("dud", str(mix.dud)),
+            "active": mix.name == active,
+            "deletable": mix.name not in UNDELETABLE_MIXES and mix.name != active,
+        }
+
+    added = typed if typed_name not in {mix.name for mix in stored} else {}
+    return {
+        "mix_rows": [fields(mix) for mix in stored],
+        "new_mix": {field: added.get(field, "") for field in ("name", "unknown", "banger", "dud")},
+        "mix_total": MIX_TOTAL,
+        "max_mix_name_length": MAX_MIX_NAME_LENGTH,
+    }
 
 
 def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
@@ -381,8 +426,10 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         request: Request,
         *,
         posted: Mapping[str, str],
+        posted_mix: Mapping[str, str] | None = None,
         refused: SettingsRefused | None = None,
         saved: bool = False,
+        deleted: bool = False,
         status_code: int = HTTPStatus.OK,
     ) -> HTMLResponse:
         """The settings form, filled with the values given rather than with the values stored.
@@ -391,14 +438,20 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         the others. `posted` is every field as text, which is how a plain page load renders them too — the
         form fields are strings either way, and giving both paths one shape means a field added to the form
         is added in one place rather than three.
+
+        `posted_mix` is the same idea for the **Mixes** section, kept apart from `posted` because those
+        rows are forms of their own: a **Mix** row posts four fields under names every other **Mix** row
+        posts too, so they cannot be spread into one flat context the way the settings fields are.
         """
         return templates.TemplateResponse(
             request,
             "settings.html",
             {
                 **posted,
+                **_mix_section(core, posted_mix),
                 "refused": refused,
                 "saved": saved,
+                "deleted": deleted,
                 "min_batch_size": MIN_BATCH_SIZE,
                 "max_batch_size": MAX_BATCH_SIZE,
                 "min_pool_target_size": MIN_POOL_TARGET_SIZE,
@@ -411,9 +464,9 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, saved: bool = False) -> HTMLResponse:
+    def settings_page(request: Request, saved: bool = False, deleted: bool = False) -> HTMLResponse:
         """The settings page, showing what is stored."""
-        return render_settings(request, posted=_stored_fields(core), saved=saved)
+        return render_settings(request, posted=_stored_fields(core), saved=saved, deleted=deleted)
 
     @app.post("/settings")
     def save_settings(
@@ -471,6 +524,60 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 status_code=HTTPStatus.BAD_REQUEST,
             )
         return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
+
+    @app.post("/settings/mixes")
+    def save_mix(
+        request: Request,
+        name: Annotated[str, Form()] = "",
+        unknown: Annotated[str, Form()] = "",
+        banger: Annotated[str, Form()] = "",
+        dud: Annotated[str, Form()] = "",
+    ) -> Response:
+        """Create a **Mix** or edit one, and come back with the reason if those are not percentages.
+
+        One route for both, because `save_mix` is one write: the add row and every edit row post the same
+        four fields, and which of the two happened is a question about the table rather than about what
+        the user asked for.
+
+        Plain form posts rather than htmx, like the rest of this page — a **Mix** row changes the
+        switcher on another page and the list this section renders, so there is no fragment worth
+        swapping. Post-redirect-get on success for the reason `/settings` redirects: saving the same
+        **Mix** twice is the same **Mix**.
+
+        Every field is `str` with a default of empty, and the Core service decides. A declared `int` would
+        answer a typo with FastAPI's own JSON 422 instead of the sentence this page renders, and an empty
+        percentage — the add row submitted with a name and nothing else — would be a 422 rather than
+        `MIX_PERCENTAGES_INVALID`.
+        """
+        result = core.save_mix(name, unknown=unknown, banger=banger, dud=dud)
+        if isinstance(result, SettingsRefused):
+            return render_settings(
+                request,
+                posted=_stored_fields(core),
+                posted_mix={"name": name, "unknown": unknown, "banger": banger, "dud": dud},
+                refused=result,
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+        return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
+
+    @app.post("/settings/mixes/delete")
+    def delete_mix(request: Request, name: Annotated[str, Form()] = "") -> Response:
+        """Remove a **Mix**, or re-render with the reason it stays.
+
+        The page renders no delete control on **Explore**, on **Refine** or on the active **Mix**, so
+        every refusal here is a second tab or a hand-made post — but it is a rendered sentence rather
+        than a bare status code, because this is a full page load and the user is looking at the section
+        the answer belongs in.
+        """
+        refused = core.delete_mix(name)
+        if refused is not None:
+            return render_settings(
+                request,
+                posted=_stored_fields(core),
+                refused=refused,
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+        return RedirectResponse("/settings?deleted=1", status_code=HTTPStatus.SEE_OTHER)
 
     @app.get("/thumb/{wallpaper_id}")
     def thumbnail(wallpaper_id: str) -> FileResponse:
