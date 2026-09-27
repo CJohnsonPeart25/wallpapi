@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import make_harness
 from tests.fakes import catalogue_of
+from tests.test_refill_like import favourite
 from wallpapi.web.app import create_app
 
 
@@ -101,3 +102,38 @@ def test_the_indicator_shows_the_last_refill_error(db_path: Path) -> None:
     assert response.status_code == 200, "a stocked pool still shows a Batch"
     assert "Last error" in response.text
     assert "set up to fail" in response.text
+
+
+def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Path) -> None:
+    """#13: "refill fetching" says nothing about *what*, and the two strategies say different things.
+
+    A **Pool** growing only at random means there are no **Favourites** in the **Decision log** yet, which
+    is something the person reading the line can act on. Still one line.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=1)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert "searching at random" in response.text
+    assert "lookalikes" not in response.text, "no Favourites yet, so nothing to look like"
+
+
+def test_the_indicator_says_when_the_refill_is_searching_for_lookalikes(db_path: Path) -> None:
+    """The other half of the same line, once there is a **Favourite** for a like: search to be about."""
+    harness = make_harness(
+        db_path,
+        catalogue=catalogue_of(2),
+        like_results={"wp0000": catalogue_of(4, prefix="lk")},
+        fill_pool=1,
+    )
+    harness.core.update_settings(pool_target_size=1000)
+    favourite(harness, "wp0000")
+    harness.fill_pool(1)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert "searching for lookalikes of a favourite" in response.text

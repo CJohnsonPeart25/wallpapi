@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
+from wallpapi.core import LIKE_QUERY_PREFIX
 from wallpapi.model import Wallpaper
 from wallpapi.wallhaven import RateLimited, SearchPage
 
@@ -76,6 +77,10 @@ class FakeWallhavenClient:
     `rate_limited_calls` makes the first N searches answer 429, as the real client's `RateLimited`.
     `fail_from_call` makes every call from the Nth onwards a transport failure. Together they cover both
     halves of the refill's error handling.
+
+    `like_results` is the second catalogue: what a `q=like:<wallhaven id>` search answers, keyed by that
+    ID (#13). A **Favourite** with no entry answers an empty page, which is also how a real like: search
+    ends — Wallhaven has only so many lookalikes to offer for any one **Wallpaper**.
     """
 
     def __init__(
@@ -87,8 +92,12 @@ class FakeWallhavenClient:
         fail_from_call: int | None = None,
         rate_limited_calls: int = 0,
         retry_after: float | None = None,
+        like_results: Mapping[str, Sequence[Wallpaper]] | None = None,
     ) -> None:
         self.catalogue: list[Wallpaper] = list(catalogue)
+        self.like_results: dict[str, list[Wallpaper]] = {
+            key: list(value) for key, value in (like_results or {}).items()
+        }
         self.seed = seed
         self.page_size = page_size
         self.fail_from_call = fail_from_call
@@ -106,6 +115,7 @@ class FakeWallhavenClient:
         sorting: str,
         purity: str,
         categories: str | None = None,
+        query: str | None = None,
         page: int = 1,
         seed: str | None = None,
         atleast: str | None = None,
@@ -116,6 +126,7 @@ class FakeWallhavenClient:
                 "sorting": sorting,
                 "purity": purity,
                 "categories": categories,
+                "query": query,
                 "page": page,
                 "seed": seed,
                 "atleast": atleast,
@@ -127,8 +138,21 @@ class FakeWallhavenClient:
             raise RateLimited(self.retry_after)
         if self.fail_from_call is not None and len(self.searches) >= self.fail_from_call:
             raise WallhavenUnreachable(f"call {len(self.searches)} was set up to fail")
+        results = self._results_for(query)
         start = (page - 1) * self.page_size
-        return SearchPage(wallpapers=tuple(self.catalogue[start : start + self.page_size]), seed=self.seed)
+        return SearchPage(wallpapers=tuple(results[start : start + self.page_size]), seed=self.seed)
+
+    def _results_for(self, query: str | None) -> list[Wallpaper]:
+        """Which catalogue answers this search: the lookalikes of one **Wallpaper**, or everything.
+
+        Only `like:` is understood, because it is the only expression wallpapi sends. Anything else would
+        be a search this fake has been asked to answer without having been told how to.
+        """
+        if query is None:
+            return self.catalogue
+        if not query.startswith(LIKE_QUERY_PREFIX):
+            raise ValueError(f"the fake was not told how to answer {query!r}")
+        return self.like_results.get(query.removeprefix(LIKE_QUERY_PREFIX), [])
 
     def fetch_thumbnail(self, url: str) -> bytes:
         self.thumbnail_fetches.append(url)
