@@ -45,9 +45,27 @@
         </p>
         <p><a href="/">Start a new batch</a></p>
       {% else %}
-        <p class="unavailable">No batch is available right now ({{ unavailable.reason.value }}).</p>
+        {# Never a 500, and never a bare reason code (#15). An empty pool because nothing has arrived yet
+           and an empty pool because Wallhaven is unreachable look identical from here, and they are not
+           the same problem: one is a matter of waiting and the other is not. #}
+        {% if unavailable.reason.value == "wallhaven_unreachable" %}
+          <p class="unavailable">
+            Nothing to show: wallpapi cannot reach Wallhaven, so the pool has not filled.
+          </p>
+          <p class="unavailable-detail">
+            The last attempt failed{% if unavailable.error_at %} at
+            {{ unavailable.error_at.strftime("%H:%M") }} UTC{% endif %}: {{ unavailable.error }}.
+            The refill keeps trying.
+          </p>
+        {% else %}
+          <p class="unavailable">
+            Nothing to show yet — the pool is empty. The background refill fills it from Wallhaven; give it
+            a moment and reload.
+          </p>
+        {% endif %}
         <p><a href="/">Try again</a></p>
       {% endif %}
+      {% include "refill.html" %}
     </main>
     {#
       The fullscreen preview. One dialog for the whole page rather than one per tile: only one
