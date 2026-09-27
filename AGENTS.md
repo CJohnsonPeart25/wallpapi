@@ -17,6 +17,11 @@ The five canonical triage roles, each label string equal to its role name. See `
 
 Single-context — `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+### Delivery
+
+One agent per issue in its own worktree, PR shape, review-note comment, lead review, and how migration and
+ADR numbers are assigned before dispatch. See `docs/agents/delivery.md`.
+
 ## Stack
 
 Decided before issue #2 and locked for everything downstream. Mirrored in issue #1 under "Technology"; if the
@@ -244,6 +249,13 @@ Each of these is one careless line away from being silently violated.
   `x-ratelimit-limit` and `x-ratelimit-remaining`, which are the authoritative count; `wallhaven.py` does not
   read them today.
 - No API key is needed: NSFW is what requires one, and purity is fixed to SFW.
+
+### Wiring traps
+
+- The background threads — the **Pool** refill and the **Similarity provider** upkeep — are opt-in via the
+  `refill` flag on `create_app`, off by default so that no test starts a thread against the fakes. `build_app`
+  in `main.py` is the only caller that turns it on, and nothing tests `build_app` because it builds real clients
+  against `~/.wallpapi`. Deleting or mistyping that one line silently stops the **Pool** filling.
 
 ## Deferred decisions
 
