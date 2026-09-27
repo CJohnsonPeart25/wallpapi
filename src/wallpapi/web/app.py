@@ -7,7 +7,8 @@ smoke test inject the fake Wallhaven client.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from http import HTTPStatus
 from mimetypes import guess_type
 from pathlib import Path
@@ -17,6 +18,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.types import Lifespan
 
 from wallpapi.core import (
     MAX_BATCH_SIZE,
@@ -32,6 +34,7 @@ from wallpapi.core import (
     SubmissionRefused,
 )
 from wallpapi.model import Verdict
+from wallpapi.refill import RefillThread
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -56,6 +59,30 @@ def _drafted_verdict(posted: str) -> Verdict | None:
     return chosen
 
 
+def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
+    """Start the **Pool** refill with the app and join it on the way out.
+
+    The thread is started here rather than in the Core service because the Core service is also what a
+    test constructs, and constructing one must not start a thread that talks to Wallhaven.
+
+    Joined with a timeout greater than the client's request timeout (invariant 12), so a stop arriving mid
+    request still lands: the request cannot outlast its own timeout, and every wait inside the loop is a
+    `stop_event.wait`.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        del app
+        thread = RefillThread(core)
+        thread.start()
+        try:
+            yield
+        finally:
+            thread.stop()
+
+    return lifespan
+
+
 def _stored_fields(core: CoreService) -> dict[str, str]:
     """Every settings form field as text, read from the Core service.
 
@@ -74,8 +101,15 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
     }
 
 
-def create_app(core: CoreService) -> FastAPI:
-    app = FastAPI(title="wallpapi")
+def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
+    """The app over an already-constructed Core service.
+
+    `refill` starts the background **Pool** refill in the lifespan and joins it on shutdown. Off by
+    default, and `main.py` is the one caller that turns it on: a test that started a thread would be a test
+    with a race in it, and every behaviour test here drives `refill_step` by hand instead. The one test
+    that does start it is `test_refill_thread.py`, and what it checks is the thread itself.
+    """
+    app = FastAPI(title="wallpapi", lifespan=_lifespan(core) if refill else None)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -86,21 +120,34 @@ def create_app(core: CoreService) -> FastAPI:
         recorded: int | None = None,
         ignored: int | None = None,
     ) -> HTMLResponse:
-        """One template and one status code per outcome, so every route answers the same way."""
+        """One template and one status code per outcome, so every route answers the same way.
+
+        Every outcome carries the refill status, because the indicator is on the page in all of them —
+        most of all on the one that says there is nothing to show, where what the refill is doing is the
+        answer to "why".
+        """
+        context: dict[str, object] = {"status": core.refill_status()}
         if isinstance(result, Batch):
             return templates.TemplateResponse(
-                request, "batch.html", {"batch": result, "recorded": recorded, "ignored": ignored}
+                request,
+                "batch.html",
+                {**context, "batch": result, "recorded": recorded, "ignored": ignored},
             )
         if isinstance(result, SubmissionRefused):
             already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
             return templates.TemplateResponse(
                 request,
                 "batch.html",
-                {"refused": result},
+                {**context, "refused": result},
                 status_code=HTTPStatus.CONFLICT if already else HTTPStatus.NOT_FOUND,
             )
+        # 503 and never a 500 (#15). Nothing here failed: the **Pool** is empty, which is a state the page
+        # can explain and which the refill may well fix by itself.
         return templates.TemplateResponse(
-            request, "batch.html", {"unavailable": result}, status_code=HTTPStatus.SERVICE_UNAVAILABLE
+            request,
+            "batch.html",
+            {**context, "unavailable": result},
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     @app.get("/", response_class=HTMLResponse)

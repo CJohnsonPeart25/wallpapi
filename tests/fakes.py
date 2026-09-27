@@ -7,6 +7,7 @@ Four of the five dependencies are faked here. The fifth, the random source, is n
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,6 +96,9 @@ class FakeWallhavenClient:
         self.retry_after = retry_after
         self.searches: list[dict[str, object]] = []
         self.thumbnail_fetches: list[str] = []
+        self.searched = threading.Event()
+        """Set by every search. The one thread test waits on this rather than guessing how long the
+        refill thread needs, so it is deterministic without sleeping."""
 
     def search(
         self,
@@ -118,6 +122,7 @@ class FakeWallhavenClient:
                 "ratios": ratios,
             }
         )
+        self.searched.set()
         if len(self.searches) <= self.rate_limited_calls:
             raise RateLimited(self.retry_after)
         if self.fail_from_call is not None and len(self.searches) >= self.fail_from_call:
