@@ -1,0 +1,81 @@
+{#
+  **History**: every **Wallpaper** that has ever been judged, newest activity first, with its **Verdict**
+  changeable in place.
+
+  A view over the **Decision log** and not a second store — one row per **Wallpaper** rather than one per
+  entry, because the log holds an entry per **Wallpaper** per **Batch** and a listing of those would show
+  the same image a dozen times and offer a dozen places to change one current value.
+
+  Filtered and paged, because a week of ordinary use is thousands of **Ignores**. Both are plain links
+  rather than htmx: they change what the whole page is, and a bookmarked filter is worth having.
+#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wallpapi — history</title>
+    {# Vendored, never a third-party script tag, for the reason batch.html gives. #}
+    <link rel="stylesheet" href="/static/wallpapi.css" />
+    <script src="/static/htmx.min.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <nav>
+        <a href="/">Batches</a>
+        <a href="/history" aria-current="page">History</a>
+        <a href="/settings">Settings</a>
+      </nav>
+      <h1>History</h1>
+      <p class="history-filter">
+        {% if history.verdict %}
+          <a href="/history">all</a>
+        {% else %}
+          <span class="current">all</span>
+        {% endif %}
+        {% for choice in verdicts %}
+          {% if history.verdict and history.verdict.value == choice.value %}
+            <span class="current">{{ choice.value }}</span>
+          {% else %}
+            <a href="/history?verdict={{ choice.value }}">{{ choice.value }}</a>
+          {% endif %}
+        {% endfor %}
+      </p>
+      {% if history.rows %}
+        <p class="history-count">
+          {{ history.total }} wallpaper{{ "" if history.total == 1 else "s" }},
+          page {{ history.page }} of {{ history.pages }}.
+        </p>
+        <ul class="history">
+          {% for row in history.rows %}
+            {% include "history_row.html" %}
+          {% endfor %}
+        </ul>
+        {# Only the two steps, not a numbered list: a History of thousands of Ignores would be hundreds of
+           page numbers, and nobody navigates a log that way. #}
+        <p class="paging">
+          {% if history.previous_page %}
+            <a
+              class="previous"
+              href="/history?page={{ history.previous_page }}{% if history.verdict %}&verdict={{ history.verdict.value }}{% endif %}"
+            >previous</a>
+          {% endif %}
+          {% if history.next_page %}
+            <a
+              class="next"
+              href="/history?page={{ history.next_page }}{% if history.verdict %}&verdict={{ history.verdict.value }}{% endif %}"
+            >next</a>
+          {% endif %}
+        </p>
+      {% elif history.verdict %}
+        <p class="history-empty">
+          Nothing resolves to {{ history.verdict.value }} yet. <a href="/history">Show everything.</a>
+        </p>
+      {% else %}
+        <p class="history-empty">
+          Nothing judged yet. <a href="/">Submit a batch</a> and it will appear here.
+        </p>
+      {% endif %}
+    </main>
+  </body>
+</html>

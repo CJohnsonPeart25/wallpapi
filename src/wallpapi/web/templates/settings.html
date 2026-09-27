@@ -17,7 +17,7 @@
   </head>
   <body>
     <main>
-      <nav><a href="/">Back to batches</a></nav>
+      <nav><a href="/">Batches</a> <a href="/history">History</a> <a href="/settings" aria-current="page">Settings</a></nav>
       <h1>Settings</h1>
       {% if saved %}
         <p class="saved">Settings saved.</p>
@@ -51,6 +51,8 @@
             Similarity radius must be a number from 0 to 1.
           {% elif refused.reason.value == "similarity_decay_invalid" %}
             Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
+          {% elif refused.reason.value == "thumbnail_cache_max_mb_invalid" %}
+            The thumbnail cache limit must be a whole number of megabytes, 0 or more.
           {% else %}
             That value was refused ({{ refused.reason.value }}).
           {% endif %}
@@ -175,6 +177,15 @@
           />
           <span class="hint">From 0 to {{ max_similarity_decay }}. How fast a verdict fades with distance.
             Higher is fussier; 0 counts everything inside the radius equally.</span>
+        </p>
+        <h2>Thumbnails</h2>
+        <p>
+          <label for="thumbnail_cache_max_mb">Thumbnail cache limit</label>
+          <input type="number" id="thumbnail_cache_max_mb" name="thumbnail_cache_max_mb" min="0" step="1"
+            value="{{ thumbnail_cache_max_mb }}" />
+          <span class="hint">Megabytes. Thumbnails of wallpapers you have judged are never deleted —
+            history needs them — so this only limits the ones still waiting in the pool. Anything deleted
+            is fetched again the next time it is shown.</span>
         </p>
         <button type="submit">Save settings</button>
       </form>
