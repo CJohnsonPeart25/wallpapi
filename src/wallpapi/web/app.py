@@ -31,6 +31,7 @@ from wallpapi.core import (
     Batch,
     BatchUnavailable,
     CoreService,
+    HistoryRefused,
     SettingsRefused,
     SubmissionRefused,
 )
@@ -58,6 +59,53 @@ def _drafted_verdict(posted: str) -> Verdict | None:
     if chosen is Verdict.IGNORE:
         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="an ignore is derived, not drafted")
     return chosen
+
+
+def _chosen_verdict(posted: str) -> Verdict:
+    """The **Verdict** a **History** control posted. Required, and never an **Ignore**.
+
+    The tile version has a "no mark" to post; **History** has a clear, which is its own route because a
+    **Clearance** is an entry rather than the absence of one. So an empty **Verdict** here is a malformed
+    post rather than a meaning, and it is refused with the same 400 an unknown one gets.
+    """
+    chosen = _drafted_verdict(posted)
+    if chosen is None:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="a verdict is required")
+    return chosen
+
+
+def _history_filter(posted: str) -> Verdict | None:
+    """The resolved **Verdict** the **History** listing is narrowed to, or `None` for all of them.
+
+    **Ignore** *is* accepted here, unlike everywhere a **Verdict** is chosen: it is a resolved value like
+    any other, and "show me only what I scrolled past" is the filter the page most needs.
+    """
+    if not posted:
+        return None
+    try:
+        return Verdict(posted)
+    except ValueError:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
+
+
+_HISTORY_REFUSAL_STATUS = {
+    HistoryRefused.Reason.UNKNOWN_WALLPAPER: HTTPStatus.NOT_FOUND,
+    HistoryRefused.Reason.IGNORE_NOT_CHOOSABLE: HTTPStatus.BAD_REQUEST,
+    HistoryRefused.Reason.NOTHING_TO_CLEAR: HTTPStatus.CONFLICT,
+}
+"""What each **History** refusal is over HTTP.
+
+Every one of them is a hand-made post or a second tab — the page renders no control that can produce one,
+and no clear control at all on a row with nothing to clear. So they are status codes rather than a rendered
+branch: htmx does not swap a 4xx, which is exactly right when the answer is "that row did not change".
+"""
+
+_FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
+"""The **History** filter's choices, strongest positive to the thing that is barely a judgement at all.
+
+Written out rather than `tuple(Verdict)`, which would put **Ignore** in the middle: **Ignore** is last
+because it is the overwhelming majority of the rows and the least interesting of them.
+"""
 
 
 def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
@@ -101,6 +149,7 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
         "min_favourites": str(current.min_favourites),
         "similarity_radius": str(current.similarity_radius),
         "similarity_decay": str(current.similarity_decay),
+        "thumbnail_cache_max_mb": str(current.thumbnail_cache_max_mb),
     }
 
 
@@ -172,7 +221,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         # Counted from the Decision log, not from the form: the page reports what was appended rather
         # than what the browser claimed to be showing.
         appended = core.list_history(batch_id=batch_id)
-        ignored = sum(1 for entry in appended if entry.verdict is Verdict.IGNORE)
+        ignored = sum(1 for entry in appended if entry.entry is Verdict.IGNORE)
         return render(request, result, recorded=len(appended), ignored=ignored)
 
     @app.post("/draft", response_class=HTMLResponse)
@@ -238,6 +287,63 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
             return render(request, live)
         return templates.TemplateResponse(request, "grid.html", {"batch": live})
 
+    def render_history_row(request: Request, wallpaper_id: str) -> HTMLResponse:
+        """The one row an edit or a **Clearance** changed, swapped back into the listing.
+
+        The row and not the page, for the reason a tile is swapped rather than the grid: an edit changes
+        one **Wallpaper**, and re-rendering a hundred rows would fight with anything else the user has
+        clicked since. Read back from the Core service rather than assumed, so what is on screen is what
+        the **Decision log** now resolves to.
+
+        A row whose **Wallpaper** has entries always exists — nothing here can delete one — so `None` is a
+        **Wallpaper** the database has never seen, which the refusals above have already ruled out.
+        """
+        row = core.get_history_row(wallpaper_id)
+        if row is None:
+            raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="unknown wallpaper")
+        return templates.TemplateResponse(request, "history_row.html", {"row": row})
+
+    def refuse_history(refused: HistoryRefused) -> HTTPException:
+        return HTTPException(status_code=_HISTORY_REFUSAL_STATUS[refused.reason], detail=refused.reason.value)
+
+    @app.get("/history", response_class=HTMLResponse)
+    def history_page(request: Request, verdict: str = "", page: int = 1) -> HTMLResponse:
+        """**History**: one row per **Wallpaper** ever judged, newest activity first.
+
+        A view over the **Decision log**, not a second store. Filtered by resolved **Verdict** and paged,
+        because a week of ordinary use is thousands of **Ignores** and all of them on one page is not a
+        page. The Core service clamps a page number out of range rather than refusing it, so a stale link
+        lands on the last page.
+        """
+        listing = core.list_history_rows(verdict=_history_filter(verdict), page=page)
+        return templates.TemplateResponse(
+            request, "history.html", {"history": listing, "verdicts": _FILTERABLE_VERDICTS}
+        )
+
+    @app.post("/history/verdict", response_class=HTMLResponse)
+    def history_verdict(
+        request: Request,
+        wallpaper_id: Annotated[str, Form()],
+        verdict: Annotated[str, Form()] = "",
+    ) -> HTMLResponse:
+        """Change a **Wallpaper**'s **Verdict** from **History**, and swap its row back."""
+        refused = core.edit_verdict(wallpaper_id, _chosen_verdict(verdict))
+        if refused is not None:
+            raise refuse_history(refused)
+        return render_history_row(request, wallpaper_id)
+
+    @app.post("/history/clear", response_class=HTMLResponse)
+    def history_clear(request: Request, wallpaper_id: Annotated[str, Form()]) -> HTMLResponse:
+        """Withdraw a **Wallpaper**'s **Explicit Verdict**, and swap its row back.
+
+        Its own route rather than `/history/verdict` with an empty **Verdict**: a **Clearance** is an entry
+        of its own, and posting "no verdict" to say so would be the one spelling that means two things.
+        """
+        refused = core.clear_verdict(wallpaper_id)
+        if refused is not None:
+            raise refuse_history(refused)
+        return render_history_row(request, wallpaper_id)
+
     def render_settings(
         request: Request,
         *,
@@ -280,6 +386,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     def save_settings(
         request: Request,
         batch_size: Annotated[str | None, Form()] = None,
+        thumbnail_cache_max_mb: Annotated[str | None, Form()] = None,
         library_path: Annotated[str | None, Form()] = None,
         pool_target_size: Annotated[str | None, Form()] = None,
         min_width: Annotated[str | None, Form()] = None,
@@ -316,6 +423,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 ("min_favourites", min_favourites),
                 ("similarity_radius", similarity_radius),
                 ("similarity_decay", similarity_decay),
+                ("thumbnail_cache_max_mb", thumbnail_cache_max_mb),
             )
             if value is not None
         }

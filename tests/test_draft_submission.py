@@ -28,7 +28,7 @@ def test_submitting_records_the_drafted_verdicts_plus_an_ignore_for_everything_u
 
     harness.core.submit_batch(batch.id)
 
-    recorded = {e.wallpaper_id: e.verdict for e in harness.core.list_history(batch_id=batch.id)}
+    recorded = {e.wallpaper_id: e.entry for e in harness.core.list_history(batch_id=batch.id)}
     assert recorded == {
         favourite: Verdict.FAVOURITE,
         like: Verdict.LIKE,

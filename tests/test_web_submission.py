@@ -33,7 +33,7 @@ def test_posting_the_form_records_the_batch_and_renders_the_next_one(db_path: Pa
     history = harness.core.list_history()
     assert len(history) == 8
     assert all(entry.batch_id == shown for entry in history)
-    assert all(entry.verdict is Verdict.IGNORE for entry in history)
+    assert all(entry.entry is Verdict.IGNORE for entry in history)
     assert response.text.count('data-wallpaper-id="') == 8
     assert batch_id_of(response.text) != shown
 

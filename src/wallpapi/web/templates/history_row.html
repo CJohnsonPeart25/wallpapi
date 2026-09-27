@@ -1,0 +1,77 @@
+{#
+  One **History** row: a **Wallpaper**, what its **Decision log** entries resolve to now, when it was last
+  judged, and the controls that change it. Included by history.html and rendered on its own as the htmx
+  swap for an edit or a **Clearance**.
+
+  Each **Verdict** control posts the **Verdict** the row should *end up* with, exactly as a tile does
+  (invariant 6): a replayed or duplicated click lands on the same state. Unlike a tile, the marked control
+  does not post an empty **Verdict** to undo itself — clearing is its own route, because a **Clearance** is
+  an entry in its own right and not the absence of one.
+
+  `hx-sync="this:replace"` for the same reason the tiles carry it: a late response must not swap a stale
+  row back in over a newer one.
+
+  The clear control is rendered only where there is an **Explicit Verdict** to withdraw. A row resolving to
+  an **Ignore**, or to nothing at all, has none — `clear_verdict` refuses one anyway, but a button whose
+  answer is always "nothing happened" should not be on the page.
+#}
+<li
+  class="history-row"
+  id="history-{{ row.wallpaper.id }}"
+  data-wallpaper-id="{{ row.wallpaper.id }}"
+  data-resolved-verdict="{{ row.resolved.verdict.value if row.resolved.verdict else '' }}"
+>
+  <img
+    src="/thumb/{{ row.wallpaper.id }}"
+    alt=""
+    loading="lazy"
+    width="{{ row.wallpaper.width }}"
+    height="{{ row.wallpaper.height }}"
+  />
+  <div class="resolved">
+    {% if row.resolved.verdict %}
+      <span class="verdict-name">{{ row.resolved.verdict.value }}</span>
+    {% else %}
+      {# Reachable: an Explicit Verdict given and then Cleared, with no Ignores left standing. #}
+      <span class="verdict-name none">no verdict</span>
+    {% endif %}
+    <time datetime="{{ row.latest_at.isoformat() }}">
+      {{ row.latest_at.strftime("%Y-%m-%d %H:%M") }} UTC
+    </time>
+  </div>
+  <div class="verdicts">
+    {% for choice in ["favourite", "like", "ban"] %}
+      <button
+        type="button"
+        class="verdict{{ ' marked' if row.resolved.verdict and row.resolved.verdict.value == choice else '' }}"
+        data-verdict="{{ choice }}"
+        aria-pressed="{{ 'true' if row.resolved.verdict and row.resolved.verdict.value == choice else 'false' }}"
+        hx-post="/history/verdict"
+        hx-vals='{"wallpaper_id": "{{ row.wallpaper.id }}", "verdict": "{{ choice }}"}'
+        hx-target="closest .history-row"
+        hx-swap="outerHTML"
+        hx-sync="this:replace"
+      >{{ choice }}</button>
+    {% endfor %}
+    {% if row.clearable %}
+      <button
+        type="button"
+        class="verdict clear"
+        hx-post="/history/clear"
+        hx-vals='{"wallpaper_id": "{{ row.wallpaper.id }}"}'
+        hx-target="closest .history-row"
+        hx-swap="outerHTML"
+        hx-sync="this:replace"
+      >clear</button>
+    {% endif %}
+  </div>
+  <div class="links">
+    {# A new tab, so working through History is not interrupted, and with no handle back and no referrer. #}
+    <a
+      class="source"
+      href="{{ row.wallpaper.page_url }}"
+      target="_blank"
+      rel="noopener noreferrer"
+    >wallhaven</a>
+  </div>
+</li>
