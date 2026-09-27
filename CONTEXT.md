@@ -122,6 +122,10 @@ _Avoid_: cooldown, decay, penalty
 The output folder of favourites, written one way only and never read back. Windows' own personalisation settings handle rotation from it.
 _Avoid_: downloads, collection, gallery, output dir
 
+**Library reconciliation**:
+Making the library agree with the decision log: every favourite with no file gets one, and every file whose wallpaper is no longer a favourite loses it. The library is derived from the decision log rather than written as a side effect of a click, so reconciling twice does nothing the second time.
+_Avoid_: sync, download queue, flush, refresh
+
 **Thumbnail cache**:
 The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails for any wallpaper that has been shown or decided, not full-resolution favourites.
 _Avoid_: image cache, thumbs, local store, static files

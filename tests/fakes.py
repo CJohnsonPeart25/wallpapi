@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -93,16 +94,45 @@ class FakeWallhavenClient:
         return THUMBNAIL_BYTES
 
 
-class FakeLibraryWriter:
-    """Records writes and deletions. Nothing in #2 should make it record anything."""
+@dataclass(frozen=True, slots=True)
+class LibraryWrite:
+    """One call the **Library** writer was asked to make.
 
-    def __init__(self) -> None:
-        self.written: list[tuple[str, Path]] = []
+    Carries the source URL as well as the destination, so a test can pin that a **Favourite** downloads the
+    full-resolution image rather than the thumbnail.
+    """
+
+    wallpaper_id: str
+    source_url: str
+    destination: Path
+
+
+class LibraryUnwritable(RuntimeError):
+    """What the fake raises to stand in for a failed download or a failed disk write.
+
+    The **Library** protocol declares no error type — the real writer can fail with anything `httpx2` or the
+    filesystem raises — so this exists to let a test make a write fail without reaching for either.
+    """
+
+
+class FakeLibraryWriter:
+    """Records writes and deletions, and can be told to fail for particular **Wallpapers**.
+
+    `fail_for` is a mutable set so that one test can make a write fail, assert the **Decision log** survived
+    it, then empty the set and prove the next reconciliation retries rather than having given up.
+    """
+
+    def __init__(self, *, fail_for: set[str] | None = None) -> None:
+        self.written: list[LibraryWrite] = []
         self.removed: list[Path] = []
+        self.fail_for: set[str] = set() if fail_for is None else fail_for
 
     def write(self, wallpaper_id: str, source_url: str, destination: Path) -> Path:
-        del source_url
-        self.written.append((wallpaper_id, destination))
+        if wallpaper_id in self.fail_for:
+            raise LibraryUnwritable(f"{wallpaper_id} was set up to fail")
+        self.written.append(
+            LibraryWrite(wallpaper_id=wallpaper_id, source_url=source_url, destination=destination)
+        )
         return destination
 
     def remove(self, path: Path) -> None:
