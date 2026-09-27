@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from http import HTTPStatus
 from mimetypes import guess_type
 from pathlib import Path
@@ -40,6 +41,22 @@ from wallpapi.core import (
 )
 from wallpapi.model import Mix, Verdict
 from wallpapi.refill import RefillThread
+
+
+@dataclass(frozen=True, slots=True)
+class _DownloadCounts:
+    """What the last "download all **Favourites**" did, as the settings page renders it (#14).
+
+    A value rather than three loose template variables, so the template can ask whether there is anything
+    to say at all — `downloaded` is what tells a page load after a download from a plain page load, and
+    three zeroes are a real answer rather than an absent one.
+    """
+
+    downloaded: bool
+    written: int
+    skipped: int
+    failed: int
+
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -431,6 +448,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         refused: SettingsRefused | None = None,
         saved: bool = False,
         deleted: bool = False,
+        download: _DownloadCounts | None = None,
         status_code: int = HTTPStatus.OK,
     ) -> HTMLResponse:
         """The settings form, filled with the values given rather than with the values stored.
@@ -453,6 +471,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 "refused": refused,
                 "saved": saved,
                 "deleted": deleted,
+                "download": download,
                 "min_batch_size": MIN_BATCH_SIZE,
                 "max_batch_size": MAX_BATCH_SIZE,
                 "min_pool_target_size": MIN_POOL_TARGET_SIZE,
@@ -465,9 +484,30 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, saved: bool = False, deleted: bool = False) -> HTMLResponse:
-        """The settings page, showing what is stored."""
-        return render_settings(request, posted=_stored_fields(core), saved=saved, deleted=deleted)
+    def settings_page(
+        request: Request,
+        saved: bool = False,
+        deleted: bool = False,
+        downloaded: bool = False,
+        written: int = 0,
+        skipped: int = 0,
+        failed: int = 0,
+    ) -> HTMLResponse:
+        """The settings page, showing what is stored.
+
+        The three counts arrive as query parameters rather than being worked out here, because the page
+        that renders them is the *redirect target* of the download (#14) and not the download itself. They
+        are declared `int`, unlike every settings field: these are wallpapi's own numbers coming back
+        round a `303`, not anything the user typed, so FastAPI's 422 on a hand-edited URL is the right
+        answer rather than the wrong kind of error page.
+        """
+        return render_settings(
+            request,
+            posted=_stored_fields(core),
+            saved=saved,
+            deleted=deleted,
+            download=_DownloadCounts(downloaded, written, skipped, failed),
+        )
 
     @app.post("/settings")
     def save_settings(
@@ -527,6 +567,34 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 status_code=HTTPStatus.BAD_REQUEST,
             )
         return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
+
+    @app.post("/settings/library/download")
+    def download_favourites() -> Response:
+        """Pull every **Favourite** whose **Library** file is missing, and come back saying how many (#14).
+
+        The **Library** is derived from the **Decision log** and is otherwise only written when a
+        **Batch** is submitted; this is the button that says "make the folder match the log *now*", for a
+        **Library** deleted in Explorer or a database carried to another machine. One-way: it writes and
+        it skips, and there is no path through it that deletes anything.
+
+        Post-redirect-get with the counts in the query string, as `/settings` already does with `saved`.
+        The operation is idempotent — a repost would download nothing a second time — but it is still a
+        folder's worth of network calls, and a refresh should not be one. The counts travel round the
+        redirect rather than being rendered from this response, so the page the user lands on is the
+        ordinary settings page and the back button behaves.
+
+        No refusal branch, because there is nothing here to refuse: a **Favourite** whose download failed
+        is counted and is picked up by the next press, and one whose name or destination the guard turns
+        down is counted the same way. A raise would be the wrong answer to either.
+        """
+        pulled = core.download_favourites()
+        return RedirectResponse(
+            "/settings?downloaded=1"
+            f"&written={len(pulled.written)}"
+            f"&skipped={len(pulled.skipped)}"
+            f"&failed={len(pulled.failed)}",
+            status_code=HTTPStatus.SEE_OTHER,
+        )
 
     @app.post("/settings/mixes")
     def save_mix(
