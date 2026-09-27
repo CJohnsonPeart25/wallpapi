@@ -129,3 +129,17 @@ _Avoid_: image cache, thumbs, local store, static files
 **Core service**:
 The single interface between the UI and everything else, and the only seam tests enter through.
 _Avoid_: engine, manager, API, backend
+
+### Configuration
+
+**Settings**:
+Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size and the library path today; filters, mixes, the pool target size, the revisit weight and the similarity radius and decay join them later.
+_Avoid_: config, preferences, options
+
+**Batch size**:
+How many wallpapers a batch holds. A setting, read when a batch is minted, so changing it applies to the next batch rather than the one on screen.
+_Avoid_: n, page size, grid size
+
+**Library path**:
+Where the library folder is. A setting, always an absolute path, and not necessarily a folder that exists yet.
+_Avoid_: output folder, download directory, destination
