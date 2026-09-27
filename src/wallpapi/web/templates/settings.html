@@ -1,5 +1,5 @@
 {#
-  The settings page: batch size and the **Library** folder.
+  The settings page: batch size, the **Library** folder, the **Filters** and the **Pool** target size.
 
   A plain form post, not htmx — saving settings changes the whole page's meaning, so there is no fragment
   worth swapping. Unlike submitting a **Batch**, a successful save redirects, because saving the same
@@ -23,8 +23,9 @@
         <p class="saved">Settings saved.</p>
       {% endif %}
       {% if refused %}
-        {# The Core service's refusal reason, said in words. One branch per reason, so a reason added
-           later shows up here as an unhandled case rather than as a silent blank. #}
+        {# The Core service's refusal reason, said in words. One branch per reason; the last branch is a
+           fallback that names the reason rather than guessing, so a reason added later is visibly
+           unhandled instead of being described as something else. #}
         <p class="refused">
           {% if refused.reason.value == "batch_size_out_of_range" %}
             Batch size must be between {{ min_batch_size }} and {{ max_batch_size }}.
@@ -32,8 +33,22 @@
             Batch size must be a whole number between {{ min_batch_size }} and {{ max_batch_size }}.
           {% elif refused.reason.value == "library_path_empty" %}
             The library folder cannot be blank.
-          {% else %}
+          {% elif refused.reason.value == "library_path_not_absolute" %}
             The library folder must be an absolute path, such as C:\Users\you\Pictures\wallpapi.
+          {% elif refused.reason.value == "pool_target_size_invalid" %}
+            Pool target size must be a whole number between {{ min_pool_target_size }} and
+            {{ max_pool_target_size }}.
+          {% elif refused.reason.value == "min_width_invalid" %}
+            Minimum width must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
+          {% elif refused.reason.value == "min_height_invalid" %}
+            Minimum height must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
+          {% elif refused.reason.value == "allowed_ratios_invalid" %}
+            Allowed ratios must be a comma-separated list of ratios Wallhaven knows:
+            {{ wallhaven_ratios }}.
+          {% elif refused.reason.value == "min_favourites_invalid" %}
+            Minimum favourites must be a whole number, 0 or more.
+          {% else %}
+            That value was refused ({{ refused.reason.value }}).
           {% endif %}
           Nothing was changed.
         </p>
@@ -58,6 +73,71 @@
           <input type="text" id="library_path" name="library_path" size="60" value="{{ library_path }}" />
           <span class="hint">An absolute path. Favourites are downloaded here; the folder is created the
             first time one is written.</span>
+        </p>
+
+        <h2>Filters</h2>
+        <p class="hint">The hard rules a wallpaper must pass before it joins the pool. Changing them drops
+          undecided pool wallpapers that no longer pass; anything you have already judged stays, and so
+          does the batch on screen. Only safe-for-work wallpapers are ever fetched.</p>
+        <p>
+          <label for="min_width">Minimum width</label>
+          <input
+            type="number"
+            id="min_width"
+            name="min_width"
+            min="0"
+            max="{{ max_filter_pixels }}"
+            step="1"
+            value="{{ min_width }}"
+          />
+          <span class="hint">Pixels. A minimum, not an exact size — anything larger counts.</span>
+        </p>
+        <p>
+          <label for="min_height">Minimum height</label>
+          <input
+            type="number"
+            id="min_height"
+            name="min_height"
+            min="0"
+            max="{{ max_filter_pixels }}"
+            step="1"
+            value="{{ min_height }}"
+          />
+          <span class="hint">Pixels. Set either to 0 to stop filtering on that side.</span>
+        </p>
+        <p>
+          <label for="allowed_ratios">Allowed ratios</label>
+          <input
+            type="text"
+            id="allowed_ratios"
+            name="allowed_ratios"
+            size="40"
+            value="{{ allowed_ratios }}"
+          />
+          <span class="hint">Comma-separated, from {{ wallhaven_ratios }}.</span>
+        </p>
+        <p>
+          <label for="min_favourites">Minimum favourites</label>
+          <input type="number" id="min_favourites" name="min_favourites" min="0" step="1"
+            value="{{ min_favourites }}" />
+          <span class="hint">How many Wallhaven favourites a wallpaper needs. Applied here rather than in
+            the search — Wallhaven has no parameter for it.</span>
+        </p>
+
+        <h2>Pool</h2>
+        <p>
+          <label for="pool_target_size">Pool target size</label>
+          <input
+            type="number"
+            id="pool_target_size"
+            name="pool_target_size"
+            min="{{ min_pool_target_size }}"
+            max="{{ max_pool_target_size }}"
+            step="1"
+            value="{{ pool_target_size }}"
+          />
+          <span class="hint">How many filtered wallpapers to keep waiting. The background refill fetches at
+            full speed until the pool reaches this, then idles.</span>
         </p>
         <button type="submit">Save settings</button>
       </form>
