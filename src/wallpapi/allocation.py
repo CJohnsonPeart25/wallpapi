@@ -112,9 +112,10 @@ def weighted_order[T](items: Sequence[T], weights: Sequence[float], random: Seed
     makes the shortfall rule cheap — a **Zone** asked for more than it was allocated simply gives up the
     next ones in the order it already has, and no **Wallpaper** can come out twice.
 
-    **The weight is the seam #11 builds on.** Every weight is 1.0 today, and at 1.0 the key below is just
-    the uniform itself, so this is exactly a shuffle. The revisit weight multiplies into the weight and
-    nothing here changes.
+    **The weight is the Revisit weight (#11).** It is the setting for a **Wallpaper** carrying an
+    **Explicit Verdict** and 1.0 for every other, and at 1.0 the key below is just the uniform itself, so
+    an undecided **Zone** is exactly a shuffle. Nothing here knows that: which **Wallpaper** is worth how
+    much is the Core service's question, because it is the only thing holding the **Decision log**.
 
     Efraimidis and Spirakis' key, `u ** (1 / weight)` sorted descending: the resulting order is a weighted
     sample without replacement at every prefix, which is the property that makes "take the first `k`"
