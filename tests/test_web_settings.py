@@ -12,7 +12,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from tests.conftest import make_harness
-from wallpapi.core import MAX_BATCH_SIZE
+from tests.fakes import catalogue_of
+from wallpapi.core import MAX_BATCH_SIZE, Batch
+from wallpapi.model import Verdict
 from wallpapi.web.app import create_app
 
 
@@ -262,3 +264,91 @@ def test_a_refused_filter_post_keeps_what_was_typed_beside_what_is_stored(db_pat
     assert 'value="9999"' in response.text
     assert 'value="nope"' in response.text
     assert 'value="1440"' in response.text, "the untouched minimum height should still be shown"
+
+
+# -- Download all Favourites (#14) -----------------------------------------------------------------------
+
+
+def test_the_page_offers_a_download_for_every_favourite(db_path: Path) -> None:
+    """The one-way sync has to be somewhere the user can press it, and settings is where the folder is."""
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/settings")
+
+    assert 'action="/settings/library/download"' in response.text
+
+
+def test_downloading_the_favourites_writes_them_and_says_how_many(db_path: Path, tmp_path: Path) -> None:
+    """The acceptance criterion through the page: written, skipped and failed, in words the user reads.
+
+    The fake writer records paths that are not on this disk, which is exactly the state the button exists
+    for — a database carried to a machine whose **Library** folder is empty.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(2))
+    harness.core.update_settings(batch_size=2, library_path=tmp_path / "Library")
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    harness.core.set_all_draft_verdicts(batch.id, Verdict.FAVOURITE)
+    harness.core.submit_batch(batch.id)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.post("/settings/library/download")
+
+    assert response.status_code == 200
+    assert "2 downloaded" in response.text
+    assert "0 already there" in response.text
+    assert "0 failed" in response.text
+    assert len(harness.library.written) == 4
+
+
+def test_downloading_the_favourites_redirects_so_a_refresh_does_not_repost(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """Post-redirect-get, as every other write on this page is.
+
+    The operation is idempotent, so a reposted download would be harmless — but it is also a folder full
+    of network calls, and a refresh should not be one.
+    """
+    harness = make_harness(db_path)
+    harness.core.update_settings(library_path=tmp_path / "Library")
+    app = create_app(harness.core)
+
+    with TestClient(app, follow_redirects=False) as client:
+        response = client.post("/settings/library/download")
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/settings?")
+
+
+def test_a_download_with_nothing_to_do_says_so_rather_than_nothing(db_path: Path, tmp_path: Path) -> None:
+    """Zero of everything is an answer. A page that changed in no visible way would look broken."""
+    harness = make_harness(db_path)
+    harness.core.update_settings(library_path=tmp_path / "Library")
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.post("/settings/library/download")
+
+    assert "0 downloaded" in response.text
+    assert harness.library.written == []
+
+
+def test_a_failed_download_is_reported_on_the_page(db_path: Path, tmp_path: Path) -> None:
+    """Failures are counted, not raised: the **Favourite** stands and the next press is the whole retry."""
+    harness = make_harness(db_path, catalogue=catalogue_of(1))
+    harness.core.update_settings(batch_size=1, library_path=tmp_path / "Library")
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    harness.core.set_all_draft_verdicts(batch.id, Verdict.FAVOURITE)
+    harness.core.submit_batch(batch.id)
+    harness.library.fail_for.add(batch.wallpapers[0].id)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.post("/settings/library/download")
+
+    assert "1 failed" in response.text
+    assert "0 downloaded" in response.text

@@ -153,23 +153,31 @@ def test_reconciling_again_writes_nothing_new(db_path: Path, tmp_path: Path) -> 
     assert len(harness.library.written) == 1
 
 
-def test_changing_the_library_path_still_removes_the_original_file(db_path: Path, tmp_path: Path) -> None:
+def test_deletion_targets_the_recorded_path_and_not_a_recomputed_one(db_path: Path, tmp_path: Path) -> None:
     """Invariant 9, stated as a behaviour.
 
-    The **Library** path is a setting and it can change. Deletion targets the absolute path wallpapi
-    recorded when it wrote the file, never one recomputed from whatever the setting says now.
+    Two **Favourites** written into the **Library** under names of their own, then one of them replaced:
+    the path deleted is the one recorded when that file was written, not one worked out here from the
+    **Wallpaper** and the setting. The pair is what makes it an assertion — recomputing would delete a
+    path that happened to be right, and the second file proves the right *row* was read.
+
+    What the setting *changing* does is #14's business and lives in `test_library_guards.py`: a recorded
+    path that no longer resolves inside the **Library** folder is dropped rather than deleted.
     """
-    original = tmp_path / "Original"
-    harness = make_harness(db_path, catalogue=catalogue_of(1))
-    harness.core.update_settings(batch_size=1, library_path=original)
-    favourite_the_whole_batch(harness)
-    written = harness.library.written[0].destination
-    assert written.parent == original
+    library_path = tmp_path / "Library"
+    harness = make_harness(db_path, catalogue=catalogue_of(2))
+    harness.core.update_settings(batch_size=2, library_path=library_path)
+    first = favourite_the_whole_batch(harness)
+    kept, replaced = (w.id for w in first.wallpapers)
+    recorded = {w.wallpaper_id: w.destination for w in harness.library.written}
 
-    harness.core.update_settings(library_path=tmp_path / "Moved")
-    favourite_the_whole_batch(harness, Verdict.LIKE)
+    second = harness.core.get_next_batch()
+    assert isinstance(second, Batch)
+    harness.core.set_draft_verdict(second.id, replaced, Verdict.LIKE)
+    harness.core.submit_batch(second.id)
 
-    assert harness.library.removed == [written]
+    assert harness.library.removed == [recorded[replaced]]
+    assert recorded[replaced] != recorded[kept]
 
 
 def test_a_restarted_core_service_still_knows_the_recorded_path(db_path: Path, tmp_path: Path) -> None:
@@ -203,3 +211,99 @@ def test_favouriting_again_after_a_removal_writes_the_file_afresh(db_path: Path,
 
     assert [w.wallpaper_id for w in harness.library.written] == [shown, shown]
     assert harness.library.removed == [harness.library.written[0].destination]
+
+
+# -- one-way sync: pulling every Favourite back down (#14) -----------------------------------------------
+
+
+def test_a_favourite_whose_file_is_not_on_this_disk_is_downloaded_again(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """ "I move devices and bring the db" — the case the whole operation exists for.
+
+    The **Decision log** says **Favourite** and the `library_files` row says where the file was written on
+    the machine that wrote it. Nothing about that row is wrong; the file is simply not here. The fake
+    writer stands in for exactly that, because the paths it records are never on this disk — so a
+    reconciliation still finds nothing to do and `download_favourites` finds everything to do.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(2))
+    harness.core.update_settings(batch_size=2, library_path=tmp_path / "Library")
+    batch = favourite_the_whole_batch(harness)
+    favourited = sorted(w.id for w in batch.wallpapers)
+    assert harness.core.reconcile_library().written == ()
+
+    pulled = harness.core.download_favourites()
+
+    assert sorted(pulled.written) == favourited
+    assert pulled.skipped == ()
+    assert pulled.failed == ()
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted(favourited * 2)
+
+
+def test_downloading_favourites_writes_nothing_for_anything_that_is_not_one(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """**Favourites** only, and **Verdict resolution** is what decides which those are.
+
+    A **Liked**, **Banned** or **Ignored** **Wallpaper** is not in the **Library** and is not put there by
+    asking for the **Library** back.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(3))
+    harness.core.update_settings(batch_size=3, library_path=tmp_path / "Library")
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    favourited, liked, _ignored = (w.id for w in batch.wallpapers)
+    harness.core.set_draft_verdict(batch.id, favourited, Verdict.FAVOURITE)
+    harness.core.set_draft_verdict(batch.id, liked, Verdict.LIKE)
+    harness.core.submit_batch(batch.id)
+
+    pulled = harness.core.download_favourites()
+
+    assert pulled.written == (favourited,)
+    assert {w.wallpaper_id for w in harness.library.written} == {favourited}
+
+
+def test_downloading_favourites_never_deletes_anything(db_path: Path, tmp_path: Path) -> None:
+    """One way only. This operation is the one place wallpapi looks at the folder, and it only ever adds.
+
+    The **Wallpaper** whose **Favourite** was replaced lost its file when the **Batch** was submitted; the
+    download does not touch it again, and nothing else is removed on the way past either.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(2))
+    harness.core.update_settings(batch_size=2, library_path=tmp_path / "Library")
+    first = favourite_the_whole_batch(harness)
+    kept, replaced = (w.id for w in first.wallpapers)
+    second = harness.core.get_next_batch()
+    assert isinstance(second, Batch)
+    harness.core.set_draft_verdict(second.id, replaced, Verdict.LIKE)
+    harness.core.submit_batch(second.id)
+    removed_by_the_submission = list(harness.library.removed)
+
+    pulled = harness.core.download_favourites()
+
+    assert pulled.written == (kept,)
+    assert harness.library.removed == removed_by_the_submission
+
+
+def test_a_download_that_fails_is_reported_and_retried_by_the_next_run(db_path: Path, tmp_path: Path) -> None:
+    """Failures are collected rather than raised, and the retry needs no bookkeeping of its own.
+
+    The settings page says how many failed; what makes that enough is that the **Favourite** with no file
+    *is* the record of what still has to happen, so pressing the button again is the whole retry.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(2))
+    harness.core.update_settings(batch_size=2, library_path=tmp_path / "Library")
+    batch = favourite_the_whole_batch(harness)
+    stubborn, fine = (w.id for w in batch.wallpapers)
+    harness.library.fail_for.add(stubborn)
+
+    first = harness.core.download_favourites()
+
+    assert first.failed == (stubborn,)
+    assert first.written == (fine,)
+
+    harness.library.fail_for.clear()
+    second = harness.core.download_favourites()
+
+    assert second.failed == ()
+    assert sorted(second.written) == sorted([stubborn, fine])
