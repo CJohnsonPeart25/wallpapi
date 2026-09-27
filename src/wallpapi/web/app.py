@@ -12,12 +12,20 @@ from mimetypes import guess_type
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from wallpapi.core import Batch, BatchUnavailable, CoreService, SubmissionRefused
+from wallpapi.core import (
+    MAX_BATCH_SIZE,
+    MIN_BATCH_SIZE,
+    Batch,
+    BatchUnavailable,
+    CoreService,
+    SettingsRefused,
+    SubmissionRefused,
+)
 from wallpapi.model import Verdict
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -151,6 +159,72 @@ def create_app(core: CoreService) -> FastAPI:
         if not isinstance(live, Batch):
             return render(request, live)
         return templates.TemplateResponse(request, "grid.html", {"batch": live})
+
+    def render_settings(
+        request: Request,
+        *,
+        batch_size: str,
+        library_path: str,
+        refused: SettingsRefused | None = None,
+        saved: bool = False,
+        status_code: int = HTTPStatus.OK,
+    ) -> HTMLResponse:
+        """The settings form, filled with the values given rather than with the values stored.
+
+        A refused save re-renders with what the user typed, so correcting one field does not mean retyping
+        the other.
+        """
+        return templates.TemplateResponse(
+            request,
+            "settings.html",
+            {
+                "batch_size": batch_size,
+                "library_path": library_path,
+                "refused": refused,
+                "saved": saved,
+                "min_batch_size": MIN_BATCH_SIZE,
+                "max_batch_size": MAX_BATCH_SIZE,
+            },
+            status_code=status_code,
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request, saved: bool = False) -> HTMLResponse:
+        """The settings page, showing what is stored."""
+        current = core.get_settings()
+        return render_settings(
+            request,
+            batch_size=str(current.batch_size),
+            library_path=str(current.library_path),
+            saved=saved,
+        )
+
+    @app.post("/settings")
+    def save_settings(
+        request: Request,
+        batch_size: Annotated[str, Form()],
+        library_path: Annotated[str, Form()],
+    ) -> Response:
+        """Save the settings, or come back with the reason they were refused.
+
+        Both fields are taken as `str` and coerced by the Core service, not typed here. A declared `int`
+        would make FastAPI answer a typo with its own JSON 422 — a wall of text in the browser, and a
+        second validation rule living somewhere the tests for the first one cannot see it.
+
+        Post-redirect-get on success, which is the opposite of `/submit`. Resubmitting a **Batch** is
+        refused loudly because it would append to the **Decision log** twice; re-saving settings writes the
+        same values, so a refresh may as well be a page load.
+        """
+        result = core.update_settings(batch_size=batch_size, library_path=library_path)
+        if isinstance(result, SettingsRefused):
+            return render_settings(
+                request,
+                batch_size=batch_size,
+                library_path=library_path,
+                refused=result,
+                status_code=HTTPStatus.BAD_REQUEST,
+            )
+        return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
 
     @app.get("/thumb/{wallpaper_id}")
     def thumbnail(wallpaper_id: str) -> FileResponse:

@@ -68,7 +68,7 @@ def test_a_draft_against_a_wallpaper_this_batch_does_not_show_records_nothing(db
     references `wallpapers`, and foreign keys are on — so the reachable stray is a stored one.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(24))
-    harness.core.set_setting("batch_size", "2")
+    harness.core.update_settings(batch_size=2)
     first = harness.core.get_next_batch()
     assert isinstance(first, Batch)
     second = harness.core.submit_batch(first.id)
