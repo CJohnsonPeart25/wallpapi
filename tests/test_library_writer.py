@@ -290,3 +290,32 @@ def test_the_library_follows_its_setting_when_the_favourites_are_pulled_again(tm
     assert sorted(pulled.written) == favourited
     assert sorted(p.name for p in moved.iterdir()) == [f"{i}.jpg" for i in favourited]
     assert sorted(p.name for p in original.iterdir()) == [f"{i}.jpg" for i in favourited]
+
+
+def test_a_recorded_file_already_gone_is_dropped_without_being_looked_for(tmp_path: Path) -> None:
+    """The maintainer's rule: if the file cannot be found, do not go looking for it.
+
+    The user deleted it in Explorer and then took the **Favourite** back. Nothing goes looking for it —
+    not under the old name, not anywhere else — and nothing is raised. The row goes, the **Decision log**
+    keeps both entries, and a **Library** folder that was left empty stays empty.
+    """
+    library_path = tmp_path / "Library"
+    core, seen = core_with_a_real_writer(tmp_path)
+    core.update_settings(batch_size=1, library_path=library_path)
+    batch = core.get_next_batch()
+    assert isinstance(batch, Batch)
+    shown = batch.wallpapers[0].id
+    core.set_draft_verdict(batch.id, shown, Verdict.FAVOURITE)
+    core.submit_batch(batch.id)
+    (library_path / f"{shown}.jpg").unlink()
+
+    second = core.get_next_batch()
+    assert isinstance(second, Batch)
+    core.set_draft_verdict(second.id, shown, Verdict.LIKE)
+    core.submit_batch(second.id)
+
+    assert list(library_path.iterdir()) == []
+    assert len(seen) == 1
+    assert [e.entry for e in core.list_history(batch_id=batch.id)] == [Verdict.FAVOURITE]
+    assert core.resolve_verdicts([shown])[shown].verdict is Verdict.LIKE
+    assert core.reconcile_library() == core.reconcile_library()
