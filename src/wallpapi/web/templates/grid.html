@@ -37,13 +37,7 @@
       hx-disabled-elt=".verdict"
     >clear all</button>
   </div>
-  {#
-    The shape of a tile, from the **Allowed ratios** setting rather than fixed here: a thumbnail is
-    fitted inside its box whole, so the box's shape is how much of each tile is letterbox. With one
-    allowed ratio — one screen — there is none. The stylesheet and wallpapi.js both read it from here,
-    so there is one place it is decided.
-  #}
-  <ul class="batch" style="--tile-ratio: {{ tile_ratio }}">
+  <ul class="batch">
     {% for wallpaper in batch.wallpapers %}
       {% set draft = batch.drafts.get(wallpaper.id) %}
       {% set zone = batch.zones.get(wallpaper.id) %}

@@ -19,7 +19,7 @@ from tests.conftest import make_harness
 from tests.test_web_submission import batch_id_of
 from wallpapi.core import Batch
 from wallpapi.model import Verdict
-from wallpapi.web.app import FALLBACK_TILE_RATIO, create_app, tile_ratio
+from wallpapi.web.app import create_app
 
 EXTERNAL_ASSETS = re.compile(r'<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"')
 """Every asset the page pulls in. A CDN reference would show up here as an absolute URL."""
@@ -254,51 +254,16 @@ def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(
     assert "http" not in script.text, "the preview script must not fetch anything of its own"
 
 
-def test_the_tile_shape_follows_the_allowed_ratios_setting(db_path: Path) -> None:
-    """A thumbnail is fitted inside its box whole, so the box's shape decides how much of it is bar.
+def test_a_tile_is_the_shape_of_the_thumbnail_in_it(db_path: Path) -> None:
+    """The tile's box is 3:2, because `thumbs.small` is 300x200 whatever the **Wallpaper** is.
 
-    With one **Allowed ratio** — one screen, which is the usual case — the box is that shape and there
-    is no bar at all. Set the filter to portrait wallpapers and the grid turns portrait with it.
-    """
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
+    A **Wallpaper**'s own `width` and `height` describe the file the preview loads, not the one on the
+    tile, and rendering them as attributes on the thumbnail is a presentational hint that is simply
+    wrong — it laid every tile out at the wallpaper's own height, two thousand pixels of it.
 
-    with TestClient(app) as client:
-        # The seeded default allows 16x9, 16x10 and 21x9, and the tallest of those is what the box is.
-        seeded = client.get("/").text
-        harness.core.update_settings(allowed_ratios="16x9")
-        wide = client.get("/").text
-        harness.core.update_settings(allowed_ratios="9x16")
-        tall = client.get("/").text
-
-    assert "--tile-ratio: 16 / 10" in seeded
-    assert "--tile-ratio: 16 / 9" in wide
-    assert "--tile-ratio: 9 / 16" in tall
-
-
-def test_several_allowed_ratios_give_a_box_as_tall_as_the_tallest_of_them(db_path: Path) -> None:
-    """The tallest wins, so every wallpaper is limited by the column width rather than by the box.
-
-    A wider box would letterbox some of them down the sides, and a tile that could have been bigger is a
-    worse trade than a bar of background nobody is judging. Asserted on the pure function rather than
-    through a page, because what is being pinned down is the rule and not its rendering.
-    """
-    assert tile_ratio(("16x9",)) == "16 / 9"
-    assert tile_ratio(("16x9", "16x10", "21x9")) == "16 / 10"
-    assert tile_ratio(("21x9", "32x9")) == "21 / 9"
-    assert tile_ratio(("16x9", "9x16")) == "9 / 16"
-    # Never a crash on the page: the vocabulary is validated where the setting is stored.
-    assert tile_ratio(()) == FALLBACK_TILE_RATIO
-    assert tile_ratio(("nonsense",)) == FALLBACK_TILE_RATIO
-
-
-def test_a_thumbnail_takes_its_height_from_the_grid_and_not_from_its_attributes(db_path: Path) -> None:
-    """The tile's `width` and `height` attributes must not be what sizes it on screen.
-
-    They are there so the browser reserves the right box before the image arrives, but they are also
-    presentational hints — and a 4K wallpaper's `height="2160"` will win over an aspect ratio unless
-    `height: auto` says otherwise. Getting this wrong renders every tile two thousand pixels tall, which
-    is how it was found; the rule that prevents it looks like a formality, so it is asserted.
+    Any box shape other than the thumbnail's own would also mean either re-cropping an image Wallhaven
+    has already cropped, or ringing it with bars. Neither says anything truer about the wallpaper, and
+    the wallpaper's real shape is what the preview is for.
     """
     harness = make_harness(db_path)
     app = create_app(harness.core)
@@ -307,10 +272,13 @@ def test_a_thumbnail_takes_its_height_from_the_grid_and_not_from_its_attributes(
         body = client.get("/").text
         stylesheet = client.get("/static/wallpapi.css").text
 
-    assert 'height="' in body, "the attributes are still there — this is not a test against them"
+    tile = body[body.index('<li class="tile"') : body.index("</li>")]
+    assert 'width="' not in tile, "the wallpaper's dimensions are not the thumbnail's"
+    assert 'height="' not in tile
+    assert "--tile-ratio: 3 / 2" in stylesheet
     rule = next(block for block in stylesheet.split("}") if ".tile img" in block)
-    assert "height: auto" in rule
-    assert "aspect-ratio" in rule
+    assert "aspect-ratio: var(--tile-ratio)" in rule
+    assert "object-fit: cover" in rule
 
 
 def test_hovering_a_tile_reveals_its_verdict_rail_without_javascript(db_path: Path) -> None:

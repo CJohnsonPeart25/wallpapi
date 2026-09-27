@@ -18,16 +18,15 @@
 (function () {
   "use strict";
 
-  var FALLBACK_ASPECT = 16 / 9; // only for a grid with no --tile-ratio on it at all
+  var FALLBACK_ASPECT = 3 / 2; // only for a grid with no --tile-ratio on it at all
   var BOTTOM_MARGIN = 24; // a little air under the last row, rather than flush to the viewport edge
 
   /*
     The shape of a tile, read off the grid rather than repeated here.
 
-    The template renders it from the **Allowed ratios** setting as `--tile-ratio: 16 / 9`, and the
-    stylesheet uses the same property, so the number the column count is worked out from is the number
-    the browser will actually lay the tiles out with. A copy of it in this file would be a copy to keep
-    in step with a setting.
+    The stylesheet declares it as `--tile-ratio` and lays the tiles out with it, so reading it back is
+    what keeps the column count worked out below from being about a different grid than the one the
+    browser draws. A second copy of the number in this file would be a second thing to keep in step.
   */
   function aspectOf(grid) {
     var declared = window.getComputedStyle(grid).getPropertyValue("--tile-ratio").split("/");

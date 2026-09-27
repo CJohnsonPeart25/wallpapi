@@ -24,14 +24,13 @@
   rendered — the tile says nothing rather than claiming a **Zone** nobody classified it into.
 #}
 <li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}">
-  <img
-    src="/thumb/{{ wallpaper.id }}"
-    alt=""
-    loading="lazy"
-    data-full-url="{{ wallpaper.full_url }}"
-    width="{{ wallpaper.width }}"
-    height="{{ wallpaper.height }}"
-  />
+  {#
+    No `width`/`height` attributes. A **Wallpaper**'s dimensions describe the file the preview loads,
+    not this one: the tile shows `thumbs.small`, which Wallhaven serves at 300x200 whatever the
+    wallpaper is. Rendering 3840x2160 onto a 300x200 image is a presentational hint that is simply
+    wrong, and it laid every tile out two thousand pixels tall. The stylesheet gives the box its shape.
+  #}
+  <img src="/thumb/{{ wallpaper.id }}" alt="" loading="lazy" data-full-url="{{ wallpaper.full_url }}" />
   {% if zone %}
     <span class="zone" data-zone="{{ zone }}">{{ zone }}</span>
   {% endif %}

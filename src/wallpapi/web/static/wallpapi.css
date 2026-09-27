@@ -211,30 +211,29 @@ body:has(#batch-grid) .refill {
 }
 
 /*
-  One box of one shape for every thumbnail, whatever shape Wallhaven sent, with the wallpaper fitted
-  inside it whole.
+  A tile is the shape of the thumbnail in it, and the thumbnail is 3:2.
 
-  The box is fixed because rows that each found their own height made the grid look like a pile rather
-  than a sheet, and an even wall is what makes a batch quick to scan. **The wallpaper inside it is never
-  cropped**: `contain` and a letterbox, not `cover`. A crop hides the thing being judged — the top of a
-  portrait, the edges of an ultrawide — and a verdict given on a cropped wallpaper is a verdict on
-  something else. Black bars cost nothing but screen.
+  **This is not a choice about how much of a wallpaper to show.** The tile loads `thumbs.small`, which
+  Wallhaven serves at a fixed 300x200 whatever the wallpaper's own dimensions are — a 4K 16:9 wallpaper
+  and a 9:16 phone wallpaper arrive as the same 3:2 image, cropped by Wallhaven before wallpapi ever
+  sees it. So the only shape a tile can be without either re-cropping that thumbnail or ringing it with
+  bars is the thumbnail's own, and the wallpaper's true shape is something the preview shows.
 
-  The box's shape is the **Allowed ratios** setting, rendered onto the grid as `--tile-ratio`: with one
-  allowed ratio, which is to say one screen, a thumbnail fills its box exactly and there are no bars at
-  all. 16:9 is only the fallback.
+  `cover` rather than `contain`: at 3:2 into a 3:2 box the two are identical, and `cover` is the one
+  that degrades sensibly if Wallhaven ever changes the size it serves.
 */
+.batch {
+  --tile-ratio: 3 / 2;
+}
+
 .tile img {
   display: block;
   width: 100%;
-  /* `height: auto` is load-bearing. The tile markup carries width and height attributes, and those are
-     presentational hints: without this, the hint sets a 2160px height and the aspect ratio below never
-     gets a say. */
   height: auto;
-  aspect-ratio: var(--tile-ratio, 16 / 9);
-  object-fit: contain;
+  aspect-ratio: var(--tile-ratio);
+  object-fit: cover;
   border-radius: var(--radius);
-  background: #15151a; /* the letterbox: darker than the page, so the bars read as frame, not as tile */
+  background: #15151a;
   cursor: zoom-in; /* the thumbnail is what opens the preview */
 }
 
