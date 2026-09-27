@@ -153,6 +153,19 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
     }
 
 
+def _mix_context(core: CoreService) -> dict[str, object]:
+    """What the switcher needs: every **Mix** there is, and which one the next **Batch** will use.
+
+    One function, because the switcher is rendered from two places — inside the **Batch** page and on its
+    own as the htmx swap — and the two must not be able to disagree about what "active" means.
+
+    `active_mix` is the stored *name* rather than `core.active_mix().name`, so that a name whose **Mix**
+    has been deleted still shows as the thing the user chose. The draw falls back; the page should not
+    quietly claim the fallback was the choice.
+    """
+    return {"mixes": core.list_mixes(), "active_mix": core.get_settings().active_mix}
+
+
 def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     """The app over an already-constructed Core service.
 
@@ -178,7 +191,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         most of all on the one that says there is nothing to show, where what the refill is doing is the
         answer to "why".
         """
-        context: dict[str, object] = {"status": core.refill_status()}
+        context: dict[str, object] = {"status": core.refill_status(), **_mix_context(core)}
         if isinstance(result, Batch):
             return templates.TemplateResponse(
                 request,
@@ -343,6 +356,26 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         if refused is not None:
             raise refuse_history(refused)
         return render_history_row(request, wallpaper_id)
+
+    @app.post("/mix", response_class=HTMLResponse)
+    def choose_mix(request: Request, mix: Annotated[str, Form()]) -> HTMLResponse:
+        """Switch the active **Mix**, and swap the switcher back.
+
+        **The live Batch is deliberately untouched.** The **Mix** is read when a **Batch** is minted, so
+        switching applies to the next one — the same rule the batch size has had since #4. Rerolling the
+        grid here would discard a **Draft Batch** the user is part way through, which is a far worse
+        surprise than a **Batch** finishing under the **Mix** it started in. That is why the response is
+        this section alone and not the page.
+
+        A **Mix** nobody has heard of is a 400 with the switcher unchanged, not a stored name the draw
+        would then have to make sense of. No control can post one — this answers a hand-made post, and
+        the same 400 is what a **Mix** deleted in another tab at #12 would give.
+        """
+        refused = core.update_settings(active_mix=mix)
+        status_code = HTTPStatus.BAD_REQUEST if isinstance(refused, SettingsRefused) else HTTPStatus.OK
+        # Read back rather than assumed, so what swaps in is what the Core service actually holds — which
+        # is the whole point on the branch where the switch was refused.
+        return templates.TemplateResponse(request, "mix.html", _mix_context(core), status_code=status_code)
 
     def render_settings(
         request: Request,
