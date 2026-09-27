@@ -137,3 +137,46 @@ def test_the_indicator_says_when_the_refill_is_searching_for_lookalikes(db_path:
         response = client.get("/")
 
     assert "searching for lookalikes of a favourite" in response.text
+
+
+def test_the_batch_page_says_when_the_similarity_provider_is_not_at_full_strength(db_path: Path) -> None:
+    """#14: a **Score** from the fallback looks exactly like a **Score** from the model.
+
+    So a wallpapi that had never managed to fetch its model would be indistinguishable from one working
+    perfectly, for as long as nobody noticed the **Bangers** were only the right colour. The provider
+    supplies the sentence; the page's job is putting it where it will be read, beside the refill line that
+    answers the same kind of question.
+    """
+    harness = make_harness(
+        db_path, catalogue=catalogue_of(24), similarity_notice="Image similarity is still fetching its model."
+    )
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert "Image similarity is still fetching its model." in response.text
+
+
+def test_the_notice_is_on_the_unavailable_page_too(db_path: Path) -> None:
+    """The same reasoning as the refill indicator's: the states that explain a thin page are exactly the
+    ones worth showing on it."""
+    harness = make_harness(db_path, fill_pool=0, similarity_notice="Still fetching its model.")
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 503
+    assert "Still fetching its model." in response.text
+
+
+def test_a_provider_at_full_strength_adds_no_line(db_path: Path) -> None:
+    """The usual case, and the one that must not leave an empty paragraph behind it."""
+    harness = make_harness(db_path, catalogue=catalogue_of(24))
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert "similarity-notice" not in response.text

@@ -12,6 +12,8 @@ dependencies = [
     "numpy>=2.1",
     "pydantic>=2.9",
     "httpx2>=2.13",
+    "onnxruntime>=1.20",
+    "pillow>=11.0",
 ]
 
 [dependency-groups]
@@ -34,7 +36,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 110
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -43,7 +45,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 known-first-party = ["wallpapi", "tests"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"

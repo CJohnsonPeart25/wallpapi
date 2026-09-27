@@ -182,7 +182,10 @@ def test_banger_slots_take_the_highest_scores(db_path: Path) -> None:
     of the draw is not a sample at all.
     """
     pool = zoned_pool(db_path, bangers=8, duds=0, unknowns=20)
-    graded = {banger: NEAR - 0.02 * rank for rank, banger in enumerate(pool.bangers)}
+    # A fine grading rather than a coarse one: every **Banger** has to stay inside the **Similarity
+    # radius**, or the ones at the bottom of the order would be **Unknown** rather than badly ranked and
+    # this would be testing the **Scoring** arithmetic instead of the draw.
+    graded = {banger: NEAR - 0.005 * rank for rank, banger in enumerate(pool.bangers)}
     pool.harness.similarity.similarity_by_pair.update(
         {(banger, FAVOURED): value for banger, value in graded.items()}
     )

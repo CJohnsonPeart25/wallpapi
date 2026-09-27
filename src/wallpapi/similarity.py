@@ -12,13 +12,23 @@ values by `(pool.id, decided.id)`, so nothing about how a test arranges a simila
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
 from wallpapi.model import Wallpaper
+
+NOTHING_TO_CATCH_UP = 3600.0
+"""What a provider with no upkeep of its own returns from `catch_up`, in seconds.
+
+An hour rather than "never", because the thread that calls it has one loop and one way to wait, and a
+sentinel would be a second shape for it to understand. A provider that does nothing costs one wake-up an
+hour to do nothing in.
+"""
 
 
 class SimilarityProvider(Protocol):
@@ -30,6 +40,40 @@ class SimilarityProvider(Protocol):
         1.0 means the same **Wallpaper** and 0.0 means nothing in common that this provider can see. The
         **Score** maths turns it into a distance as `1 - similarity` and knows nothing else about how it
         was arrived at.
+        """
+        ...
+
+    def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
+        """Do one step of whatever upkeep this provider needs, and say how long to wait before the next.
+
+        On the protocol rather than only on the provider that needs it (#14), because the alternative is
+        the Core service knowing which provider it is holding — and the whole point of the seam is that it
+        does not. A provider with nothing to keep up returns `NOTHING_TO_CATCH_UP` and does nothing, which
+        is what the baseline does.
+
+        Called only from the background thread, never from a request: for the embedding provider this is
+        an 85MiB download and then a model run per **Wallpaper**, and neither belongs on the path of a
+        page load. `thumbnails` is the **Thumbnail cache** directory, because the one image of a
+        **Wallpaper** wallpapi already has is the one in there (invariant 8) — a **Wallpaper** whose
+        thumbnail has not been fetched yet simply is not in it, so it gets no embedding and every pair it
+        is in falls back to the baseline until it has one.
+
+        `stop_event` is the same one the refill waits on. Every wait inside an implementation is
+        `stop_event.wait(n)` and every long piece of work checks it between chunks, so shutdown does not
+        have to outlast a download (invariant 12). Must never raise: the thread that calls it has nothing
+        to catch, for `refill_loop`'s reason.
+        """
+        ...
+
+    def notice(self) -> str | None:
+        """One line for the **Batch** page when this provider is not working at full strength, or `None`.
+
+        The page has a seam to exactly one thing (invariant 1), so a provider that is degraded — the
+        embedding provider before its model has downloaded, or after the download failed — has to be able
+        to say so through the Core service or not at all. Silence would be worse than a line: **Scores**
+        computed from the fallback look exactly like **Scores** computed properly.
+
+        A sentence for a person, not a reason code. Nothing branches on it.
         """
         ...
 
@@ -106,6 +150,15 @@ class MetadataSimilarityProvider:
         # Clipped rather than trusted: the cosine of a unit vector with itself is 1.0 only up to float32
         # rounding, and a similarity of 1.0000001 would make the **Score** maths' distance negative.
         return np.clip(similarity, 0.0, 1.0).astype(np.float32)
+
+    def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
+        """Nothing to keep up. Everything this provider reads is already on the **Wallpaper**."""
+        del thumbnails, stop_event
+        return NOTHING_TO_CATCH_UP
+
+    def notice(self) -> str | None:
+        """Never degraded: it has no model to fetch and no cache to fill."""
+        return None
 
 
 def _category_codes(wallpapers: Sequence[Wallpaper], codes: dict[str, int]) -> NDArray[np.int64]:
