@@ -25,6 +25,13 @@
       {% if deleted %}
         <p class="saved">Mix deleted.</p>
       {% endif %}
+      {# All three counts, always, three zeroes included: a page that came back looking untouched would
+         read as a button that did nothing rather than as a library that was already complete. #}
+      {% if download and download.downloaded %}
+        <p class="saved">Favourites: {{ download.written }} downloaded,
+          {{ download.skipped }} already there, {{ download.failed }} failed.
+          {% if download.failed %}Press the button again to retry the ones that failed.{% endif %}</p>
+      {% endif %}
       {% if refused %}
         {# The Core service's refusal reason, said in words. One branch per reason; the last branch is a
            fallback that names the reason rather than guessing, so a reason added later is visibly
@@ -221,6 +228,24 @@
             is fetched again the next time it is shown.</span>
         </p>
         <button type="submit">Save settings</button>
+      </form>
+
+      {#
+        Downloading the favourites (#14). A form of its own and outside the settings form, because HTML
+        does not nest forms and this posts no fields at all — the operation takes no arguments, which is
+        what makes it safe to press twice.
+
+        One way only. There is no button anywhere that empties the library: files leave it when a
+        favourite is replaced, and never because the folder and the log were compared.
+      #}
+      <h2>Favourites</h2>
+      <p class="hint">Favourites are downloaded to the library folder as you submit each batch, so this is
+        only needed when the folder and your decisions have come apart — you deleted the files, you moved
+        the library, or you brought the database to another machine. It downloads every favourite that has
+        no file and leaves everything else alone. It never deletes anything, and deleting a file yourself
+        never changes your decision log.</p>
+      <form method="post" action="/settings/library/download" class="library-download">
+        <button type="submit" data-download-favourites>Download all favourites</button>
       </form>
 
       {#
