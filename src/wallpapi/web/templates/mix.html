@@ -1,0 +1,37 @@
+{#
+  The **Explore** / **Refine** switcher, and the name of the **Mix** in force.
+
+  Rendered inside batch.html above the grid, and on its own as the htmx swap for a switch — the same
+  arrangement grid.html and tile.html already use, and for the same reason: switching changes this section
+  and nothing else on the page.
+
+  **It says "the next batch" because that is the truth.** The **Mix** is read when a **Batch** is minted,
+  exactly as the batch size is (#4), so the one on screen keeps the composition it was drawn with and its
+  **Draft Batch** survives the switch. A switcher that silently rerolled the grid would throw away marks
+  the user had already made.
+
+  The percentages are on the buttons rather than in a legend somewhere: "explore" and "refine" are names
+  for 75/20/5 and 25/70/5, and the names alone say nothing about which way round they are.
+#}
+<section id="mix-switcher">
+  <p class="mix-active">
+    Mix: <strong>{{ active_mix }}</strong> — applies to the next batch.
+  </p>
+  <div class="mixes">
+    {% for mix in mixes %}
+      <button
+        type="button"
+        class="mix-choice{{ ' active' if mix.name == active_mix else '' }}"
+        data-mix="{{ mix.name }}"
+        aria-pressed="{{ 'true' if mix.name == active_mix else 'false' }}"
+        hx-post="/mix"
+        hx-vals='{"mix": "{{ mix.name }}"}'
+        hx-target="#mix-switcher"
+        hx-swap="outerHTML"
+        hx-sync="#mix-switcher:replace"
+      >{{ mix.name }}
+        <span class="mix-shares">{{ mix.unknown }}/{{ mix.banger }}/{{ mix.dud }}</span>
+      </button>
+    {% endfor %}
+  </div>
+</section>
