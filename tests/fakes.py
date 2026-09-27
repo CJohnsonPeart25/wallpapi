@@ -90,6 +90,7 @@ class FakeWallhavenClient:
         *,
         seed: str | None = None,
         page_size: int = 24,
+        thumbnail_bytes: bytes = THUMBNAIL_BYTES,
         fail_from_call: int | None = None,
         rate_limited_calls: int = 0,
         retry_after: float | None = None,
@@ -101,6 +102,7 @@ class FakeWallhavenClient:
         }
         self.seed = seed
         self.page_size = page_size
+        self.thumbnail_bytes = thumbnail_bytes
         self.fail_from_call = fail_from_call
         self.rate_limited_calls = rate_limited_calls
         self.retry_after = retry_after
@@ -157,7 +159,7 @@ class FakeWallhavenClient:
 
     def fetch_thumbnail(self, url: str) -> bytes:
         self.thumbnail_fetches.append(url)
-        return THUMBNAIL_BYTES
+        return self.thumbnail_bytes
 
 
 @dataclass(frozen=True, slots=True)
