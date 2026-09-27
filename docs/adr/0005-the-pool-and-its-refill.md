@@ -70,16 +70,19 @@ not be able to put a NSFW or 1280x720 **Wallpaper** in front of somebody. The ra
 than an equality, because Wallhaven's `ratios=` buckets — a 3440x1440 ultrawide is 2.39 and it is served
 under `21x9`, which is 2.33 — and a strict local check would prune what the API correctly returned.
 
-**Changing the Filters prunes the Pool.** Undecided members that no longer pass lose their membership row;
-the `wallpapers` row and every **Decision log** entry stay, because the log is append-only and **History**
-at #7 renders a thumbnail for each of them. A **Wallpaper** that has been judged keeps its place: a
-tightened **Filter** is not a reason to quietly undo a decision, and a **Clearance** at #7 would expect to
-find it. The live unsubmitted **Batch** is untouched for free, because a **Batch** holds
-`batch_wallpapers` rows rather than **Pool** membership — so nobody loses the **Draft Batch** they are part
-way through.
+**Changing the Filters prunes the Pool.** Every member that no longer passes loses its membership row,
+decided or not. **Pool** membership governs one thing — what may be *shown* — so a **Liked** 1080p
+**Wallpaper** must stop appearing once the minimum is raised to 1440p exactly as an undecided one does, and
+an **Ignored** one certainly must. A **Verdict** is not an exemption from the **Filters**.
+
+Nothing is lost by it, because only the membership row goes. The `wallpapers` row and every **Decision
+log** entry stay — the log is append-only, **History** at #7 renders a thumbnail for each of them, and a
+**Clearance** there works on the log rather than on **Pool** membership. The live unsubmitted **Batch** is
+untouched for free, because a **Batch** holds `batch_wallpapers` rows rather than **Pool** membership, so
+nobody loses the **Draft Batch** they are part way through.
 
 The prune runs after every settings write rather than only after one that named a **Filter**. The rule is
-"the **Pool** holds no undecided **Wallpaper** that fails the current **Filters**", which is one rule; the
+"the **Pool** holds no **Wallpaper** that fails the current **Filters**", which is one rule; the
 alternative is that rule plus a list of which fields count as **Filters**, kept in step by hand.
 
 **The rate limiter is a pure function** over **API call** timestamps — `wait_needed(call_times, now)` — and
@@ -149,6 +152,9 @@ page load after a fresh install work. Rejected: it is a second, untested **Batch
 ever runs in the situation where Wallhaven is least likely to answer, and it would quietly restore the 500
 that #15 is about.
 
-**Pruning decided Wallpapers on a Filter change too.** Consistent-sounding, and rejected: it would drop the
-**Pool** membership of a **Wallpaper** whose **Verdict** a **Clearance** at #7 is about to undo, and the
-**Filters** are about what to *show* somebody rather than about what they have already said.
+**Pruning only the undecided members on a Filter change.** Built first, and rejected on review. The
+argument for it was that a tightened **Filter** should not undo a decision, and that a **Clearance** at #7
+would want the **Wallpaper** still in the **Pool**. Neither holds: nothing about a decision is touched
+either way — only the membership row goes, and the **Decision log** is where a **Clearance** does its work
+— while the cost is real, because it would leave a **Liked** 1080p **Wallpaper** reappearing in **Batches**
+after the minimum was raised to 1440p, which is precisely what the **Filter** was changed to stop.

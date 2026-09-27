@@ -151,6 +151,42 @@ def test_the_budget_frees_up_as_the_oldest_calls_leave_the_window(db_path: Path)
     assert len(harness.wallhaven.searches) == CALLS_PER_MINUTE + 1
 
 
+def test_the_recorded_call_times_stay_bounded_however_long_the_refill_runs(db_path: Path) -> None:
+    """wallpapi is meant to run for months. At 45 calls a minute that would be 65,000 floats a day.
+
+    Only calls still inside the window can change what the limiter returns, so only those are kept. The
+    bound is asserted directly, because "it is bounded" is the whole claim and nothing observable at the
+    seam distinguishes 45 kept timestamps from 200.
+
+    Second, subtler half: the clock does not move here. Trimming by age alone keeps everything when time
+    stands still, which a fake clock does and a stalled monotonic clock could — so the count cap is what
+    holds, and this is the test that would notice it being removed.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(400), page_size=1, fill_pool=0)
+    harness.core.update_settings(pool_target_size=1000)
+
+    harness.fill_pool(200)
+
+    assert len(harness.wallhaven.searches) == 200
+    assert len(harness.core.api_call_window()) <= CALLS_PER_MINUTE
+
+
+def test_calls_that_have_aged_out_are_forgotten_rather_than_merely_ignored(db_path: Path) -> None:
+    """The other half: with time moving, the window holds the recent calls and nothing older.
+
+    Trimmed on the way in rather than inside `wait_needed`, which stays a pure function of what it is
+    given (invariant 11).
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(400), page_size=1, fill_pool=0)
+    harness.core.update_settings(pool_target_size=1000)
+
+    harness.fill_pool(3)
+    harness.clock.advance(WINDOW_SECONDS)
+    harness.fill_pool(1)
+
+    assert harness.core.api_call_window() == [WINDOW_SECONDS]
+
+
 def test_a_429_backs_off_and_the_call_after_the_back_off_succeeds(db_path: Path) -> None:
     """Acceptance criterion: the client recovers from a 429.
 
