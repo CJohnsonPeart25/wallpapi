@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 import threading
+from collections import deque
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,38 +22,122 @@ from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
 from wallpapi.model import DecisionEntry, Verdict, Wallpaper
+from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import SimilarityProvider
-from wallpapi.wallhaven import Wallhaven
+from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SFW_PURITY = "100"
-"""Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off."""
+"""Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off.
 
-MAX_SEARCHES_PER_BATCH = 4
-"""How many **API calls** one **Batch** may cost while somebody waits for the page.
-
-A bound on page load latency, not a rate limiter: four calls at the client's ten second timeout is already
-the worst case worth making a user sit through. Spending the documented 45 per minute is the background
-refill's job at #6.
+Fixed, never a setting. NSFW is what needs an API key, and wallpapi asks for none.
 """
+
+SFW_PURITY_NAME = "sfw"
+"""What a search *result* calls the same thing. The mask is a query parameter; this is a response field."""
+
+ALL_CATEGORIES = "111"
+"""Wallhaven's category mask: general, anime and people, all on. Fixed, never a setting — the **Filters**
+are about the shape and the quality of a **Wallpaper**, not about its subject."""
+
+IDLE_RECHECK_SECONDS = 30.0
+"""How long the refill waits before looking again once the **Pool** is at target.
+
+Not zero, because a spin would burn a core doing `SELECT COUNT(*)`, and not minutes, because the **Pool**
+drops below target the moment a **Batch** is submitted and the backlog should be topped up before the next
+one is asked for.
+"""
+
+ERROR_BACKOFF_SECONDS = 60.0
+"""How long the refill waits after a failed **API call** that named no delay of its own.
+
+A minute, which is the window the 45-per-minute budget is counted over: if Wallhaven is refusing calls, the
+cheapest correct thing to do is to stop spending the budget for one whole window.
+"""
+
+POOL_SOURCE_RANDOM = "random"
+"""How a **Pool** member got there. #13 adds `'like'` when the refill starts searching for lookalikes."""
 
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 64
 """The accepted range for the batch size, inclusive at both ends.
 
 One because a **Batch** of none is a page with nothing to decide on and no way back off it. Sixty-four
-because the spec asks for "a big blitz of 16 or 32" and nothing larger, and because a **Batch** is what
-**Batch** building can actually fill: Wallhaven listings return 24 at a time and the walk is capped at four
-**API calls** (`MAX_SEARCHES_PER_BATCH`), so 96 candidates is the ceiling before **Bans** thin it. Sixty-four
-leaves headroom inside that; a larger cap would silently ship short **Batches**.
+because the spec asks for "a big blitz of 16 or 32" and nothing larger.
+
+The upper bound used to be justified by what one page load could fetch — 24 results a page and four capped
+**API calls**. That reasoning went with the walk at #6: a **Batch** is now sampled from a **Pool** of
+`pool_target_size`, which is 2000 by default, so what a **Batch** can be filled from is no longer the
+binding constraint. Sixty-four stays because it is as many **Wallpapers** as anyone can judge at once.
 """
 
 DEFAULT_BATCH_SIZE = 8
 
+MIN_POOL_TARGET_SIZE = 1
+MAX_POOL_TARGET_SIZE = 20_000
+"""The accepted range for the **Pool** target size.
+
+One, because a **Pool** of none is a **Batch** page with nothing on it and no way off, exactly as a
+**Batch** size of none would be. Twenty thousand, because invariant 2 sizes the **Similarity provider**'s
+matrix off the **Pool**, and every whole-**Pool** scan — **Scoring** at #9, the **Filter** prune here — is
+linear in it. Without a ceiling the refill grows the **Pool** for ever and the system gets slower every day
+without ever saying why.
+"""
+
+DEFAULT_POOL_TARGET_SIZE = 2000
+"""Large on purpose: the refill spends the full 45-calls-per-minute budget until the **Pool** reaches this,
+so a big target is what "always a backlog to process" looks like without unbounded growth. See ADR 0005."""
+
+MAX_FILTER_PIXELS = 30_000
+"""The largest minimum resolution worth accepting, per axis.
+
+Comfortably above anything Wallhaven serves. A minimum above it can only be a typo, and its only effect
+would be an empty **Pool** with nothing anywhere to explain why.
+"""
+
+DEFAULT_MIN_WIDTH = 2560
+DEFAULT_MIN_HEIGHT = 1440
+"""1440p, as a minimum rather than an exact size (`atleast`, never `resolutions`).
+
+The spec's monitor is 1440p or 4K. This admits a 1440p wallpaper at its native size and everything larger,
+and excludes the 1080p uploads that would have to be upscaled to fill either.
+"""
+
+DEFAULT_ALLOWED_RATIOS = ("16x9", "16x10", "21x9")
+"""The shapes a desktop monitor actually is: ordinary widescreen, the 16:10 panels, and ultrawide."""
+
+DEFAULT_MIN_FAVOURITES = 10
+"""Enough to skip the long tail nobody has ever looked at, low enough not to collapse the **Pool** to a few
+hundred famous images. Applied locally — Wallhaven's search has no parameter for it."""
+
+WALLHAVEN_RATIOS = frozenset(
+    {"16x9", "16x10", "21x9", "32x9", "48x9", "9x16", "10x16", "9x18", "1x1", "3x2", "4x3", "5x4"}
+)
+"""The `ratios=` values Wallhaven accepts, as its own search offers them.
+
+Validated against rather than merely checked for being a string, because an unrecognised ratio is not an
+error Wallhaven reports — it is a search that quietly returns something other than what was asked for.
+"""
+
+RATIO_TOLERANCE = 0.08
+"""How far a **Wallpaper**'s own width/height may sit from a named ratio and still count as it.
+
+Wallhaven's `ratios=` filter buckets rather than matching exactly: a 3440x1440 ultrawide is 2.39 and
+Wallhaven serves it under `21x9`, which is 2.33. The local check is a backstop against the API returning
+something plainly wrong, not a second opinion on its bucketing, so the band is deliberately generous — and
+still narrower than half the gap between `16x9` (1.78) and `16x10` (1.60), the closest pair anyone filters
+on.
+"""
+
 _BATCH_SIZE = "batch_size"
 _LIBRARY_PATH = "library_path"
+_POOL_TARGET_SIZE = "pool_target_size"
+_MIN_WIDTH = "min_width"
+_MIN_HEIGHT = "min_height"
+_ALLOWED_RATIOS = "allowed_ratios"
+_MIN_FAVOURITES = "min_favourites"
 """The `settings` keys. One row per key, with `Settings` as the typed view over them."""
 
 
@@ -72,7 +157,15 @@ def _defaults() -> dict[str, str]:
     `get_settings` falls back to here for a row a hand-edited database has lost. Computed rather than a
     constant because the **Library** default depends on the user's home directory.
     """
-    return {_BATCH_SIZE: str(DEFAULT_BATCH_SIZE), _LIBRARY_PATH: str(_default_library_path())}
+    return {
+        _BATCH_SIZE: str(DEFAULT_BATCH_SIZE),
+        _LIBRARY_PATH: str(_default_library_path()),
+        _POOL_TARGET_SIZE: str(DEFAULT_POOL_TARGET_SIZE),
+        _MIN_WIDTH: str(DEFAULT_MIN_WIDTH),
+        _MIN_HEIGHT: str(DEFAULT_MIN_HEIGHT),
+        _ALLOWED_RATIOS: ",".join(DEFAULT_ALLOWED_RATIOS),
+        _MIN_FAVOURITES: str(DEFAULT_MIN_FAVOURITES),
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +179,21 @@ class Settings:
 
     batch_size: int
     library_path: Path
+    pool_target_size: int
+    min_width: int
+    min_height: int
+    allowed_ratios: tuple[str, ...]
+    min_favourites: int
+
+    @property
+    def atleast(self) -> str:
+        """The minimum resolution in Wallhaven's `WxH` spelling."""
+        return f"{self.min_width}x{self.min_height}"
+
+    @property
+    def ratios(self) -> str:
+        """The allowed ratios in Wallhaven's comma-separated spelling."""
+        return ",".join(self.allowed_ratios)
 
 
 @dataclass(frozen=True)
@@ -101,6 +209,18 @@ class SettingsRefused:
         BATCH_SIZE_OUT_OF_RANGE = "batch_size_out_of_range"
         LIBRARY_PATH_EMPTY = "library_path_empty"
         LIBRARY_PATH_NOT_ABSOLUTE = "library_path_not_absolute"
+        POOL_TARGET_SIZE_INVALID = "pool_target_size_invalid"
+        MIN_WIDTH_INVALID = "min_width_invalid"
+        MIN_HEIGHT_INVALID = "min_height_invalid"
+        ALLOWED_RATIOS_INVALID = "allowed_ratios_invalid"
+        MIN_FAVOURITES_INVALID = "min_favourites_invalid"
+        """One reason per **Filter** field rather than the two the batch size has.
+
+        The batch size separates "not a number" from "out of range" because the advice differs: one says
+        type a whole number, the other says which numbers are allowed. For the **Filters** both mistakes
+        have the same one-sentence answer — the sentence that names the accepted shape — so a second reason
+        would be a second branch on the page saying the same thing.
+        """
 
     reason: Reason
 
@@ -123,12 +243,46 @@ class Batch:
 
 @dataclass(frozen=True)
 class BatchUnavailable:
-    """No **Batch** could be built. A result rather than an exception, so the UI has one branch."""
+    """No **Batch** could be built. A result rather than an exception, so the UI has one branch.
+
+    Closes #15. Until the **Pool** existed, a transport failure on a **Batch** page load propagated out of
+    the Core service and the browser got a 500. Now the page load makes no **API call** at all, so the only
+    way to have nothing to show is an empty **Pool** — and the two reasons it can be empty need different
+    words on the page. "Nothing has arrived yet" is a matter of waiting; "Wallhaven is unreachable" is not,
+    and saying which, and when it last failed, is the difference between a page and a shrug.
+    """
 
     class Reason(StrEnum):
-        NO_RESULTS = "no_results"
+        POOL_EMPTY = "pool_empty"
+        """The **Pool** holds nothing the user has not **Banned**, and the refill has not failed."""
+
+        WALLHAVEN_UNREACHABLE = "wallhaven_unreachable"
+        """The **Pool** is empty and the last refill attempt failed. `error` says how."""
 
     reason: Reason
+    error: str | None = None
+    error_at: dt.datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RefillStatus:
+    """What the background **Pool** refill is doing, for the indicator on the **Batch** page.
+
+    Read through the Core service like everything else, so the page has no second seam to the thread and a
+    test can assert on it without starting one.
+    """
+
+    pool_size: int
+    target_size: int
+    running: bool
+    last_run_at: dt.datetime | None
+    last_error: str | None
+    last_error_at: dt.datetime | None
+
+    @property
+    def at_target(self) -> bool:
+        """Whether the refill is idling rather than spending its budget."""
+        return self.pool_size >= self.target_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +348,31 @@ class CoreService:
         self._random = random_source
         self._clock = clock
         self._connections = _Connections()
+
+        # The refill's own state, held in the process rather than in storage: it describes a thread that
+        # exists only while wallpapi is running, and a walk half-finished at shutdown is worth nothing
+        # afterwards (a seed reused across runs returns the same **Wallpapers**). The lock is because the
+        # refill thread writes it and request threads read it for the indicator.
+        self._refill_lock = threading.Lock()
+        self._api_call_times: deque[float] = deque(maxlen=CALLS_PER_MINUTE)
+        """The **API call** timestamps the limiter counts — only the ones still inside the window.
+
+        Trimmed by age on every append, because that is what the deque *means*: entries older than
+        `WINDOW_SECONDS` can never change what `wait_needed` returns, and a tool meant to run for months at
+        45 calls a minute would otherwise accumulate 65,000 floats a day.
+
+        `maxlen` as well as the trim, and not instead of it. The trim is by age and the cap is by count, and
+        only the cap holds when time does not move — a frozen clock in a test, or a monotonic clock that
+        somehow stalls. Neither alone is both correct and bounded.
+        """
+        self._walk_seed: str | None = None
+        self._walk_page = 1
+        self._retry_not_before: float | None = None
+        self._refill_last_run: dt.datetime | None = None
+        self._refill_last_error: str | None = None
+        self._refill_last_error_at: dt.datetime | None = None
+        self._refill_thread_running = False
+
         self._migrate()
 
     # -- storage ---------------------------------------------------------------------------------------
@@ -247,6 +426,9 @@ class CoreService:
             if applied < 4:
                 for statement in _MIGRATION_4:
                     write.execute(statement)
+            if applied < 5:
+                for statement, parameters in _migration_5():
+                    write.execute(statement, parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -263,12 +445,29 @@ class CoreService:
             for row in self._connect().execute("SELECT key, value FROM settings")
         }
         defaults = _defaults()
-        batch_size = _validated_batch_size(stored.get(_BATCH_SIZE, defaults[_BATCH_SIZE]))
-        library_path = _validated_library_path(stored.get(_LIBRARY_PATH, defaults[_LIBRARY_PATH]))
+
+        def stored_or_seeded(key: str) -> str:
+            return stored.get(key, defaults[key])
+
+        def or_default[T](validated: T | SettingsRefused.Reason, fallback: T) -> T:
+            return fallback if isinstance(validated, SettingsRefused.Reason) else validated
+
         return Settings(
-            batch_size=DEFAULT_BATCH_SIZE if isinstance(batch_size, SettingsRefused.Reason) else batch_size,
-            library_path=(
-                _default_library_path() if isinstance(library_path, SettingsRefused.Reason) else library_path
+            batch_size=or_default(_validated_batch_size(stored_or_seeded(_BATCH_SIZE)), DEFAULT_BATCH_SIZE),
+            library_path=or_default(
+                _validated_library_path(stored_or_seeded(_LIBRARY_PATH)), _default_library_path()
+            ),
+            pool_target_size=or_default(
+                _validated_pool_target_size(stored_or_seeded(_POOL_TARGET_SIZE)),
+                DEFAULT_POOL_TARGET_SIZE,
+            ),
+            min_width=or_default(_validated_min_width(stored_or_seeded(_MIN_WIDTH)), DEFAULT_MIN_WIDTH),
+            min_height=or_default(_validated_min_height(stored_or_seeded(_MIN_HEIGHT)), DEFAULT_MIN_HEIGHT),
+            allowed_ratios=or_default(
+                _validated_allowed_ratios(stored_or_seeded(_ALLOWED_RATIOS)), DEFAULT_ALLOWED_RATIOS
+            ),
+            min_favourites=or_default(
+                _validated_min_favourites(stored_or_seeded(_MIN_FAVOURITES)), DEFAULT_MIN_FAVOURITES
             ),
         )
 
@@ -277,6 +476,11 @@ class CoreService:
         *,
         batch_size: int | str | None = None,
         library_path: Path | str | None = None,
+        pool_target_size: int | str | None = None,
+        min_width: int | str | None = None,
+        min_height: int | str | None = None,
+        allowed_ratios: Sequence[str] | str | None = None,
+        min_favourites: int | str | None = None,
     ) -> Settings | SettingsRefused:
         """Validate and persist the settings named, in one write transaction.
 
@@ -307,20 +511,58 @@ class CoreService:
             # Stored, not created. The **Library** writer creates the folder on its first write (#5);
             # creating it here would leave a folder behind for every path the user typed and undid.
             changes.append((_LIBRARY_PATH, str(validated_path)))
+        if pool_target_size is not None:
+            validated_target = _validated_pool_target_size(pool_target_size)
+            if isinstance(validated_target, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_target)
+            changes.append((_POOL_TARGET_SIZE, str(validated_target)))
+        if min_width is not None:
+            validated_width = _validated_min_width(min_width)
+            if isinstance(validated_width, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_width)
+            changes.append((_MIN_WIDTH, str(validated_width)))
+        if min_height is not None:
+            validated_height = _validated_min_height(min_height)
+            if isinstance(validated_height, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_height)
+            changes.append((_MIN_HEIGHT, str(validated_height)))
+        if allowed_ratios is not None:
+            validated_ratios = _validated_allowed_ratios(allowed_ratios)
+            if isinstance(validated_ratios, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_ratios)
+            # Stored tidy — trimmed, de-duplicated, in the order given — so the query string Wallhaven
+            # sees is the one the settings page shows.
+            changes.append((_ALLOWED_RATIOS, ",".join(validated_ratios)))
+        if min_favourites is not None:
+            validated_favourites = _validated_min_favourites(min_favourites)
+            if isinstance(validated_favourites, SettingsRefused.Reason):
+                return SettingsRefused(reason=validated_favourites)
+            changes.append((_MIN_FAVOURITES, str(validated_favourites)))
 
         with self._write() as write:
             write.executemany(_UPSERT_SETTING, changes)
             # Read inside the transaction, so what comes back is what this write put there.
-            return self.get_settings()
+            updated = self.get_settings()
+            self._prune_pool(write, updated)
+            return updated
 
     # -- batches ---------------------------------------------------------------------------------------
 
     def get_next_batch(self) -> Batch | BatchUnavailable:
-        """The **Batch** waiting to be decided on, minting one from Wallhaven only if there isn't one.
+        """The **Batch** waiting to be decided on, sampling the **Pool** only if there isn't one.
 
         At most one unsubmitted **Batch** exists at a time. Asking again — a page load, a refresh — hands
         back the same one rather than rerolling it, so nothing is stored until there is something to
-        decide on. There is no **Pool** at #2, so each new **Batch** is its own live search.
+        decide on.
+
+        **This makes no API call.** The **Wallpapers** are already stored: the background refill put them
+        in the **Pool**, filtered, long before anybody asked for a page. That is what closes #15 — there is
+        no network call on the page load path left to fail — and it is why the four-call walk this method
+        used to do is gone rather than dormant. See ADR 0005.
+
+        A uniform random sample of the **Pool**, minus anything whose resolved **Verdict** is **Ban**.
+        **Wallpapers** with other **Verdicts** may reappear; the revisit weight at #11 is what tunes how
+        often, and **Zones** and **Mixes** at #9 and #10 replace the uniform draw entirely.
 
         The batch size is read when a **Batch** is minted and not afterwards, so changing it applies to the
         next **Batch** rather than rebuilding the one on screen and discarding its **Draft Batch**.
@@ -330,22 +572,21 @@ class CoreService:
             return live
 
         size = self.get_settings().batch_size
-        candidates = self._gather_candidates(size)
+        candidates = self._without_bans(self._pool_wallpapers())
         if not candidates:
-            return BatchUnavailable(reason=BatchUnavailable.Reason.NO_RESULTS)
+            return self._nothing_to_show()
 
         chosen = self._random.sample(candidates, min(size, len(candidates)))
         created_at = self._clock.now()
         batch_id = uuid4().hex
 
         with self._write() as write:
-            # Re-read under the write lock: two tabs opened at once must not each mint a Batch, and the
-            # search above deliberately happened outside the transaction rather than holding the lock
-            # across a network call.
+            # Re-read under the write lock (ADR 0002): two tabs opened at once must not each mint a
+            # **Batch**. Cheaper than it was — the sampling above is local reads rather than a network
+            # call — but the race it closes is the same one.
             contended = _load_live_batch(write)
             if contended is not None:
                 return contended
-            write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in chosen])
             write.execute(
                 "INSERT INTO batches (id, created_at, size) VALUES (?, ?, ?)",
                 (batch_id, created_at.isoformat(), len(chosen)),
@@ -364,46 +605,224 @@ class CoreService:
             drafts={},
         )
 
-    def _gather_candidates(self, size: int) -> list[Wallpaper]:
-        """Enough un-**Banned** **Wallpapers** for a **Batch**, walking pages until there are.
+    def _nothing_to_show(self) -> BatchUnavailable:
+        """Why the **Pool** had nothing, in the words the page needs (#15).
 
-        **Banned Wallpapers** are excluded permanently, which can leave a page short of `size`. Rather than
-        ship a **Batch** thinned by past **Bans**, walk on to the next page carrying Wallhaven's returned
-        `meta.seed` — random sorting reshuffles on every call without it, so page two would be as likely to
-        repeat page one as to bring anything new.
-
-        A walk that ends still short ships what it has: a smaller **Batch** is an acceptable outcome, and
-        only finding nothing at all is a **Batch unavailable**.
-
-        Temporary by design. When the **Pool** lands at #6, **Batch** building reads locally stored
-        **Wallpapers** that a background thread has already topped up, no **API call** happens on the page
-        load path, and this method is deleted rather than unpicked.
+        A recorded refill failure outranks "nothing yet": if Wallhaven could not be reached, that is the
+        fact worth telling the user, and it is the reason the **Pool** never filled.
         """
-        gathered: list[Wallpaper] = []
-        seen: set[str] = set()
-        seed: str | None = None
-        for call in range(1, MAX_SEARCHES_PER_BATCH + 1):
-            if call == 1:
-                # Deliberately not guarded. A transport failure on the first call is issue #15, and
-                # widening the rescue below to cover it would close that ticket by accident.
-                page = self._wallhaven.search(sorting="random", purity=SFW_PURITY, page=call)
-            else:
-                try:
-                    page = self._wallhaven.search(sorting="random", purity=SFW_PURITY, page=call, seed=seed)
-                except Exception:
-                    # The pages already gathered are worth more than the one that failed: end the walk and
-                    # ship them rather than losing a **Batch** that was nearly built. The protocol declares
-                    # no error type, so there is nothing narrower to catch from this side of the seam.
-                    break
-            seed = page.seed or seed
+        with self._refill_lock:
+            error, error_at = self._refill_last_error, self._refill_last_error_at
+        if error is not None:
+            return BatchUnavailable(
+                reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE, error=error, error_at=error_at
+            )
+        return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
+
+    # -- the Pool and its refill -------------------------------------------------------------------------
+
+    def refill_status(self) -> RefillStatus:
+        """What the refill is doing, for the indicator on the **Batch** page."""
+        with self._refill_lock:
+            return RefillStatus(
+                pool_size=self._pool_size(),
+                target_size=self.get_settings().pool_target_size,
+                running=self._refill_thread_running,
+                last_run_at=self._refill_last_run,
+                last_error=self._refill_last_error,
+                last_error_at=self._refill_last_error_at,
+            )
+
+    def api_call_window(self) -> list[float]:
+        """The **API call** timestamps the limiter is currently counting, oldest first.
+
+        A copy, and a read rather than a field on `RefillStatus`: nothing on a page wants it, and the only
+        caller is the test that pins the window staying bounded over a long run. It is here rather than
+        being read off the attribute so that even that test enters through the seam (invariant 1).
+        """
+        with self._refill_lock:
+            return list(self._api_call_times)
+
+    def refill_wait(self) -> float:
+        """Seconds the refill should wait before calling `refill_step` again.
+
+        The Core service decides how long; the thread does the waiting, cancellably (invariants 11 and 12).
+        Splitting it this way is what lets a test assert the 45-per-minute budget and the back-off with a
+        fake clock and no thread at all.
+
+        Three things can ask for a wait and the longest wins: the **Pool** being at target (idle, looking
+        again in `IDLE_RECHECK_SECONDS`), the rate limiter, and a back-off a failed call asked for.
+        """
+        now = self._clock.monotonic()
+        if self._pool_size() >= self.get_settings().pool_target_size:
+            return IDLE_RECHECK_SECONDS
+        with self._refill_lock:
+            limited = wait_needed(self._api_call_times, now=now)
+            backing_off = 0.0 if self._retry_not_before is None else self._retry_not_before - now
+        return max(limited, backing_off, 0.0)
+
+    def refill_step(self) -> None:
+        """One step of the refill: at most one **API call**, and never an exception.
+
+        A Core service method rather than something inside the thread, so every test here is a plain
+        function call with a fake clock and no thread, no sleeping and no race. The thread (`refill.py`) is
+        a loop around this and `refill_wait` and nothing else.
+
+        Never raises, because the thread must not die (#15): a transport failure or a non-200 is recorded
+        as the refill's last error, the walk keeps its place so the same page is retried, and the caller
+        backs off. The **Pool** being empty because Wallhaven is down is a **Batch unavailable** page, not
+        a missing background thread.
+        """
+        settings = self.get_settings()
+        self._mark_refill_run()
+        if self._pool_size() >= settings.pool_target_size:
+            # At target: the walk is over. The next one starts from a fresh seed, because reusing a seed
+            # across walks returns the same **Wallpapers**.
+            self._reset_walk()
+            return
+
+        with self._refill_lock:
+            seed, page_number = self._walk_seed, self._walk_page
+            self._record_api_call(self._clock.monotonic())
+        try:
+            page = self._wallhaven.search(
+                sorting="random",
+                purity=SFW_PURITY,
+                categories=ALL_CATEGORIES,
+                page=page_number,
+                seed=seed,
+                atleast=settings.atleast,
+                ratios=settings.ratios,
+            )
+        except RateLimited as limited:
+            # Wallhaven's own answer beats the default: it knows when it will start answering again.
+            self._record_refill_failure(limited, limited.retry_after or ERROR_BACKOFF_SECONDS)
+            return
+        except Exception as failure:
+            # Deliberately everything. The Wallhaven protocol names one error — `RateLimited` — and
+            # anything else the client raises is "the call did not happen". Narrowing this to httpx2's
+            # exceptions would put the transport's spelling in the Core service and would let one
+            # unexpected type kill the thread (#15).
+            self._record_refill_failure(failure, ERROR_BACKOFF_SECONDS)
+            return
+
+        self._admit_to_pool(page.wallpapers, settings)
+        self._advance_walk(page)
+        with self._refill_lock:
+            self._retry_not_before = None
+            self._refill_last_error = None
+            self._refill_last_error_at = None
+
+    @contextmanager
+    def refill_running(self) -> Generator[None]:
+        """Marks the refill as running for as long as the thread's loop is inside this.
+
+        The Core service does not own the thread — the FastAPI lifespan does — so aliveness has to be told
+        to it. A context manager rather than a pair of calls, so a loop that dies of something unexpected
+        still clears the flag and the indicator says so instead of lying.
+        """
+        with self._refill_lock:
+            self._refill_thread_running = True
+        try:
+            yield
+        finally:
+            with self._refill_lock:
+                self._refill_thread_running = False
+
+    def _record_api_call(self, at: float) -> None:
+        """Note an **API call**, dropping the ones that have aged out of the window.
+
+        Called with `self._refill_lock` already held. Trimming here rather than in `wait_needed` keeps the
+        limiter a pure function of what it is given (invariant 11) and keeps the deque's contents honest:
+        what it holds is the window, not every call ever made.
+        """
+        while self._api_call_times and at - self._api_call_times[0] >= WINDOW_SECONDS:
+            self._api_call_times.popleft()
+        self._api_call_times.append(at)
+
+    def _mark_refill_run(self) -> None:
+        with self._refill_lock:
+            self._refill_last_run = self._clock.now()
+
+    def _record_refill_failure(self, failure: Exception, backoff: float) -> None:
+        """Remember why the last **API call** failed, and how long to leave Wallhaven alone.
+
+        The text is `str(failure)` rather than a traceback: it is going on a page for the person who owns
+        the machine, and "what went wrong and when" is the whole of what they can act on.
+        """
+        with self._refill_lock:
+            self._refill_last_error = str(failure) or type(failure).__name__
+            self._refill_last_error_at = self._clock.now()
+            self._retry_not_before = self._clock.monotonic() + backoff
+
+    def _advance_walk(self, page: SearchPage) -> None:
+        """Carry `meta.seed` to the next page of this walk, or start a fresh walk on an empty page.
+
+        Wallhaven's random sorting reshuffles on every call unless the seed is passed back, so a walk that
+        dropped it would be as likely to hand back page one again as anything new. `meta.last_page` is
+        returned but is not a stop condition worth carrying: on a random SFW search it was 14,055 when the
+        fixture was captured. An empty page is the real end of a walk.
+        """
+        with self._refill_lock:
             if not page.wallpapers:
-                break
-            fresh = [w for w in _distinct(page.wallpapers) if w.id not in seen]
-            seen.update(w.id for w in fresh)
-            gathered.extend(self._without_bans(fresh))
-            if len(gathered) >= size:
-                break
-        return gathered
+                self._walk_seed, self._walk_page = None, 1
+                return
+            self._walk_seed = page.seed or self._walk_seed
+            self._walk_page += 1
+
+    def _reset_walk(self) -> None:
+        with self._refill_lock:
+            self._walk_seed, self._walk_page = None, 1
+
+    def _admit_to_pool(self, wallpapers: Sequence[Wallpaper], settings: Settings) -> None:
+        """Put the **Wallpapers** that pass every **Filter** into the **Pool**.
+
+        Checked locally against all of them and not only the minimum **Favourites**, which is the one
+        Wallhaven cannot do: the API is trusted but not relied upon, and a **Filter** that only exists in a
+        query parameter is a **Filter** nothing verifies.
+
+        The `wallpapers` row is upserted and the `pool` row inserted separately, because **Pool**
+        membership is its own table: a **Wallpaper** leaves the **Pool** while its **Decision log** entries
+        go on referring to it for ever.
+        """
+        passing = [w for w in _distinct(wallpapers) if _passes_filters(w, settings)]
+        if not passing:
+            return
+        fetched_at = self._clock.now().isoformat()
+        with self._write() as write:
+            write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in passing])
+            write.executemany(_ADMIT_TO_POOL, [(w.id, fetched_at, POOL_SOURCE_RANDOM) for w in passing])
+
+    def _prune_pool(self, write: sqlite3.Connection, settings: Settings) -> None:
+        """Drop every **Pool** member that no longer passes the **Filters**.
+
+        The rule the **Pool** keeps is "no **Wallpaper** that fails the current **Filters**", so this runs
+        after every settings write rather than only after one that named a **Filter** — one rule, rather
+        than a rule plus a list of which fields count. With nothing changed there is nothing to prune.
+
+        Decided **Wallpapers** go too. **Pool** membership governs only what may be *shown*, so a **Liked**
+        1080p **Wallpaper** must stop appearing once the minimum is raised to 1440p exactly as an undecided
+        one does — and an **Ignored** one certainly must. Nothing is lost by it: only the membership row
+        goes. The `wallpapers` row and every **Decision log** entry stay, so **History** at #7 still renders
+        each of them, and a **Clearance** there works on the log rather than on **Pool** membership.
+
+        The live unsubmitted **Batch** is untouched for free — a **Batch** holds `batch_wallpapers` rows,
+        not **Pool** membership — so nobody loses the **Draft Batch** they are part way through.
+        """
+        rows = write.execute(_SELECT_POOL_WALLPAPERS).fetchall()
+        failing = [
+            (str(row["id"]),) for row in rows if not _passes_filters(_wallpaper_from_row(row), settings)
+        ]
+        if failing:
+            write.executemany("DELETE FROM pool WHERE wallpaper_id = ?", failing)
+
+    def _pool_size(self) -> int:
+        return int(self._connect().execute("SELECT COUNT(*) FROM pool").fetchone()[0])
+
+    def _pool_wallpapers(self) -> list[Wallpaper]:
+        """Every **Wallpaper** in the **Pool**, ordered so a seeded random source draws the same sample."""
+        rows = self._connect().execute(_SELECT_POOL_WALLPAPERS).fetchall()
+        return [_wallpaper_from_row(row) for row in rows]
 
     def _without_bans(self, wallpapers: Sequence[Wallpaper]) -> list[Wallpaper]:
         """Drop the **Wallpapers** whose resolved **Verdict** is **Ban**.
@@ -697,6 +1116,126 @@ def _validated_batch_size(value: int | str) -> int | SettingsRefused.Reason:
     return size
 
 
+def _passes_filters(wallpaper: Wallpaper, settings: Settings) -> bool:
+    """Every **Filter**, checked locally.
+
+    The same rule admits a **Wallpaper** to the **Pool** and decides whether one already in it has to
+    leave, so a **Filter** cannot mean two different things at the two ends.
+
+    Purity is checked here as well as being fixed in the query. `atleast` and `ratios` are checked here as
+    well as being sent. The API is trusted but not relied upon: a parameter that was silently ignored, or a
+    response shaped differently from the documentation, must not be able to put a NSFW or 1024x768
+    **Wallpaper** in front of somebody.
+    """
+    return (
+        wallpaper.purity.strip().lower() == SFW_PURITY_NAME
+        and wallpaper.width >= settings.min_width
+        and wallpaper.height >= settings.min_height
+        and wallpaper.favourites >= settings.min_favourites
+        and _matches_an_allowed_ratio(wallpaper, settings.allowed_ratios)
+    )
+
+
+def _matches_an_allowed_ratio(wallpaper: Wallpaper, allowed: Sequence[str]) -> bool:
+    """Whether the **Wallpaper**'s own shape is within `RATIO_TOLERANCE` of any allowed ratio.
+
+    Computed from the width and the height rather than read from Wallhaven's `ratio` field, which is
+    rounded to two places, and matched with a tolerance because Wallhaven's `ratios=` buckets rather than
+    matching exactly — a 3440x1440 ultrawide is 2.39 and it is served under `21x9`.
+    """
+    if wallpaper.height <= 0:
+        return False
+    shape = wallpaper.width / wallpaper.height
+    return any(
+        abs(shape - named) <= RATIO_TOLERANCE
+        for named in (_ratio_value(ratio) for ratio in allowed)
+        if named is not None
+    )
+
+
+def _ratio_value(named: str) -> float | None:
+    """`"16x9"` as 1.777…, or `None` if it is not a ratio at all.
+
+    Tolerant of nonsense rather than raising: the settings validator is what refuses an unknown ratio, and
+    this one is also reached with whatever a hand-edited row happens to hold.
+    """
+    width, _, height = named.partition("x")
+    try:
+        return int(width) / int(height)
+    except ValueError, ZeroDivisionError:
+        return None
+
+
+def _whole_number(value: object) -> int | None:
+    """The value as a whole number, or `None` if it is not one.
+
+    `int` and never `float`: "1.5" and "1e3" are refused outright rather than silently becoming something
+    the user did not type. The form posts text, so the coercion belongs with the rule.
+    """
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _validated_pool_target_size(value: int | str) -> int | SettingsRefused.Reason:
+    """The **Pool** target size, or the reason it is not one."""
+    size = _whole_number(value)
+    if size is None or not MIN_POOL_TARGET_SIZE <= size <= MAX_POOL_TARGET_SIZE:
+        return SettingsRefused.Reason.POOL_TARGET_SIZE_INVALID
+    return size
+
+
+def _validated_min_width(value: int | str) -> int | SettingsRefused.Reason:
+    return _validated_pixels(value, SettingsRefused.Reason.MIN_WIDTH_INVALID)
+
+
+def _validated_min_height(value: int | str) -> int | SettingsRefused.Reason:
+    return _validated_pixels(value, SettingsRefused.Reason.MIN_HEIGHT_INVALID)
+
+
+def _validated_pixels(value: int | str, reason: SettingsRefused.Reason) -> int | SettingsRefused.Reason:
+    """One axis of the minimum resolution **Filter**, or the reason it is not one.
+
+    Zero is accepted: "no minimum on this axis" is a real answer, and turning a **Filter** off by emptying
+    it is better than a second setting saying whether it is on.
+    """
+    pixels = _whole_number(value)
+    if pixels is None or not 0 <= pixels <= MAX_FILTER_PIXELS:
+        return reason
+    return pixels
+
+
+def _validated_min_favourites(value: int | str) -> int | SettingsRefused.Reason:
+    """The minimum **Favourites** **Filter**, or the reason it is not one.
+
+    No ceiling: unlike a resolution there is no number above which this can only be a typo, and its effect
+    — a **Pool** that fills slowly or not at all — is visible on the **Batch** page's refill indicator.
+    """
+    favourites = _whole_number(value)
+    if favourites is None or favourites < 0:
+        return SettingsRefused.Reason.MIN_FAVOURITES_INVALID
+    return favourites
+
+
+def _validated_allowed_ratios(value: Sequence[str] | str) -> tuple[str, ...] | SettingsRefused.Reason:
+    """The allowed ratios, or the reason they are not.
+
+    Accepted as the comma-separated string the form posts or as a sequence, trimmed and de-duplicated with
+    the order kept. Checked against `WALLHAVEN_RATIOS` rather than against being a string, because an
+    unrecognised `ratios=` value is not an error Wallhaven reports — it is a search that quietly returns
+    something other than what was asked for.
+
+    An empty list is refused: "every ratio" is written as the full list, because a blank field is far more
+    likely to be a mistake than an intention.
+    """
+    parts = value.split(",") if isinstance(value, str) else list(value)
+    named = list(dict.fromkeys(part.strip() for part in parts))
+    if not named or any(part not in WALLHAVEN_RATIOS for part in named):
+        return SettingsRefused.Reason.ALLOWED_RATIOS_INVALID
+    return tuple(named)
+
+
 def _validated_library_path(value: Path | str) -> Path | SettingsRefused.Reason:
     """The **Library** path, or the reason it is not one.
 
@@ -872,6 +1411,25 @@ def _wallpaper_row(wallpaper: Wallpaper) -> tuple[str | int, ...]:
     )
 
 
+_ADMIT_TO_POOL = """
+INSERT INTO pool (wallpaper_id, fetched_at, source) VALUES (?, ?, ?)
+ON CONFLICT (wallpaper_id) DO NOTHING
+"""
+"""`DO NOTHING` rather than an upsert: a **Wallpaper** the refill meets again is already in the **Pool**,
+and `fetched_at` should stay the moment it first arrived."""
+
+_SELECT_POOL_WALLPAPERS = """
+SELECT w.*
+FROM pool
+JOIN wallpapers AS w ON w.id = pool.wallpaper_id
+ORDER BY pool.rowid
+"""
+"""The whole **Pool**, in a fixed order.
+
+Ordered because the sample is drawn by the seeded random source: without an `ORDER BY`, SQLite's row order
+is an implementation detail and the same seed over the same **Pool** could produce a different **Batch**.
+"""
+
 _SELECT_BATCH_WALLPAPERS = """
 SELECT w.*
 FROM batch_wallpapers AS bw
@@ -1020,3 +1578,33 @@ def _migration_3() -> tuple[tuple[str, tuple[str, str]], ...]:
 
 
 _SEED_SETTING = "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING"
+
+
+_CREATE_POOL = """
+CREATE TABLE pool (
+    wallpaper_id TEXT PRIMARY KEY REFERENCES wallpapers (id),
+    fetched_at   TEXT NOT NULL,
+    source       TEXT NOT NULL
+)
+"""
+"""**Pool** membership as its own table, never a column on `wallpapers`.
+
+A **Wallpaper** leaves the **Pool** — pruned by a **Filter** change, and evicted by the **Zones** work at
+#9 — while the **Decision log** goes on referring to its `wallpapers` row for ever. A `in_pool` column
+would make "is it in the **Pool**" and "does this row exist" the same question, and there would be nowhere
+to put `fetched_at` or `source` without widening a table that is about the image itself.
+
+`source` is how it got here: `'random'` today, `'like'` when #13 starts searching for lookalikes.
+"""
+
+
+def _migration_5() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Migration 5: the **Pool** table, and the **Filters** and **Pool** target size as seeded rows.
+
+    Paired with parameters for the same reason migration 3 is — the seeds come from `_defaults()`, which is
+    computed in Python and inserted as text rather than interpolated into SQL. `DO NOTHING` again, because
+    this also runs on databases that already hold settings chosen by hand.
+
+    A step of its own rather than an edit to 3: that one is already applied to live databases.
+    """
+    return ((_CREATE_POOL, ()), *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()))

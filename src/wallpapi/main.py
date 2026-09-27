@@ -14,6 +14,7 @@ import secrets
 from pathlib import Path
 
 import uvicorn
+from fastapi import FastAPI
 
 from wallpapi.clock import SystemClock
 from wallpapi.core import CoreService
@@ -52,9 +53,19 @@ def build_core(home: Path | None = None) -> CoreService:
     )
 
 
+def build_app() -> FastAPI:
+    """The real app, with the background **Pool** refill running behind it.
+
+    `refill=True` appears here and nowhere else. `create_app` leaves it off by default so that no test can
+    start a thread that talks to Wallhaven, which makes this the one line that has to be right for the
+    **Pool** to fill at all.
+    """
+    return create_app(build_core(), refill=True)
+
+
 def main() -> None:
     port = int(os.environ.get("WALLPAPI_PORT", DEFAULT_PORT))
-    uvicorn.run(create_app(build_core()), host=HOST, port=port)
+    uvicorn.run(build_app(), host=HOST, port=port)
 
 
 if __name__ == "__main__":

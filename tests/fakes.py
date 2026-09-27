@@ -7,6 +7,7 @@ Four of the five dependencies are faked here. The fifth, the random source, is n
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from wallpapi.model import Wallpaper
-from wallpapi.wallhaven import SearchPage
+from wallpapi.wallhaven import RateLimited, SearchPage
 
 
 def wallpaper(
@@ -54,8 +55,9 @@ THUMBNAIL_BYTES = b"\xff\xd8\xff\xe0 fake thumbnail"
 class WallhavenUnreachable(RuntimeError):
     """What the fake raises to stand in for a transport failure.
 
-    The Wallhaven protocol declares no error type, so the Core service cannot name one either — this exists
-    so a test can make a call fail without reaching for `httpx2` on the far side of the seam.
+    The protocol names one error and one only — `RateLimited`, because a 429 is the one failure the caller
+    treats differently. Everything else is "the call did not happen", and this exists so a test can arrange
+    that without reaching for `httpx2` on the far side of the seam.
     """
 
 
@@ -63,8 +65,17 @@ class FakeWallhavenClient:
     """An in-memory catalogue, served a page at a time.
 
     Records the search parameters and the thumbnail URLs it was called with. `page_size` defaults to
-    Wallhaven's listing size of 24; tests that care about the walk turn it down so a page boundary is a
+    Wallhaven's listing size of 24; tests that care about a walk turn it down so a page boundary is a
     couple of **Wallpapers** away rather than two dozen.
+
+    `seed` is what this fake returns as `meta.seed`. It ignores the seed it is *given* when choosing what to
+    serve, which is the one place it is deliberately less than faithful: Wallhaven reshuffles, and a fake
+    that did would make every refill test depend on a shuffle nobody chose. What the seed is actually for —
+    being carried across the pages of one walk and not across walks — is asserted from `searches` instead.
+
+    `rate_limited_calls` makes the first N searches answer 429, as the real client's `RateLimited`.
+    `fail_from_call` makes every call from the Nth onwards a transport failure. Together they cover both
+    halves of the refill's error handling.
     """
 
     def __init__(
@@ -74,16 +85,46 @@ class FakeWallhavenClient:
         seed: str | None = None,
         page_size: int = 24,
         fail_from_call: int | None = None,
+        rate_limited_calls: int = 0,
+        retry_after: float | None = None,
     ) -> None:
         self.catalogue: list[Wallpaper] = list(catalogue)
         self.seed = seed
         self.page_size = page_size
         self.fail_from_call = fail_from_call
+        self.rate_limited_calls = rate_limited_calls
+        self.retry_after = retry_after
         self.searches: list[dict[str, object]] = []
         self.thumbnail_fetches: list[str] = []
+        self.searched = threading.Event()
+        """Set by every search. The one thread test waits on this rather than guessing how long the
+        refill thread needs, so it is deterministic without sleeping."""
 
-    def search(self, *, sorting: str, purity: str, page: int = 1, seed: str | None = None) -> SearchPage:
-        self.searches.append({"sorting": sorting, "purity": purity, "page": page, "seed": seed})
+    def search(
+        self,
+        *,
+        sorting: str,
+        purity: str,
+        categories: str | None = None,
+        page: int = 1,
+        seed: str | None = None,
+        atleast: str | None = None,
+        ratios: str | None = None,
+    ) -> SearchPage:
+        self.searches.append(
+            {
+                "sorting": sorting,
+                "purity": purity,
+                "categories": categories,
+                "page": page,
+                "seed": seed,
+                "atleast": atleast,
+                "ratios": ratios,
+            }
+        )
+        self.searched.set()
+        if len(self.searches) <= self.rate_limited_calls:
+            raise RateLimited(self.retry_after)
         if self.fail_from_call is not None and len(self.searches) >= self.fail_from_call:
             raise WallhavenUnreachable(f"call {len(self.searches)} was set up to fail")
         start = (page - 1) * self.page_size

@@ -174,3 +174,91 @@ def test_a_batch_size_saved_from_the_page_reaches_the_next_batch(db_path: Path, 
         after = client.post("/submit", data={"batch_id": batch_id})
 
     assert after.text.count('data-wallpaper-id="') == 2
+
+
+def test_the_page_renders_the_filters_and_the_pool_target(db_path: Path) -> None:
+    """Issue #6: the **Filters** and the **Pool** target size are editable from the settings page."""
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/settings")
+
+    body = response.text
+    assert response.status_code == 200
+    for field in ("min_width", "min_height", "allowed_ratios", "min_favourites", "pool_target_size"):
+        assert f'name="{field}"' in body
+    assert 'value="2560"' in body
+    assert 'value="16x9,16x10,21x9"' in body
+
+
+def test_saving_the_filters_from_the_page_persists_them(db_path: Path) -> None:
+    """Acceptance criterion, through the web layer: the **Filters** are configurable and persisted."""
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/settings",
+            data={
+                "min_width": "1920",
+                "min_height": "1080",
+                "allowed_ratios": "21x9, 32x9",
+                "min_favourites": "40",
+                "pool_target_size": "150",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    settings = harness.core.get_settings()
+    assert (settings.min_width, settings.min_height) == (1920, 1080)
+    assert settings.allowed_ratios == ("21x9", "32x9")
+    assert settings.min_favourites == 40
+    assert settings.pool_target_size == 150
+
+
+def test_an_unknown_ratio_is_a_rendered_refusal_naming_the_ones_that_work(db_path: Path) -> None:
+    """A reason with no words on the page renders as the fallback, so every new reason gets a branch."""
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.post("/settings", data={"allowed_ratios": "16:9"})
+
+    assert response.status_code == 400
+    assert "16x9" in response.text
+    assert "allowed_ratios_invalid" not in response.text, "the reason needs words, not its enum value"
+    assert harness.core.get_settings().allowed_ratios == ("16x9", "16x10", "21x9")
+
+
+def test_a_post_that_names_one_field_leaves_the_others_alone(db_path: Path) -> None:
+    """ADR 0004's convention at the edge: a field the post did not carry keeps the value it had.
+
+    The real form always posts every field. This is what stops a partial post — a script, a page rendered
+    before a section existed — from silently resetting the settings it never knew about.
+    """
+    harness = make_harness(db_path)
+    harness.core.update_settings(min_favourites=77)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        client.post("/settings", data={"batch_size": "4"}, follow_redirects=False)
+
+    settings = harness.core.get_settings()
+    assert settings.batch_size == 4
+    assert settings.min_favourites == 77
+
+
+def test_a_refused_filter_post_keeps_what_was_typed_beside_what_is_stored(db_path: Path) -> None:
+    """Correcting one field must not mean retyping the rest — including the fields the post never carried."""
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.post("/settings", data={"min_width": "9999", "allowed_ratios": "nope"})
+
+    assert response.status_code == 400
+    assert 'value="9999"' in response.text
+    assert 'value="nope"' in response.text
+    assert 'value="1440"' in response.text, "the untouched minimum height should still be shown"

@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
+import pytest
 
-from wallpapi.wallhaven import WallhavenClient
+from wallpapi.wallhaven import RateLimited, WallhavenClient
 
 FIXTURE = Path(__file__).parent / "fixtures" / "wallhaven_search.json"
 RECORDED: dict[str, Any] = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -52,3 +53,115 @@ def test_search_parses_a_recorded_wallhaven_response() -> None:
     assert first.thumbnail_url == "https://th.wallhaven.cc/small/ox/oxkzwm.jpg"
     assert first.full_url == "https://w.wallhaven.cc/full/ox/wallhaven-oxkzwm.jpg"
     assert first.page_url == "https://wallhaven.cc/w/oxkzwm"
+
+
+def test_search_sends_the_filters_it_is_given() -> None:
+    """Acceptance criteria: minimum resolution and allowed ratios go into the query, purity is SFW.
+
+    `atleast` and never `resolutions`: `atleast` is a minimum, `resolutions` is an exact-match list, and the
+    **Filters** call for a minimum. `ratios` does take a comma-separated list.
+
+    The masks arrive as parameters rather than being decided here. The client is thin on purpose — the
+    policy that purity is always SFW and every category is on belongs with the **Filters**, in the Core
+    service, where a test can reach it.
+    """
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json=RECORDED)
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    client.search(
+        sorting="random",
+        purity="100",
+        categories="111",
+        page=3,
+        seed="j1MDms",
+        atleast="2560x1440",
+        ratios="16x9,16x10,21x9",
+    )
+
+    assert dict(seen[0].url.params) == {
+        "sorting": "random",
+        "purity": "100",
+        "categories": "111",
+        "page": "3",
+        "seed": "j1MDms",
+        "atleast": "2560x1440",
+        "ratios": "16x9,16x10,21x9",
+    }
+
+
+def test_filters_that_were_not_asked_for_are_left_out_of_the_query() -> None:
+    """An omitted **Filter** must be absent, not sent empty.
+
+    `atleast=` with no value is not the same request as no `atleast` at all, and guessing which way
+    Wallhaven reads it is not a bet worth taking.
+    """
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json=RECORDED)
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    client.search(sorting="random", purity="100", categories="111")
+
+    assert "atleast" not in dict(seen[0].url.params)
+    assert "ratios" not in dict(seen[0].url.params)
+    assert "seed" not in dict(seen[0].url.params)
+
+
+def test_a_429_is_raised_as_rate_limited_carrying_retry_after() -> None:
+    """Acceptance criterion: the client recovers from a 429 — which starts with recognising one.
+
+    A typed exception rather than a bare `HTTPStatusError`, because the caller has to tell "wait the number
+    of seconds Wallhaven named" apart from every other failure, and picking that apart from a status code
+    on the far side of the seam would put Wallhaven's spelling in the Core service.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(429, headers={"Retry-After": "17"}, json={"error": "too many requests"})
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    with pytest.raises(RateLimited) as raised:
+        client.search(sorting="random", purity="100", categories="111")
+
+    assert raised.value.retry_after == 17.0
+
+
+def test_a_429_without_a_usable_retry_after_carries_none() -> None:
+    """The header is optional, and may be an HTTP date rather than a count of seconds.
+
+    `None` rather than a guess: the caller's own back-off is the answer to "Wallhaven did not say", and
+    parsing a date format to save it a constant would be the client knowing more than it needs to.
+    """
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, json={})
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    with pytest.raises(RateLimited) as raised:
+        client.search(sorting="random", purity="100", categories="111")
+
+    assert raised.value.retry_after is None
+
+
+def test_any_other_non_200_still_raises() -> None:
+    """A 500 from Wallhaven is a failure, not a rate limit, and must not be mistaken for one."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(503, json={})
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    with pytest.raises(httpx2.HTTPStatusError):
+        client.search(sorting="random", purity="100", categories="111")

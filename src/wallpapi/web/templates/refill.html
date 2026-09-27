@@ -1,0 +1,28 @@
+{#
+  The refill indicator: one line saying what the background thread is doing.
+
+  It is on every state of the batch page, including the one that says there is nothing to show, because
+  that is where it answers the question the page raises. "Pool 0 of 2000, refill not running" is the whole
+  diagnosis; without it an empty page and a dead thread look exactly alike.
+
+  A plain line and not a poll: the numbers move slowly, the page is reloaded often, and htmx polling this
+  would be a request a second for something nobody is watching.
+#}
+<p class="refill" data-pool-size="{{ status.pool_size }}">
+  Pool {{ status.pool_size }} of {{ status.target_size }}.
+  {% if not status.running %}
+    <span class="refill-stopped">Refill not running.</span>
+  {% elif status.at_target %}
+    Refill idle — the pool is stocked.
+  {% else %}
+    Refill fetching.
+  {% endif %}
+  {% if status.last_error %}
+    <span class="refill-error">
+      Last error{% if status.last_error_at %} at {{ status.last_error_at.strftime("%H:%M") }} UTC{% endif %}:
+      {{ status.last_error }}.
+    </span>
+  {% elif status.last_run_at %}
+    Last run {{ status.last_run_at.strftime("%H:%M") }} UTC.
+  {% endif %}
+</p>

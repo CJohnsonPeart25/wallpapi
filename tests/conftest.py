@@ -38,6 +38,17 @@ class Harness:
     similarity: FakeSimilarityProvider
     clock: FakeClock
 
+    def fill_pool(self, steps: int = 1) -> None:
+        """Run the refill by hand, `steps` **API calls** worth.
+
+        Never the thread. A test that started one would be a test with a race in it and a real second of
+        waiting somewhere; `refill_step` is a Core service method precisely so the refill can be driven one
+        call at a time. The one test that does start a thread is `test_refill_thread.py`, and what it
+        checks is the thread, not the refilling.
+        """
+        for _ in range(steps):
+            self.core.refill_step()
+
 
 def make_harness(
     db_path: Path,
@@ -48,17 +59,27 @@ def make_harness(
     search_seed: str | None = None,
     page_size: int = 24,
     fail_from_call: int | None = None,
+    rate_limited_calls: int = 0,
+    retry_after: float | None = None,
+    fill_pool: int = 1,
 ) -> Harness:
-    """Build a Core service over `db_path`.
+    """Build a Core service over `db_path`, with the **Pool** already primed.
 
     Called twice with the same path to prove the Decision log survives a restart, so it must run migrations
     idempotently rather than assuming an empty database.
+
+    `fill_pool` is how many refill steps to run before handing the harness over. One by default, because a
+    **Batch** is drawn from the **Pool** and a test that only wants "a **Batch** exists" should not have to
+    say so; one step is a whole page, which is 24 **Wallpapers** at the default page size. Pass `0` in the
+    tests that care what an empty **Pool** does.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
         seed=search_seed,
         page_size=page_size,
         fail_from_call=fail_from_call,
+        rate_limited_calls=rate_limited_calls,
+        retry_after=retry_after,
     )
     library = FakeLibraryWriter()
     similarity = FakeSimilarityProvider()
@@ -71,7 +92,9 @@ def make_harness(
         random_source=SeededRandom(seed),
         clock=clock,
     )
-    return Harness(core=core, wallhaven=wallhaven, library=library, similarity=similarity, clock=clock)
+    harness = Harness(core=core, wallhaven=wallhaven, library=library, similarity=similarity, clock=clock)
+    harness.fill_pool(fill_pool)
+    return harness
 
 
 @pytest.fixture
