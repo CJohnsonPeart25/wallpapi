@@ -19,17 +19,18 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from wallpapi.allocation import ZONE_ORDER, allocate, weighted_order
 from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
-from wallpapi.model import Clearance, DecisionEntry, Verdict, Wallpaper, Zone
+from wallpapi.model import Clearance, DecisionEntry, Mix, Verdict, Wallpaper, Zone
 from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off.
@@ -199,6 +200,29 @@ still narrower than half the gap between `16x9` (1.78) and `16x10` (1.60), the c
 on.
 """
 
+EXPLORE_MIX = Mix(name="explore", unknown=75, banger=20, dud=5)
+REFINE_MIX = Mix(name="refine", unknown=25, banger=70, dud=5)
+DEFAULT_MIXES = (EXPLORE_MIX, REFINE_MIX)
+"""The two **Mixes** the spec names, seeded by migration 7 and editable at #12.
+
+**Explore** casts a wide net and **Refine** narrows it, and the 5% of **Duds** in both is deliberate: a
+**Score** is derived, so a **Wallpaper** the **Decision log** currently leans against can stop being a
+**Dud** the moment something near it is **Favourited** — and it never will if it is never shown again.
+
+Stored rather than hard-coded, because #12 makes them editable and lets the user add their own. These
+values are the seed for an empty database and the fallback for one whose `mixes` table has been emptied by
+hand; they are not what the draw reads. `active_mix()` reads the table.
+"""
+
+DEFAULT_ACTIVE_MIX = EXPLORE_MIX.name
+"""**Explore** to begin with, because a **Decision log** with nothing in it has no **Bangers** to refine
+towards. Nothing enforces that: an all-**Unknown** **Pool** would fall back to **Unknown** under any
+**Mix**, which is the shortfall rule doing its job rather than a special case for a new database."""
+
+MIX_TOTAL = 100
+"""What a **Mix**'s three percentages must sum to. Exactly, never approximately — the slack in an
+**Allocation** is the leftover roll, and a **Mix** summing to 99 would make that roll systematic."""
+
 _BATCH_SIZE = "batch_size"
 _LIBRARY_PATH = "library_path"
 _POOL_TARGET_SIZE = "pool_target_size"
@@ -209,6 +233,7 @@ _MIN_FAVOURITES = "min_favourites"
 _SIMILARITY_RADIUS = "similarity_radius"
 _SIMILARITY_DECAY = "similarity_decay"
 _THUMBNAIL_CACHE_MAX_MB = "thumbnail_cache_max_mb"
+_ACTIVE_MIX = "active_mix"
 """The `settings` keys. One row per key, with `Settings` as the typed view over them."""
 
 
@@ -239,6 +264,7 @@ def _defaults() -> dict[str, str]:
         _SIMILARITY_RADIUS: str(DEFAULT_SIMILARITY_RADIUS),
         _SIMILARITY_DECAY: str(DEFAULT_SIMILARITY_DECAY),
         _THUMBNAIL_CACHE_MAX_MB: str(DEFAULT_THUMBNAIL_CACHE_MAX_MB),
+        _ACTIVE_MIX: DEFAULT_ACTIVE_MIX,
     }
 
 
@@ -261,6 +287,16 @@ class Settings:
     similarity_radius: float
     similarity_decay: float
     thumbnail_cache_max_mb: int
+    active_mix: str
+    """Which **Mix** the *next* **Batch** is built from, by name.
+
+    The name and not a `Mix`, which is the one place this view is deliberately not fully typed. A **Mix**
+    lives in a table of its own — there can be more of them at #12 — and resolving the name here would put
+    a second query inside `get_settings`, which is read on the refill loop and inside write transactions.
+    It would also make `get_settings` able to fail in a new way: a name whose **Mix** has been deleted has
+    no typed value to stand for it, and this view never refuses (see the docstring). `active_mix()` on the
+    Core service is the resolved one, and it is what the draw uses.
+    """
 
     @property
     def atleast(self) -> str:
@@ -303,6 +339,20 @@ class SettingsRefused:
 
         THUMBNAIL_CACHE_MAX_MB_INVALID = "thumbnail_cache_max_mb_invalid"
         """The **Thumbnail cache** cap, on the same one-reason-per-field rule as the **Filters**."""
+        ACTIVE_MIX_UNKNOWN = "active_mix_unknown"
+        """No stored **Mix** goes by that name. Refused rather than stored and ignored: a switcher that
+        accepted anything would leave the **Batch** page naming a **Mix** the draw has never heard of."""
+
+        MIX_NAME_INVALID = "mix_name_invalid"
+        MIX_PERCENTAGES_INVALID = "mix_percentages_invalid"
+        """The two ways `validated_mix` can refuse a **Mix**.
+
+        Nothing reaches them through `update_settings` in this ticket — no path writes to the `mixes`
+        table but the migration that seeds it, and creating and editing **Mixes** is #12. The reasons live
+        here with the rest so that #12's form has the one error branch every other field already has, and
+        so that the validator has somewhere to say *which* of the two went wrong: a name that is not a
+        name and three numbers that do not add up have nothing to say to each other.
+        """
 
     reason: Reason
 
@@ -667,6 +717,9 @@ class CoreService:
             if applied < 6:
                 for statement, parameters in _migration_6():
                     write.execute(statement, parameters)
+            if applied < 7:
+                for statement, mix_parameters in _migration_7():
+                    write.execute(statement, mix_parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -718,6 +771,11 @@ class CoreService:
                 _validated_thumbnail_cache_max_mb(stored_or_seeded(_THUMBNAIL_CACHE_MAX_MB)),
                 DEFAULT_THUMBNAIL_CACHE_MAX_MB,
             ),
+            # Not checked against the `mixes` table here, on purpose: this view never refuses and never
+            # queries a second table. A name whose **Mix** has been deleted survives as far as
+            # `active_mix()`, which is where it falls back — and falling back there rather than here means
+            # the switcher goes on showing what the user chose instead of silently reading "explore".
+            active_mix=stored_or_seeded(_ACTIVE_MIX).strip() or DEFAULT_ACTIVE_MIX,
         )
 
     def update_settings(
@@ -733,6 +791,7 @@ class CoreService:
         similarity_radius: float | str | None = None,
         similarity_decay: float | str | None = None,
         thumbnail_cache_max_mb: int | str | None = None,
+        active_mix: str | None = None,
     ) -> Settings | SettingsRefused:
         """Validate and persist the settings named, in one write transaction.
 
@@ -805,6 +864,15 @@ class CoreService:
             if isinstance(validated_cap, SettingsRefused.Reason):
                 return SettingsRefused(reason=validated_cap)
             changes.append((_THUMBNAIL_CACHE_MAX_MB, str(validated_cap)))
+        if active_mix is not None:
+            # The one setting whose validity is a question about another table rather than about the value
+            # itself, so it is checked here rather than in a `_validated_*` function of its own. Checked
+            # *before* the write transaction opens, which is the same read-then-write race every other
+            # settings field is free of — and harmless here because the only thing that can delete a
+            # **Mix** is #12, in this same single-writer process.
+            if active_mix.strip() not in {mix.name for mix in self.list_mixes()}:
+                return SettingsRefused(reason=SettingsRefused.Reason.ACTIVE_MIX_UNKNOWN)
+            changes.append((_ACTIVE_MIX, active_mix.strip()))
 
         with self._write() as write:
             write.executemany(_UPSERT_SETTING, changes)
@@ -812,6 +880,44 @@ class CoreService:
             updated = self.get_settings()
             self._prune_pool(write, updated)
             return updated
+
+    # -- mixes -----------------------------------------------------------------------------------------
+
+    def list_mixes(self) -> tuple[Mix, ...]:
+        """Every stored **Mix**, in the order the switcher shows them.
+
+        Ordered by name, which puts **Explore** before **Refine** and keeps a user-made **Mix** (#12) in a
+        fixed place rather than wherever the query planner put it. A row whose percentages have been
+        hand-edited into something that is not a **Mix** is dropped rather than returned: the switcher must
+        not offer a **Mix** the draw would then have to make sense of, and `validated_mix` is the one place
+        that decides what a **Mix** is.
+
+        Falls back to the seeded pair if the table is empty. There is always something to switch between —
+        a **Batch** page with no **Mix** at all would be a page with nothing on it and no way to explain
+        why.
+        """
+        rows = self._connect().execute("SELECT name, unknown, banger, dud FROM mixes ORDER BY name")
+        stored = [
+            mix
+            for mix in (
+                validated_mix(str(row["name"]), unknown=row["unknown"], banger=row["banger"], dud=row["dud"])
+                for row in rows.fetchall()
+            )
+            if isinstance(mix, Mix)
+        ]
+        return tuple(stored) if stored else DEFAULT_MIXES
+
+    def active_mix(self) -> Mix:
+        """The **Mix** the next **Batch** will be built from.
+
+        The resolved companion to `get_settings().active_mix`, which is only the name. Falls back to the
+        first **Mix** there is if the stored name matches none — a hand-edited setting, or a **Mix** #12
+        deleted while it was selected — because the alternative is a **Batch** page that cannot mint a
+        **Batch**, and "your chosen **Mix** is gone" is not worth more than a **Batch**.
+        """
+        mixes = self.list_mixes()
+        name = self.get_settings().active_mix
+        return next((mix for mix in mixes if mix.name == name), mixes[0])
 
     # -- batches ---------------------------------------------------------------------------------------
 
@@ -828,13 +934,20 @@ class CoreService:
         used to do is gone rather than dormant. See ADR 0005.
 
         The **Pool** is classified once — **Score** and **Zone** for every member that is not **Banned** —
-        and the **Batch** is drawn from that. The draw itself is still a uniform random sample: **Allocation**
-        by **Mix** is #10, which replaces `_choose` and nothing else. **Wallpapers** with a **Verdict** may
-        reappear; the revisit weight at #11 is what tunes how often.
+        and the **Batch** is drawn from that by the active **Mix** (`_choose`). **Wallpapers** with a
+        **Verdict** may reappear; the revisit weight at #11 is what tunes how often.
 
         Each chosen **Wallpaper**'s **Zone** is recorded against the **Batch** row in the same transaction
         as the **Batch** itself, so the tile shows the **Zone** it was actually drawn from rather than one
         recomputed from a **Decision log** that has moved on since.
+
+        **That recorded Zone is the Wallpaper's own, never the slot's.** A shortfall means a slot the
+        **Mix** asked one **Zone** for was filled from another, and what goes on the tile is where the
+        **Wallpaper** came from rather than what the slot wanted: an **Unknown** shown because there were
+        no **Bangers** to be had is an **Unknown**, and labelling it **Banger** because of the slot it
+        happens to occupy would be the page telling the user something the **Decision log** does not say.
+        It also means the **Zones** on a **Batch** need not match the **Mix** — and that is the visible,
+        honest sign that a **Zone** ran out.
 
         The batch size is read when a **Batch** is minted and not afterwards, so changing it applies to the
         next **Batch** rather than rebuilding the one on screen and discarding its **Draft Batch**.
@@ -882,14 +995,81 @@ class CoreService:
         )
 
     def _choose(self, classified: Sequence[ScoredWallpaper], size: int) -> list[ScoredWallpaper]:
-        """Which of the classified **Pool** a **Batch** shows.
+        """Which of the classified **Pool** a **Batch** shows: **Allocation** by the active **Mix**.
 
-        A uniform random sample, deliberately ignoring the **Zones** it was handed. **Allocation** by
-        **Mix** — so many **Bangers**, so many **Unknowns** — is #10, and this is the one method it has to
-        replace: the classification above it and the write transaction below it are already the shape it
-        needs, and neither has to change.
+        Three steps, and each of them is somewhere a reader can check on its own. `allocate` turns the
+        **Mix** and the size into slots per **Zone**. `_draw_order` puts each **Zone** into the order it
+        will give its **Wallpapers** up in — highest **Score** first for **Bangers**, weighted random for
+        **Unknown** and **Dud**. Then the slots are filled from those orders, and whatever a **Zone** could
+        not supply is refilled in `ZONE_ORDER`: **Unknown**, then **Banger**, then **Dud**.
+
+        **A shortfall is not an error.** A **Decision log** with nothing in it has no **Bangers** at all,
+        so **Explore**'s twenty per cent has nowhere to come from and the whole **Batch** is **Unknown** —
+        which is exactly what a first **Batch** should be. If the whole **Pool** cannot fill the size, the
+        **Batch** is simply smaller; that was already true of the uniform draw this replaces.
+
+        No **Wallpaper** twice: each **Zone**'s order is walked forwards and never restarted, and a
+        **Wallpaper** is in one **Zone**. **Banned** never: `classify_pool` does not return them.
+
+        The result is shuffled before it is handed back, so the grid is not **Unknowns** first and
+        **Bangers** last. The **Zone** is on the tile as a label; it should not also be readable from the
+        position, and the highest-scoring **Banger** being the same tile every time would be a ranking the
+        user never asked to see.
         """
-        return self._random.sample(classified, min(size, len(classified)))
+        slots = allocate(self.active_mix(), size, self._random)
+        orders = {zone: self._draw_order(zone, classified) for zone in ZONE_ORDER}
+        taken = dict.fromkeys(ZONE_ORDER, 0)
+        chosen: list[ScoredWallpaper] = []
+
+        def take(zone: Zone, count: int) -> int:
+            """Up to `count` more from `zone`, in its draw order. Returns how many there were."""
+            available = orders[zone][taken[zone] : taken[zone] + count]
+            taken[zone] += len(available)
+            chosen.extend(available)
+            return len(available)
+
+        shortfall = sum(slots[zone] - take(zone, slots[zone]) for zone in ZONE_ORDER)
+        # One pass is enough: by the end of it every **Zone** is either exhausted or the shortfall is met,
+        # and a second pass would find nothing a first did not.
+        for zone in ZONE_ORDER:
+            if shortfall <= 0:
+                break
+            shortfall -= take(zone, shortfall)
+        return self._random.sample(chosen, len(chosen))
+
+    def _draw_order(self, zone: Zone, classified: Sequence[ScoredWallpaper]) -> list[ScoredWallpaper]:
+        """The order one **Zone** gives its **Wallpapers** up in, best first.
+
+        An order rather than a sample, so that "take `k`" and "take `k` more because another **Zone** fell
+        short" are the same operation and no **Wallpaper** can come out twice.
+
+        **Bangers** are sorted by **Score**, highest first, over an already randomly ordered list — which
+        is how ties are broken by the random source rather than by whatever order the **Pool** query
+        returned, while staying reproducible under the seed. `sort` is stable, so the random order is what
+        survives inside a run of equal **Scores**. **Unknown** and **Dud** keep the random order they were
+        given: there is no "best" **Unknown**, and preferring the least negative **Dud** would be ranking
+        by a number the user is not being shown.
+        """
+        members = [scored for scored in classified if scored.zone is zone]
+        ordered = weighted_order(members, [self._revisit_weight(scored) for scored in members], self._random)
+        if zone is Zone.BANGER:
+            ordered.sort(key=lambda scored: scored.score, reverse=True)
+        return ordered
+
+    def _revisit_weight(self, scored: ScoredWallpaper) -> float:
+        """How strongly this **Wallpaper** is preferred within its **Zone**'s draw order. 1.0, for now.
+
+        The seam #11 lands on. The revisit weight is the setting that makes a **Wallpaper** the user has
+        already given an **Explicit Verdict** reappear less often, and it belongs here: one weight per
+        **Wallpaper**, multiplied into the draw order, with nothing above or below it to restructure.
+        Every weight being 1.0 makes `weighted_order` exactly a shuffle, which is what the **Unknown** and
+        **Dud** slots are meant to be until #11 says otherwise.
+
+        A method rather than a constant so that #11 has the Core service — and so the **Decision log** —
+        already in hand at the point it needs it.
+        """
+        del scored
+        return 1.0
 
     # -- scoring and zones -----------------------------------------------------------------------------
 
@@ -1957,6 +2137,38 @@ def _validated_library_path(value: Path | str) -> Path | SettingsRefused.Reason:
     return path
 
 
+def validated_mix(
+    name: str, *, unknown: int | str, banger: int | str, dud: int | str
+) -> Mix | SettingsRefused.Reason:
+    """A **Mix**, or the reason those numbers are not one.
+
+    **The one place that decides what a Mix is.** Three callers, and they must not be allowed to disagree:
+    `list_mixes` reads rows that could have been hand-edited, the tests that pin the rule call it directly,
+    and #12's form will call it with whatever the user typed. A rule enforced in the dataclass instead
+    would turn "the user typed 30/30/30" into a traceback, and a rule enforced only at the form would let
+    a hand-edited row into the draw.
+
+    Whole percentages summing to exactly `MIX_TOTAL`, none of them negative. Exactly, because the slack in
+    an **Allocation** is the leftover roll: a **Mix** summing to 99 would leave one slot rolled on every
+    **Batch** whatever the size, and one summing to 101 would allocate a slot the **Batch** does not have.
+    A **Zone** at zero per cent is allowed and means it — **Refine** without any **Duds** at all is a
+    **Mix** somebody may well want.
+
+    Accepted as text as well as typed, for the reason every other validator here is: the form posts text,
+    SQLite hands back whatever the column holds, and the coercion rule belongs with the rule.
+    """
+    trimmed = name.strip()
+    if not trimmed:
+        return SettingsRefused.Reason.MIX_NAME_INVALID
+    percentages = [_whole_number(value) for value in (unknown, banger, dud)]
+    if any(share is None or share < 0 for share in percentages):
+        return SettingsRefused.Reason.MIX_PERCENTAGES_INVALID
+    shares = [share for share in percentages if share is not None]
+    if sum(shares) != MIX_TOTAL:
+        return SettingsRefused.Reason.MIX_PERCENTAGES_INVALID
+    return Mix(name=trimmed, unknown=shares[0], banger=shares[1], dud=shares[2])
+
+
 _UPSERT_SETTING = """
 INSERT INTO settings (key, value) VALUES (?, ?)
 ON CONFLICT (key) DO UPDATE SET value = excluded.value
@@ -2510,5 +2722,57 @@ def _migration_6() -> tuple[tuple[str, tuple[str, ...]], ...]:
     """
     return (
         ("ALTER TABLE batch_wallpapers ADD COLUMN zone TEXT", ()),
+        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
+    )
+
+
+_CREATE_MIXES = """
+CREATE TABLE mixes (
+    name    TEXT PRIMARY KEY,
+    unknown INTEGER NOT NULL,
+    banger  INTEGER NOT NULL,
+    dud     INTEGER NOT NULL
+)
+"""
+"""**Mixes** as stored rows, never a constant in the code.
+
+**Explore** and **Refine** are the two the spec names and the only two anything writes today, so a pair of
+module constants would do everything this ticket needs. The table is here anyway because #12 makes
+**Mixes** editable and lets the user add their own, and the difference between "a constant that #12
+replaces with a table" and "a table #12 starts writing to" is a migration against live **Batches** versus
+a new endpoint. One `INSERT` now is cheaper than that later.
+
+One column per **Zone** rather than a `zone`/`percentage` row per share. A **Mix** is three numbers that
+have to be read together and that mean nothing apart — the sum is the invariant — and a narrow table would
+let a **Zone** simply be missing, which is a shape `Mix` cannot express and `validated_mix` would have to
+learn to refuse.
+
+No CHECK constraint on the sum. The rule lives in `validated_mix` (and so in one place), it is the same
+rule the form at #12 has to state in words anyway, and a row that breaks it is dropped on the way out
+rather than making the table unreadable.
+"""
+
+_SEED_MIX = """
+INSERT INTO mixes (name, unknown, banger, dud) VALUES (?, ?, ?, ?)
+ON CONFLICT (name) DO NOTHING
+"""
+"""`DO NOTHING`, so that a re-run — or a database that already holds an **Explore** the user has edited at
+#12 — keeps what is there. A migration must not undo a setting."""
+
+
+def _migration_7() -> tuple[tuple[str, tuple[str | int, ...]], ...]:
+    """Migration 7: **Mixes** as a table, seeded with **Explore** and **Refine**, and the active one as a
+    setting.
+
+    Paired with parameters like migrations 3, 5 and 6, because the seeds are computed in Python —
+    `DEFAULT_MIXES` here, `_defaults()` for the settings — and inserted as values rather than interpolated
+    into SQL.
+
+    The active **Mix** is an ordinary `settings` row and not a column on `mixes`. "Which one is selected"
+    is one fact about the whole table, and a flag per row is a fact that can be true twice.
+    """
+    return (
+        (_CREATE_MIXES, ()),
+        *((_SEED_MIX, (mix.name, mix.unknown, mix.banger, mix.dud)) for mix in DEFAULT_MIXES),
         *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
     )
