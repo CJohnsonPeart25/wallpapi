@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import os
+import re
 import sqlite3
 import threading
 from collections import deque
@@ -543,6 +545,22 @@ class LibraryReconciliation:
 
     written: tuple[str, ...]
     removed: tuple[str, ...]
+    failed: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FavouriteDownload:
+    """What one "download all **Favourites**" pass did, by **Wallpaper** ID (#14).
+
+    Three outcomes rather than the reconciliation's three, because this pass never deletes: `written` is a
+    **Favourite** that had no file, `skipped` one whose recorded file is still on the disk, and `failed`
+    one the download or the guard would not let through. The settings page says all three, which is the
+    one reason this is a result and not a count — "nothing to do" and "tried and failed" look identical
+    from a total.
+    """
+
+    written: tuple[str, ...]
+    skipped: tuple[str, ...]
     failed: tuple[str, ...]
 
 
@@ -1726,6 +1744,7 @@ class CoreService:
         difference between "nothing to do" and "tried and failed".
 
         The **Library** is never read back, so a file deleted in Explorer is not noticed and not replaced.
+        Nothing here stats a path; `download_favourites` is the one operation that does (#14).
         """
         library_path = self.get_settings().library_path
         rows = self._connect().execute(_LIBRARY_CANDIDATES, (Verdict.FAVOURITE.value,)).fetchall()
@@ -1740,11 +1759,16 @@ class CoreService:
             wanted = resolved[wallpaper_id].verdict is Verdict.FAVOURITE
             try:
                 if wanted and recorded is None:
-                    self._add_to_library(wallpaper_id, str(row["full_url"]), library_path)
-                    written.append(wallpaper_id)
+                    if self._add_to_library(wallpaper_id, str(row["full_url"]), library_path):
+                        written.append(wallpaper_id)
+                    else:
+                        failed.append(wallpaper_id)
                 elif not wanted and recorded is not None:
-                    self._drop_from_library(wallpaper_id, recorded)
-                    removed.append(wallpaper_id)
+                    deleted = self._drop_from_library(wallpaper_id, recorded, library_path)
+                    # A row that points outside the **Library** folder is dropped with the file left
+                    # exactly where it is (#14), so there is nothing to report as removed.
+                    if deleted:
+                        removed.append(wallpaper_id)
             except Exception:
                 # The writer is across a seam that declares no error type, so there is nothing narrower to
                 # catch: a download can fail with anything httpx2 raises and a write with anything the
@@ -1752,28 +1776,103 @@ class CoreService:
                 failed.append(wallpaper_id)
         return LibraryReconciliation(written=tuple(written), removed=tuple(removed), failed=tuple(failed))
 
-    def _add_to_library(self, wallpaper_id: str, source_url: str, library_path: Path) -> None:
-        """Download one **Favourite** and record where it landed.
+    def download_favourites(self) -> FavouriteDownload:
+        """Write a **Library** file for every **Favourite** that has not got one. One-way sync (#14).
+
+        **The one place wallpapi reads the folder**, and it reads it for one thing only: whether a path it
+        recorded itself is still there. It never lists the folder, never looks for a file it did not write
+        and never deletes. That keeps ADR 0006's guarantee intact — a **Library** file deleted in Explorer
+        still changes nothing about the **Decision log** — while making the **Library** recoverable from
+        the log in a single action, which is what a new machine and a copied database need.
+
+        A **Favourite** counts as missing its file when there is no `library_files` row at all, when the
+        recorded path is not on the disk, or when it no longer resolves inside the **Library** folder. The
+        second is the case `reconcile_library` deliberately cannot see: the row says the file is there and
+        only a stat says otherwise. The third is the **Library path** having changed — a file wallpapi has
+        already said it will not so much as delete is not one the **Library** can be said to hold, so it
+        counts as absent and the **Favourite** is written into the folder the user is pointing at now.
+        Either way the file lands where the **Library path** points *today* and the row is replaced with
+        where it landed, which is how a **Library** follows its setting to a new folder in one action.
+
+        Idempotent, like the reconciliation: running it twice writes once and skips the second time. A
+        failure is reported rather than raised, and is simply picked up by the next run — there is no
+        retry counter, because a **Favourite** with no file already says everything a retry needs to know.
+        """
+        library_path = self.get_settings().library_path
+        rows = self._connect().execute(_LIBRARY_CANDIDATES, (Verdict.FAVOURITE.value,)).fetchall()
+        resolved = self.resolve_verdicts([str(row["wallpaper_id"]) for row in rows])
+
+        written: list[str] = []
+        skipped: list[str] = []
+        failed: list[str] = []
+        for row in rows:
+            wallpaper_id = str(row["wallpaper_id"])
+            if resolved[wallpaper_id].verdict is not Verdict.FAVOURITE:
+                continue
+            recorded = None if row["path"] is None else Path(str(row["path"]))
+            # The guard first, so the only paths ever stat-ed are ones inside the **Library** folder, and
+            # then `Path.exists` — which answers False for a path the filesystem will not even parse and
+            # for a broken symlink, both of which are "there is no file here" as far as a **Favourite**
+            # is concerned.
+            held = None if recorded is None else confined_to_library(recorded, library_path)
+            if held is not None and held.exists():
+                skipped.append(wallpaper_id)
+                continue
+            try:
+                if self._add_to_library(wallpaper_id, str(row["full_url"]), library_path):
+                    written.append(wallpaper_id)
+                else:
+                    failed.append(wallpaper_id)
+            except Exception:
+                # As in `reconcile_library`: the writer declares no error type, and a **Favourite** with
+                # no file is its own record of what still has to happen.
+                failed.append(wallpaper_id)
+        return FavouriteDownload(written=tuple(written), skipped=tuple(skipped), failed=tuple(failed))
+
+    def _add_to_library(self, wallpaper_id: str, source_url: str, library_path: Path) -> bool:
+        """Download one **Favourite** and record where it landed, or refuse to before anything is fetched.
 
         The destination is computed from the **Library** setting as it is *now*, and the path recorded is
         the one the writer returned rather than the one it was handed — the writer is what knows where the
         bytes actually went.
+
+        `False` — and no network call at all — when the name or the destination does not pass the guard
+        (invariant 9). The check comes before the download deliberately: a refusal that had already
+        fetched several megabytes would be a refusal in name only.
         """
-        destination = library_path / f"{wallpaper_id}{_url_suffix(source_url)}"
+        name = library_file_name(wallpaper_id, source_url)
+        if name is None:
+            return False
+        destination = confined_to_library(library_path / name, library_path)
+        if destination is None:
+            return False
         written = self._library.write(wallpaper_id, source_url, destination)
         with self._write() as write:
             write.execute(_RECORD_LIBRARY_FILE, (wallpaper_id, str(written), self._clock.now().isoformat()))
+        return True
 
-    def _drop_from_library(self, wallpaper_id: str, recorded: Path) -> None:
-        """Delete a recorded **Library** file and forget it.
+    def _drop_from_library(self, wallpaper_id: str, recorded: Path, library_path: Path) -> bool:
+        """Forget a recorded **Library** file, and delete it if it is still one wallpapi may delete.
 
-        `recorded` comes from the row, never from the current **Library** setting (invariant 9): the path
-        is where the file was actually written, and the setting may have changed since. The row goes only
-        once the writer has returned, so a failed deletion is retried rather than forgotten about.
+        `recorded` comes from the row, never recomputed from the current **Library** setting (invariant 9):
+        the path is where the file was actually written. What #14 adds is that being recorded is no longer
+        enough on its own — the path must *also* still resolve inside the **Library** folder the setting
+        names today. A row pointing anywhere else, whether because the setting changed or because
+        something odd was recorded, is dropped with the file left exactly where it is.
+
+        The row goes either way, and that is the deliberate part. Keeping it would mean refusing the same
+        path again on every submission for ever, and the row's only meaning is "wallpapi holds a file for
+        this **Wallpaper**" — which, once wallpapi will not touch it, is no longer true.
+
+        Returns whether the file was handed to the writer to delete. A failed deletion raises out of here
+        with the row intact, so it is retried rather than forgotten about.
         """
-        self._library.remove(recorded)
+        confined = confined_to_library(recorded, library_path)
+        if confined is not None:
+            self._library.remove(confined)
         with self._write() as write:
             write.execute("DELETE FROM library_files WHERE wallpaper_id = ?", (wallpaper_id,))
+        return confined is not None
 
     # -- thumbnails ------------------------------------------------------------------------------------
 
@@ -2302,6 +2401,93 @@ def _validated_library_path(value: Path | str) -> Path | SettingsRefused.Reason:
     if not path.is_absolute():
         return SettingsRefused.Reason.LIBRARY_PATH_NOT_ABSOLUTE
     return path
+
+
+LIBRARY_FILE_NAME = re.compile(r"[A-Za-z0-9]+\.[a-z0-9]{1,5}")
+"""The only shape a **Library** file name may take: a Wallhaven ID, a dot, and one short extension.
+
+Deliberately narrower than "a legal file name". Everything wallpapi puts in the **Library** is named by
+this rule, so anything that does not fit it is not something wallpapi wrote — and a deletion is only ever
+as safe as the worst path it is willing to consider. A name is a *name*: `..`, a separator, a space and a
+second dot are all refused, which is what keeps a hand-edited row or a hostile `full_url` from becoming a
+path at all. ASCII by construction rather than by `str.isalnum`, which counts `²` as alphanumeric.
+"""
+
+DEFAULT_LIBRARY_SUFFIX = ".jpg"
+"""What a `full_url` that does not end in a recognisable extension is saved as.
+
+Wallhaven serves JPEG for all but a handful of **Wallpapers**, and the bytes are a wallpaper whatever the
+URL calls itself — so this is a fallback rather than a refusal.
+"""
+
+
+def library_file_name(wallpaper_id: str, source_url: str) -> str | None:
+    """What a **Library** file is called, or `None` if this **Wallpaper** cannot have one.
+
+    The naming rule lives with the Core service because the Core service is what records the result
+    (ADR 0006). `None` rather than a raise, because it is the same answer as "that destination is not
+    inside the **Library**": the **Favourite** stands and simply has no file, which the next
+    reconciliation will try again and reach the same conclusion about.
+
+    A suffix that does not fit `LIBRARY_FILE_NAME` falls back to `.jpg`; a **Wallhaven** ID that does not
+    fit names nothing at all. The asymmetry is deliberate — the suffix is Wallhaven's to get wrong and the
+    ID is what the file is *for*.
+    """
+    named = f"{wallpaper_id}{_url_suffix(source_url, default=DEFAULT_LIBRARY_SUFFIX)}"
+    if LIBRARY_FILE_NAME.fullmatch(named):
+        return named
+    fallback = f"{wallpaper_id}{DEFAULT_LIBRARY_SUFFIX}"
+    return fallback if LIBRARY_FILE_NAME.fullmatch(fallback) else None
+
+
+def confined_to_library(path: Path, library_root: Path) -> Path | None:
+    """The resolved `path`, if wallpapi may write it or delete it — otherwise `None`.
+
+    **The one guard, and both the write and the delete go through it** (invariant 9). Deleting a file
+    wallpapi wrote is acceptable only while it is guaranteed that the only folder wallpapi can reach is
+    the **Library** folder the user chose; a **Wallpaper** named `~/../../../Windows/system32` must not be
+    able to make that untrue.
+
+    Three conditions, and all three are about the path rather than about the file on the end of it:
+
+    - the name fits `LIBRARY_FILE_NAME`;
+    - the path, fully resolved — `..` collapsed, every symlink and junction followed — lies inside the
+      fully resolved **Library** folder;
+    - it is not the **Library** folder itself.
+
+    Resolution is what makes the second condition mean anything: a symlink sitting in the **Library** and
+    pointing at `C:\\Windows` is inside the folder by every syntactic measure and outside it by the only
+    one that matters. Both sides are resolved, so a **Library path** that itself goes through a link is
+    not refused for doing so. Compared through `os.path.normcase` and by path component: NTFS is
+    case-insensitive, and a string prefix would put `Library2` inside `Library`.
+
+    **The resolved path is returned, not a yes or no**, and it is the path callers must use. A **Library**
+    write is a temp file plus an `os.replace` beside its destination (invariant 10), so checking one path
+    and writing another would leave exactly the gap this exists to close.
+
+    `strict=False` because the **Library** folder is allowed not to exist yet: #4 stores the setting
+    without touching the filesystem and the first **Favourite** is what creates the folder.
+    """
+    try:
+        resolved = path.resolve(strict=False)
+        root = library_root.resolve(strict=False)
+    except OSError, ValueError:
+        # A recorded path SQLite handed back can hold anything a hand-edited row can hold, including
+        # characters Windows will not even parse. Unresolvable is refused, like everything else odd.
+        return None
+    if not LIBRARY_FILE_NAME.fullmatch(resolved.name):
+        return None
+    here = os.path.normcase(str(resolved))
+    there = os.path.normcase(str(root))
+    if here == there:
+        return None
+    try:
+        if os.path.commonpath((here, there)) != there:
+            return None
+    except ValueError:
+        # Different drives, or one of the two not absolute. Either way there is no "inside" to be in.
+        return None
+    return resolved
 
 
 def validated_mix(
