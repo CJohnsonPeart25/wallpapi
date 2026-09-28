@@ -166,7 +166,7 @@ def test_the_batch_page_switcher_offers_a_custom_mix(db_path: Path) -> None:
         page = client.get("/")
         switched = client.post("/mix", data={"mix": "duds only"})
 
-    assert 'data-mix="duds only"' in page.text
+    assert 'value="duds only"' in page.text
     assert "0/0/100" in page.text
     assert switched.status_code == HTTPStatus.OK
     assert harness.core.active_mix() == Mix(name="duds only", unknown=0, banger=0, dud=100)

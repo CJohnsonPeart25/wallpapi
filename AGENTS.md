@@ -47,10 +47,18 @@ two disagree, issue #1 is the spec and wins.
 - Deliberately excluded: TypeScript/React/Svelte, SQLAlchemy/Alembic, pydantic-settings, FastHTML,
   Electron/Tauri, any vector database.
 
-"No JavaScript build step" does not mean no JavaScript. Hover-to-enlarge and fullscreen preview (#8) are client
-concerns htmx does nothing for, and a small amount of vendored vanilla JS there is not a stack violation.
-As built at #8, hover-to-enlarge needed none of it — it is a CSS rule — and the preview is one delegated
-listener in `web/static/wallpapi.js`. Every asset the page loads is served from `/static`.
+"No JavaScript build step" does not mean no JavaScript. The preview (#8) and sizing the grid to the viewport
+are client concerns htmx does nothing for, and a small amount of vendored vanilla JS there is not a stack
+violation. `web/static/wallpapi.js` owns three things and no more: the preview dialog, the grid's column
+count, and the **Mix** dropdown's closed label. Everything else the page does to the server is an htmx
+attribute in a template, and anything that can be a CSS rule is one — the **Verdict** rail appearing on
+hover, and the marked state, are both CSS. Every asset the page loads is served from `/static`.
+
+The **Batch** page's layout was settled by prototype rather than by argument: several variants on the live
+page behind a `?variant=` switch, flipped through and narrowed over six rounds. The reasons that survived
+are in `wallpapi.css`, beside the rules they justify. The rounds themselves, and what each rejected, are on
+the `prototype/batch-ui` branch in `docs/prototypes/batch-ui.md` — a throwaway record, not merged — and
+worth a look before repainting that page while that branch still exists.
 
 Run the app **single-worker**. `uvicorn --workers N` would give N background refill threads and N writers
 against one SQLite file.

@@ -22,23 +22,23 @@ from wallpapi.web.app import create_app
 def test_the_batch_page_names_the_active_mix_and_offers_the_other(db_path: Path) -> None:
     """The acceptance criterion as the user meets it: which **Mix** is in force, and a way to change it.
 
-    The percentages are on the buttons too — "explore" and "refine" are names for 75/20/5 and 25/70/5, and
-    the names on their own say nothing about which way round they are.
+    A dropdown, whose options carry the percentages — "explore" and "refine" are names for 75/20/5 and
+    25/70/5, and the names on their own say nothing about which way round they are. The one in force is
+    the selected option, which is what a `<select>` shows when it is closed.
     """
     harness = make_harness(db_path)
 
     with TestClient(create_app(harness.core)) as client:
         page = client.get("/")
 
-    assert 'data-mix="explore"' in page.text
-    assert 'data-mix="refine"' in page.text
+    assert 'value="explore"' in page.text
+    assert 'value="refine"' in page.text
     assert "75/20/5" in page.text
     assert "25/70/5" in page.text
-    assert "Mix: <strong>explore</strong>" in page.text
-    # Exactly one **Mix** is pressed, and it is marked by more than a colour — the same reason the
-    # **Zone** label on a tile is a word rather than a tint.
-    assert page.text.count('aria-pressed="true"') == 1
-    assert "mix-choice active" in page.text
+    # Which one is in force, said in the markup rather than left to whichever option happens to be
+    # first: it is the selected option, and the attribute is what a test or a script can read it off.
+    assert 'data-mix-active="explore"' in page.text
+    assert page.text.count("selected") == 1
 
 
 def test_switching_persists_and_the_swapped_section_shows_the_new_mix(db_path: Path) -> None:
@@ -53,7 +53,7 @@ def test_switching_persists_and_the_swapped_section_shows_the_new_mix(db_path: P
     assert switched.status_code == HTTPStatus.OK
     assert 'id="mix-switcher"' in switched.text
     assert harness.core.active_mix() == REFINE_MIX
-    assert "Mix: <strong>refine</strong>" in reloaded.text
+    assert 'data-mix-active="refine"' in reloaded.text
 
 
 def test_switching_does_not_disturb_the_batch_on_screen(db_path: Path) -> None:
@@ -91,7 +91,7 @@ def test_a_mix_nobody_has_heard_of_is_a_bad_request_and_changes_nothing(db_path:
         refused = client.post("/mix", data={"mix": "nope"})
 
     assert refused.status_code == HTTPStatus.BAD_REQUEST
-    assert "Mix: <strong>explore</strong>" in refused.text
+    assert 'data-mix-active="explore"' in refused.text
     assert harness.core.get_settings().active_mix == "explore"
 
 
@@ -110,3 +110,26 @@ def test_there_is_no_switcher_on_a_page_with_no_batch_to_switch_for(db_path: Pat
     assert page.status_code == HTTPStatus.SERVICE_UNAVAILABLE
     assert 'id="mix-switcher"' not in page.text
     assert "Pool 0 of" in page.text
+
+
+def test_a_stored_mix_that_is_gone_is_still_what_the_page_says_was_chosen(db_path: Path) -> None:
+    """The state the seam cannot reach: a hand-edited setting naming a **Mix** that no longer exists.
+
+    A `<select>` shows some option as chosen no matter what, and left alone it shows the first, which
+    would claim the fallback was the choice. The stored name is rendered as the selected option, disabled
+    so it cannot be re-chosen, and the draw still falls back exactly as before.
+    """
+    import sqlite3
+
+    harness = make_harness(db_path)
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    connection.execute("UPDATE settings SET value = 'gone' WHERE key = 'active_mix'")
+    connection.close()
+
+    with TestClient(create_app(harness.core)) as client:
+        page = client.get("/")
+
+    assert 'data-mix-active="gone"' in page.text
+    assert 'value="gone" selected disabled>gone</option>' in page.text
+    assert page.text.count("selected") == 1
+    assert harness.core.active_mix().name == "explore"

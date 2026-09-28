@@ -184,6 +184,10 @@ def test_every_tile_links_to_its_wallhaven_page(db_path: Path) -> None:
 
     Opened in a new tab so judging a **Batch** is not interrupted, and with `rel="noopener noreferrer"`
     so the page it opens gets neither a handle back nor a referrer.
+
+    The link is on every tile in the markup but shown on none of them: it is rendered into the preview
+    instead, where the **Wallpaper** has actually been looked at, and wallpapi.js reads the URL off the
+    tile when the preview opens. So there are nine — eight tiles and the preview's one.
     """
     harness = make_harness(db_path)
     app = create_app(harness.core)
@@ -195,8 +199,9 @@ def test_every_tile_links_to_its_wallhaven_page(db_path: Path) -> None:
 
     for wallpaper in live.wallpapers:
         assert f'href="{wallpaper.page_url}"' in body
-    assert body.count('rel="noopener noreferrer"') == 8
-    assert body.count('target="_blank"') == 8
+    assert body.count('rel="noopener noreferrer"') == 9
+    assert body.count('target="_blank"') == 9
+    assert 'id="preview-source"' in body
 
 
 def test_the_page_carries_a_fullscreen_preview_dialog_and_fetches_nothing_for_it_up_front(
@@ -249,12 +254,42 @@ def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(
     assert "http" not in script.text, "the preview script must not fetch anything of its own"
 
 
-def test_hovering_a_tile_enlarges_it_without_javascript(db_path: Path) -> None:
-    """Acceptance criterion: hovering enlarges a **Wallpaper**.
+def test_a_tile_is_the_shape_of_the_thumbnail_in_it(db_path: Path) -> None:
+    """The tile's box is 3:2, because `thumbs.small` is 300x200 whatever the **Wallpaper** is.
+
+    A **Wallpaper**'s own `width` and `height` describe the file the preview loads, not the one on the
+    tile, and rendering them as attributes on the thumbnail is a presentational hint that is simply
+    wrong — it laid every tile out at the wallpaper's own height, two thousand pixels of it.
+
+    Any box shape other than the thumbnail's own would also mean either re-cropping an image Wallhaven
+    has already cropped, or ringing it with bars. Neither says anything truer about the wallpaper, and
+    the wallpaper's real shape is what the preview is for.
+    """
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        body = client.get("/").text
+        stylesheet = client.get("/static/wallpapi.css").text
+
+    tile = body[body.index('<li class="tile"') : body.index("</li>")]
+    assert 'width="' not in tile, "the wallpaper's dimensions are not the thumbnail's"
+    assert 'height="' not in tile
+    assert "--tile-ratio: 3 / 2" in stylesheet
+    rule = next(block for block in stylesheet.split("}") if ".tile img" in block)
+    assert "aspect-ratio: var(--tile-ratio)" in rule
+    assert "object-fit: cover" in rule
+
+
+def test_hovering_a_tile_reveals_its_verdict_rail_without_javascript(db_path: Path) -> None:
+    """Hovering a **Wallpaper** brings up its controls, and nothing else on the page moves.
+
+    This replaced hover-to-enlarge, which scaled tiles past the edge of the screen and had no answer for
+    the tile in the last column. Seeing a **Wallpaper** bigger is what the preview is for; what hovering
+    does now is offer the three **Verdict** controls, on a rail the grid has already reserved room for.
 
     Tested by proxy, and deliberately: there is no browser here, so what is asserted is that the rule is
-    CSS rather than script. `:focus-within` carries the same rule so the keyboard gets the enlargement
-    too, and the raised stacking order is what stops the enlarged tile sliding under its neighbours.
+    CSS rather than script. `:focus-within` carries the same rule so the keyboard reaches the rail too.
     """
     harness = make_harness(db_path)
     app = create_app(harness.core)
@@ -262,7 +297,8 @@ def test_hovering_a_tile_enlarges_it_without_javascript(db_path: Path) -> None:
     with TestClient(app) as client:
         stylesheet = client.get("/static/wallpapi.css").text
 
-    rule = next(block for block in stylesheet.split("}") if ".tile:hover" in block)
-    assert ":focus-within" in rule
-    assert "scale(" in rule
-    assert "z-index" in rule
+    rule = next(block for block in stylesheet.split("}") if ".tile:hover .verdicts" in block)
+    assert ":focus-within .verdicts" in rule
+    assert "opacity: 1" in rule
+    # Nothing is scaled any more: a tile is exactly where the grid put it, hovered or not.
+    assert "scale(" not in stylesheet
