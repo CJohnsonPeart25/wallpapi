@@ -1,0 +1,4 @@
+# Vendored release files are kept byte-identical to what their projects published: no line-ending
+# conversion on checkout, so the file served is the file that was fetched (ADR 0014).
+src/wallpapi/web/static/*.min.css -text
+src/wallpapi/web/static/*.min.js -text
