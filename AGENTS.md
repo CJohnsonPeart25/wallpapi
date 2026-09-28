@@ -30,7 +30,13 @@ two disagree, issue #1 is the spec and wins.
 - **Python 3.14+**, managed with `uv` — Python version, virtual environment and lockfile. Python is not on PATH
   as `python` on this machine (the Microsoft Store alias intercepts it). Always `uv run`.
 - **FastAPI**, bound to `127.0.0.1` only, serving Jinja templates with htmx vendored locally. No JavaScript
-  build step. Plain `{% include %}` partials, not `jinja2-fragments`.
+  build step. Plain `{% include %}` partials and one `{% extends "base.html" %}` shell for full pages, not
+  `jinja2-fragments`. A fragment htmx swaps in never extends anything.
+- **Pico CSS 2.1.1** (`pico.indigo.min.css`, the default class-based build) and **Alpine.js 3.17.4**
+  (`alpine.min.js`, the `cdn.min.js` build, loaded `defer`), both vendored into `web/static/` byte for byte
+  with their licence headers, like htmx. Pico is the base and `base.css` is what Pico cannot say — ADR 0014.
+  Upgrading either means replacing the file whole and updating the size and SHA-256 pinned in
+  `tests/test_web_shell.py` and recorded in the ADR; `.gitattributes` keeps checkout from rewriting them.
 - **Core synchronous throughout** — synchronous `httpx2.Client`, standard library `sqlite3`. Background **Pool**
   refill is a `threading.Thread` started in the FastAPI lifespan, not asyncio. FastAPI runs non-async endpoints
   in a threadpool, so tests stay plain function calls with no event loop. See
@@ -47,18 +53,22 @@ two disagree, issue #1 is the spec and wins.
 - Deliberately excluded: TypeScript/React/Svelte, SQLAlchemy/Alembic, pydantic-settings, FastHTML,
   Electron/Tauri, any vector database.
 
-"No JavaScript build step" does not mean no JavaScript. The preview (#8) and sizing the grid to the viewport
-are client concerns htmx does nothing for, and a small amount of vendored vanilla JS there is not a stack
-violation. `web/static/wallpapi.js` owns three things and no more: the preview dialog, the grid's column
-count, and the **Mix** dropdown's closed label. Everything else the page does to the server is an htmx
+"No JavaScript build step" does not mean no JavaScript. Everything the page does to the server is an htmx
 attribute in a template, and anything that can be a CSS rule is one — the **Verdict** rail appearing on
-hover, and the marked state, are both CSS. Every asset the page loads is served from `/static`.
+hover or keyboard focus, and the ring round a marked tile, are both CSS. What is left is split two ways and
+no further. `web/static/wallpapi.js` sizes the **Batch** grid to the viewport and does nothing else.
+Alpine owns three things, each an inline `x-data` on the element it belongs to: the preview (on the
+`<dialog>`, which htmx never swaps), the **Mix** dropdown's two labels (on `#mix-switcher`), and the theme
+button. Alpine state never lives on markup htmx replaces — a tile or the grid — and the preview's image
+source is set and removed by hand, never bound, so the markup carries none. The theme is applied before
+first paint by an inline script in the head, which is the one inline script and is not an asset. Every
+asset the page loads is served from `/static`.
 
 The **Batch** page's layout was settled by prototype rather than by argument: several variants on the live
-page behind a `?variant=` switch, flipped through and narrowed over six rounds. The reasons that survived
-are in `wallpapi.css`, beside the rules they justify. The rounds themselves, and what each rejected, are on
-the `prototype/batch-ui` branch in `docs/prototypes/batch-ui.md` — a throwaway record, not merged — and
-worth a look before repainting that page while that branch still exists.
+page behind a `?variant=` switch, flipped through and narrowed over six rounds. What survived those rounds,
+and what was later traded for Pico's defaults, is in ADR 0014; the reasons for individual rules are in
+`base.css` beside them. The rounds themselves, and what each rejected, are on the `prototype/batch-ui`
+branch in `docs/prototypes/batch-ui.md` — a throwaway record, not merged — while that branch still exists.
 
 Run the app **single-worker**. `uvicorn --workers N` would give N background refill threads and N writers
 against one SQLite file.
