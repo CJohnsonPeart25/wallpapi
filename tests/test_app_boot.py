@@ -46,3 +46,21 @@ def test_the_page_does_not_reach_wallhaven_for_thumbnails(db_path: Path) -> None
         body = client.get("/").text
 
     assert body.count('src="/thumb/') == 8
+
+
+def test_every_page_boots_on_the_shell(db_path: Path) -> None:
+    """The smoke test across all three pages, since #40 put them on one shell.
+
+    A template error in `base.html` or `nav.html` breaks every page at once, and History and Settings are
+    the two a Batch-page smoke test would never notice it on.
+    """
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        responses = {path: client.get(path) for path in ("/", "/history", "/settings")}
+
+    for path, response in responses.items():
+        assert response.status_code == 200, path
+        assert "<nav" in response.text, path
+        assert '<main class="container-fluid">' in response.text, path

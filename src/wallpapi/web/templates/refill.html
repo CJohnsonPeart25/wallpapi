@@ -1,7 +1,7 @@
 {#
   The refill indicator: one line saying what the background thread is doing.
 
-  It is rendered on every state of the batch page, and wallpapi.css hides it behind a batch only while
+  It is rendered on every state of the batch page, and base.css hides it behind a batch only while
   it has nothing to report: "Pool 0 of 2000, refill not running" is the whole diagnosis, and without it
   an empty page and a dead thread look exactly alike.
 
@@ -12,17 +12,17 @@
   a pool that only ever grows at random is a pool with no favourites in the decision log yet, and that is
   something the person reading this line can do something about.
 #}
-<p class="refill" data-pool-size="{{ status.pool_size }}">
+<p data-refill data-pool-size="{{ status.pool_size }}"><small>
   Pool {{ status.pool_size }} of {{ status.target_size }}.
   {% if not status.running %}
-    <span class="refill-stopped">Refill not running.</span>
+    <span data-refill-problem="stopped">Refill not running.</span>
   {% elif status.at_target %}
     Refill idle — the pool is stocked.
   {% else %}
     Refill fetching.
   {% endif %}
   {% if status.last_error %}
-    <span class="refill-error">
+    <span data-refill-problem="error">
       Last error{% if status.last_error_at %} at {{ status.last_error_at.strftime("%H:%M") }} UTC{% endif %}:
       {{ status.last_error }}.
     </span>
@@ -31,4 +31,4 @@
       if status.last_strategy == "like" %}, searching for lookalikes of a favourite{%
       elif status.last_strategy %}, searching at random{% endif %}.
   {% endif %}
-</p>
+</small></p>

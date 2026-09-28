@@ -185,9 +185,9 @@ def test_every_tile_links_to_its_wallhaven_page(db_path: Path) -> None:
     Opened in a new tab so judging a **Batch** is not interrupted, and with `rel="noopener noreferrer"`
     so the page it opens gets neither a handle back nor a referrer.
 
-    The link is on every tile in the markup but shown on none of them: it is rendered into the preview
-    instead, where the **Wallpaper** has actually been looked at, and wallpapi.js reads the URL off the
-    tile when the preview opens. So there are nine — eight tiles and the preview's one.
+    One link on the page, not nine (#40). The tile renders none — a hidden anchor per tile was markup
+    kept only for a script to read — and carries the URL as `data-page-url` instead, which the preview's
+    one link takes when it opens on that tile.
     """
     harness = make_harness(db_path)
     app = create_app(harness.core)
@@ -198,10 +198,12 @@ def test_every_tile_links_to_its_wallhaven_page(db_path: Path) -> None:
         assert isinstance(live, Batch)
 
     for wallpaper in live.wallpapers:
-        assert f'href="{wallpaper.page_url}"' in body
-    assert body.count('rel="noopener noreferrer"') == 9
-    assert body.count('target="_blank"') == 9
-    assert 'id="preview-source"' in body
+        assert f'data-page-url="{wallpaper.page_url}"' in body
+        assert f'href="{wallpaper.page_url}"' not in body, "the tile renders no link of its own"
+    assert body.count('rel="noopener noreferrer"') == 1
+    assert body.count('target="_blank"') == 1
+    dialog = body[body.index("<dialog") : body.index("</dialog>")]
+    assert 'rel="noopener noreferrer"' in dialog, "the one link is the preview's"
 
 
 def test_the_page_carries_a_fullscreen_preview_dialog_and_fetches_nothing_for_it_up_front(
@@ -228,10 +230,38 @@ def test_the_page_carries_a_fullscreen_preview_dialog_and_fetches_nothing_for_it
     dialog = body[body.index("<dialog") : body.index("</dialog>")]
     assert "<img" in dialog
     assert "src=" not in dialog, "the full-resolution image is fetched when the dialog opens, not before"
+    # Never bound: `x-bind:src` or `:src` would carry `src=` in the markup, and a binding would also
+    # re-fetch on every change of state rather than only when the preview opens.
+    assert ":src" not in dialog
+    assert "setAttribute('src'" in dialog, "the source is set by hand when the preview opens"
+    assert "removeAttribute('src')" in dialog, "and dropped again when it closes"
+
+
+def test_the_preview_is_an_alpine_component_on_a_dialog_htmx_never_swaps(db_path: Path) -> None:
+    """The preview's state lives on the `<dialog>`, which sits outside everything a swap replaces.
+
+    Tested by proxy — there is no browser here. What is asserted is that the component hangs off the
+    dialog, that it opens from a click on a thumbnail anywhere in the window rather than from a listener
+    bound to one tile (which a swap would take away with the tile), and that it reads the tile's mark
+    back after every htmx swap so the rail and the ring agree.
+    """
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        body = client.get("/").text
+
+    opening = body[body.index("<dialog") : body.index("<article")]
+    assert "x-data=" in opening
+    assert "x-on:click.window=" in opening
+    assert "x-on:htmx:after-settle.camel.window=" in opening
+    grid = body[body.index('<section id="batch-grid"') : body.index("</section>", body.index("batch-grid"))]
+    assert "<dialog" not in grid, "the dialog must not be inside anything a bulk mark swaps"
+    assert "x-data" not in grid, "no Alpine state on markup htmx replaces"
 
 
 def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(db_path: Path) -> None:
-    """Every asset is vendored and served by the app — htmx, the preview script and the stylesheet alike.
+    """Every asset is vendored and served by the app — htmx, Alpine, Pico, the grid script and base.css.
 
     A personal tool that stops working when somebody else's host is unreachable is worse than one with a
     few small files in the repo, and a third-party script on a page rendering your own **Decision log** is
@@ -243,7 +273,7 @@ def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(
     with TestClient(app) as client:
         body = client.get("/").text
         script = client.get("/static/wallpapi.js")
-        stylesheet = client.get("/static/wallpapi.css")
+        stylesheet = client.get("/static/base.css")
 
     assets = EXTERNAL_ASSETS.findall(body)
     assert assets, "the page loads at least htmx"
@@ -251,7 +281,7 @@ def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(
         assert asset.startswith("/static/"), f"{asset} is not served by the app"
     assert script.status_code == 200
     assert stylesheet.status_code == 200
-    assert "http" not in script.text, "the preview script must not fetch anything of its own"
+    assert "http" not in script.text, "the grid script must not fetch anything of its own"
 
 
 def test_a_tile_is_the_shape_of_the_thumbnail_in_it(db_path: Path) -> None:
@@ -270,9 +300,10 @@ def test_a_tile_is_the_shape_of_the_thumbnail_in_it(db_path: Path) -> None:
 
     with TestClient(app) as client:
         body = client.get("/").text
-        stylesheet = client.get("/static/wallpapi.css").text
+        stylesheet = client.get("/static/base.css").text
 
-    tile = body[body.index('<li class="tile"') : body.index("</li>")]
+    start = body.index('<li class="tile"')
+    tile = body[start : body.index("</li>", start)]
     assert 'width="' not in tile, "the wallpaper's dimensions are not the thumbnail's"
     assert 'height="' not in tile
     assert "--tile-ratio: 3 / 2" in stylesheet
@@ -295,7 +326,7 @@ def test_hovering_a_tile_reveals_its_verdict_rail_without_javascript(db_path: Pa
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        stylesheet = client.get("/static/wallpapi.css").text
+        stylesheet = client.get("/static/base.css").text
 
     rule = next(block for block in stylesheet.split("}") if ".tile:hover .verdicts" in block)
     assert ":focus-within .verdicts" in rule

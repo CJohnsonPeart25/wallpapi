@@ -1,3 +1,5 @@
+{% extends "base.html" %}
+{% set page = "settings" %}
 {#
   The settings page: batch size, the **Library** folder, the **Filters** and the **Pool** target size.
 
@@ -8,16 +10,10 @@
   The fields are rendered from whatever the form last carried rather than from storage, so a refused save
   comes back with what the user typed still in it.
 #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>wallpapi — settings</title>
-  </head>
-  <body>
-    <main>
-      <nav><a href="/">Batches</a> <a href="/history">History</a> <a href="/settings" aria-current="page">Settings</a></nav>
+{% block title %}wallpapi — settings{% endblock %}
+{# Body left at the indentation it had inside <main>, so this change is the shell and nothing
+   else; restyling it on Pico is #41. #}
+{% block main %}
       <h1>Settings</h1>
       {% if saved %}
         <p class="saved">Settings saved.</p>
@@ -310,6 +306,4 @@
         </label>
         <button type="submit">Add mix</button>
       </form>
-    </main>
-  </body>
-</html>
+{% endblock %}
