@@ -15,15 +15,15 @@
   makes one user-asked-for full-size image a different case is that nothing is fetched until it is asked
   for.
 
-  The link to the **Wallpaper**'s Wallhaven page is rendered but not shown. It belongs in the preview,
-  where the wallpaper has actually been looked at, and the preview reads the URL off this link when it
-  opens — one source for it rather than the same string in two places.
+  The tile renders no link to the **Wallpaper**'s Wallhaven page. The way out belongs in the preview,
+  where the wallpaper has actually been looked at, and the preview reads the URL off `data-page-url`
+  when it opens — one link on the page rather than one per tile, and none of them hidden.
 
   `zone` is the **Zone** the **Wallpaper** was drawn from, recorded against the **Batch** when it was
   minted. It is absent on a **Batch** minted before **Zones** existed, and the label is then simply not
   rendered — the tile says nothing rather than claiming a **Zone** nobody classified it into.
 #}
-<li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}">
+<li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}" data-page-url="{{ wallpaper.page_url }}">
   {#
     No `width`/`height` attributes. A **Wallpaper**'s dimensions describe the file the preview loads,
     not this one: the tile shows `thumbs.small`, which Wallhaven serves at 300x200 whatever the
@@ -49,14 +49,5 @@
         hx-disabled-elt=".bulk-verdict"
       >{{ choice }}</button>
     {% endfor %}
-  </div>
-  <div class="links">
-    {# A new tab, so judging a **Batch** is not interrupted, and with no handle back and no referrer. #}
-    <a
-      class="source"
-      href="{{ wallpaper.page_url }}"
-      target="_blank"
-      rel="noopener noreferrer"
-    >wallhaven</a>
   </div>
 </li>

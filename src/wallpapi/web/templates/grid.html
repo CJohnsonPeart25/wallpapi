@@ -10,11 +10,11 @@
   post that lands after the grid was read leaving the screen showing a mark the server no longer holds.
 #}
 <section id="batch-grid">
-  <div class="bulk">
+  <div class="bulk" role="group">
     {% for choice in ["favourite", "like", "ban"] %}
       <button
         type="button"
-        class="bulk-verdict"
+        class="bulk-verdict outline secondary"
         data-bulk-verdict="{{ choice }}"
         hx-post="/draft/all"
         hx-vals='{"batch_id": "{{ batch.id }}", "verdict": "{{ choice }}"}'
@@ -27,7 +27,7 @@
     {# Select-none posts an empty **Verdict**, the same clear a marked tile control posts. #}
     <button
       type="button"
-      class="bulk-verdict"
+      class="bulk-verdict outline secondary"
       data-bulk-verdict=""
       hx-post="/draft/all"
       hx-vals='{"batch_id": "{{ batch.id }}", "verdict": ""}'

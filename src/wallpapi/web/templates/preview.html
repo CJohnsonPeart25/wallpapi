@@ -1,0 +1,96 @@
+{#
+  The preview: a fixed frame over the **Batch** under Pico's overlay, opened by clicking a tile's thumbnail.
+
+  One dialog for the whole page rather than one per tile: only one **Wallpaper** is ever being looked at.
+  It sits outside `main` and outside anything htmx swaps, so the Alpine component on it lives as long as
+  the page does and a tile swap underneath cannot take it away.
+
+  **The image carries no source in the markup, and never gets one by binding.** `open` sets it by hand
+  when a thumbnail is clicked and `closed` removes it again, so the full-resolution file is fetched from
+  Wallhaven only when somebody asks to see it and a dismissed preview stops downloading (ADR 0003). The
+  tile carries the URLs as data attributes, which cost nothing until read.
+
+  The frame is one fixed size, three quarters of the screen, whatever shape the wallpaper is: every
+  preview opens in the same place at the same size, so the eye never has to re-find it, and letterboxing
+  is the price. Not Pico's card: a card resizes round its content and scrolls when it is too tall, which
+  is the one thing a frame must not do. Pico still paints the overlay round it.
+
+  A click on anything that is not a control dismisses it: the overlay round the frame, the image, the
+  rail's gaps. Escape does the same natively. In fullscreen a click on the image leaves fullscreen
+  instead, since the dialog is no longer what is on screen.
+
+  The rail is the preview's own **Verdict** rail, below the image where it covers nothing; the two pills
+  in the top corner are the way out to Wallhaven and fullscreen. The rail posts nothing of its own: it
+  clicks the matching control on the tile behind, so there is one route, one swap and one marked state.
+  After any swap the rail reads the tile's mark back, which is how the ring and the rail agree. Marking
+  does not dismiss the preview.
+#}
+<dialog
+  id="preview-dialog"
+  x-data="{
+    showing: null,
+    drafted: '',
+    tile() {
+      return Array.from(document.querySelectorAll('.tile')).find((tile) => tile.dataset.wallpaperId === this.showing);
+    },
+    sync() {
+      const tile = this.tile();
+      this.drafted = tile ? tile.dataset.draftVerdict || '' : '';
+    },
+    open(event) {
+      const thumbnail = event.target.closest && event.target.closest('.tile img');
+      if (!thumbnail || this.$el.open) return;
+      const tile = thumbnail.closest('.tile');
+      this.showing = tile.dataset.wallpaperId;
+      this.$refs.image.setAttribute('src', thumbnail.dataset.fullUrl);
+      this.$refs.source.setAttribute('href', tile.dataset.pageUrl);
+      this.sync();
+      this.$el.showModal();
+    },
+    dismiss(event) {
+      if (document.fullscreenElement) {
+        if (event.target === this.$refs.image) this.fullscreen();
+        return;
+      }
+      if (!event.target.closest('a, button')) this.$el.close();
+    },
+    mark(verdict) {
+      const tile = this.tile();
+      const control = tile && tile.querySelector('.verdict[data-verdict=' + verdict + ']');
+      if (control) control.click();
+    },
+    fullscreen() {
+      const change = document.fullscreenElement ? document.exitFullscreen() : this.$refs.image.requestFullscreen();
+      if (change) change.catch(() => {});
+    },
+    closed() {
+      this.$refs.image.removeAttribute('src');
+      this.showing = null;
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    },
+  }"
+  x-on:click.window="open($event)"
+  x-on:click="dismiss($event)"
+  x-on:close="closed()"
+  x-on:htmx:after-settle.camel.window="sync()"
+>
+  <article class="preview">
+    <img x-ref="image" alt="" />
+    <div class="preview-bar">
+      <a x-ref="source" href="#" target="_blank" rel="noopener noreferrer">wallhaven</a>
+      <button type="button" title="Fullscreen" aria-label="Fullscreen" x-on:click="fullscreen()">⛶</button>
+    </div>
+    <div class="preview-verdicts">
+      {% for choice in ["favourite", "like", "ban"] %}
+        <button
+          type="button"
+          class="preview-verdict"
+          data-verdict="{{ choice }}"
+          x-bind:class="{ marked: drafted === $el.dataset.verdict }"
+          x-bind:aria-pressed="drafted === $el.dataset.verdict ? 'true' : 'false'"
+          x-on:click="mark($el.dataset.verdict)"
+        >{{ choice }}</button>
+      {% endfor %}
+    </div>
+  </article>
+</dialog>

@@ -1,3 +1,5 @@
+{% extends "base.html" %}
+{% set page = "history" %}
 {#
   **History**: every **Wallpaper** that has ever been judged, newest activity first, with its **Verdict**
   changeable in place.
@@ -9,23 +11,10 @@
   Filtered and paged, because a week of ordinary use is thousands of **Ignores**. Both are plain links
   rather than htmx: they change what the whole page is, and a bookmarked filter is worth having.
 #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>wallpapi — history</title>
-    {# Vendored, never a third-party script tag, for the reason batch.html gives. #}
-    <link rel="stylesheet" href="/static/wallpapi.css" />
-    <script src="/static/htmx.min.js" defer></script>
-  </head>
-  <body>
-    <main>
-      <nav>
-        <a href="/">Batches</a>
-        <a href="/history" aria-current="page">History</a>
-        <a href="/settings">Settings</a>
-      </nav>
+{% block title %}wallpapi — history{% endblock %}
+{# Body left at the indentation it had inside <main>, so this change is the shell and nothing
+   else; restyling it on Pico is #41. #}
+{% block main %}
       <h1>History</h1>
       <p class="history-filter">
         {% if history.verdict %}
@@ -76,6 +65,4 @@
           Nothing judged yet. <a href="/">Submit a batch</a> and it will appear here.
         </p>
       {% endif %}
-    </main>
-  </body>
-</html>
+{% endblock %}

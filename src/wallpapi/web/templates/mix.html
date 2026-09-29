@@ -1,7 +1,7 @@
 {#
   The **Explore** / **Refine** switcher: one dropdown, and the name of the **Mix** in force.
 
-  Rendered inside batch.html in the dock, and on its own as the htmx swap for a switch — the same
+  Rendered inside batch.html in the nav, and on its own as the htmx swap for a switch — the same
   arrangement grid.html and tile.html already use, and for the same reason: switching changes this
   section and nothing else on the page.
 
@@ -13,13 +13,15 @@
   The percentages are in the options rather than in a legend somewhere: "explore" and "refine" are names
   for 75/20/5 and 25/70/5, and the names alone say nothing about which way round they are. They are in
   the list only: closed, the control shows the name, which is the one thing worth knowing once the
-  choice is made. wallpapi.js swaps the selected option's text between the two, because a `<select>`
-  shows the selected option's own text and there is no other way to give it two labels.
+  choice is made. A `<select>` shows the chosen option's own text when closed and there is no other way
+  to give it two labels, so the small Alpine component on the section rewrites every option's text as
+  the list opens and closes, reading both labels off the option's data attributes. The state lives on
+  the section and is rebuilt from the markup, so the outerHTML swap on a switch costs it nothing.
 
   A stored name whose **Mix** is gone is still the selected option, disabled: a `<select>` shows some
   option as chosen whatever happens, and left to itself it would show the first.
 #}
-<section id="mix-switcher">
+<section id="mix-switcher" x-data="{ open: false }">
   <label class="mix-label" for="mix-select">Next batch</label>
   <select
     id="mix-select"
@@ -31,6 +33,12 @@
     hx-target="#mix-switcher"
     hx-swap="outerHTML"
     hx-sync="#mix-switcher:replace"
+    x-on:mousedown="open = true"
+    x-on:keydown.space="open = true"
+    x-on:keydown.enter="open = true"
+    x-on:keydown.alt.down="open = true"
+    x-on:change="open = false"
+    x-on:focusout="open = false"
   >
     {% if active_mix not in mixes | map(attribute="name") | list %}
       <option value="{{ active_mix }}" selected disabled>{{ active_mix }}</option>
@@ -40,6 +48,7 @@
         value="{{ mix.name }}"
         data-name="{{ mix.name }}"
         data-full="{{ mix.name }} — {{ mix.unknown }}/{{ mix.banger }}/{{ mix.dud }}"
+        x-text="open ? $el.dataset.full : $el.dataset.name"
         {{ "selected" if mix.name == active_mix else "" }}
       >{{ mix.name }} — {{ mix.unknown }}/{{ mix.banger }}/{{ mix.dud }}</option>
     {% endfor %}

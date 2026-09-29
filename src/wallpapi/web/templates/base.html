@@ -1,0 +1,40 @@
+{#
+  The shell every full page is rendered in: the head, the nav, and a `main` for the page to fill.
+
+  A page extends this and writes its `main` block, and if it has controls of its own for the nav, its
+  `actions` block. Fragments — grid, tile, mix, refill, similarity, history_row — never extend anything:
+  each is also an htmx swap on its own, and a swap is the fragment and not a page.
+
+  `actions` is captured before the nav is included, because a block cannot be overridden from inside an
+  included template; nav.html renders what was captured.
+#}
+{% set actions %}{% block actions %}{% endblock %}{% endset %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}wallpapi{% endblock %}</title>
+    {# Inline and first, so a stored light or dark theme is on <html> before anything is painted; as a
+       file it would arrive after the first frame and the page would flash the other theme. theme.html
+       is what writes the value. No stored value is "system", which is Pico following the OS. #}
+    <script>
+      try { var theme = localStorage.getItem("wallpapi-theme"); } catch (e) {}
+      if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+    </script>
+    {# Vendored, never a third-party tag: these pages render the **Decision log**, and a personal tool
+       should not stop working because somebody else's host is unreachable. Pico is the base, base.css
+       is what Pico cannot say (ADR 0014). #}
+    <link rel="stylesheet" href="/static/pico.indigo.min.css" />
+    <link rel="stylesheet" href="/static/base.css" />
+    <script src="/static/htmx.min.js" defer></script>
+    <script src="/static/alpine.min.js" defer></script>
+  </head>
+  <body>
+    {% include "nav.html" %}
+    <main class="container-fluid">
+      {% block main %}{% endblock %}
+    </main>
+    {% block tail %}{% endblock %}
+  </body>
+</html>
