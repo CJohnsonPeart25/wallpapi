@@ -27,7 +27,7 @@ no build step.
 **Pico CSS is the foundation, not an add-on.** `pico.indigo.min.css`, the default class-based build, in
 the indigo variant because its light primary (`#655cd6`) is one shade from the accent the prototype
 settled on (`#5b5bd6`), so the accent survives with no override. Not the scoped `.conditional` build:
-every page is Pico's. Its greys, radius, type stack, spacing, buttons, forms, nav and modal are accepted.
+every page is Pico's. Its greys, radius, type stack, spacing, buttons, forms, nav and modal overlay are accepted.
 
 **`base.css` is what Pico cannot say, and nothing else.** The root font size pinned to 100% (Pico grows
 it with the viewport, and the grid is already sized by the viewport); the sticky nav; the three verdict
@@ -42,9 +42,11 @@ mix, refill, similarity, history_row — never does, because each is also an htm
 is the dock: Pico's `nav > ul + ul`, and the right-hand list is the page's `actions` block, where the
 **Batch** page puts the **Mix** `<select>` and a plain primary Submit.
 
-**The preview is a Pico modal.** `<dialog><article><header>` (the Wallhaven link, fullscreen) `<img>`
-`<footer>` (the preview's **Verdict** rail) `</article></dialog>`, the article widened past Pico's 700px
-to 92vw and the image capped at `calc(100vh - 12rem)`. Pico paints the overlay on the dialog itself.
+**The preview is Pico's overlay round a frame of our own.** `<dialog><article>` so that Pico paints the
+overlay, but the article is not Pico's card: a card sizes to its content and scrolls when it is too tall,
+and the prototype's conclusion was the opposite — one frame of one fixed size, 75vw by 75vh, with the
+image letterboxed inside it, the Wallhaven link and fullscreen as two pills over its top corner, and the
+preview's **Verdict** rail across its foot. `base.css` undoes the card's size, padding and background.
 
 **Alpine.js owns three things**, each an inline `x-data` on the element it belongs to:
 
@@ -83,10 +85,13 @@ intact, because none of it is anything Pico has an opinion on:
 - no hover-to-enlarge;
 - Submit far from the tiles.
 
+The preview frame survives too — a first cut on Pico's card was tried and reverted the same day: the card
+resized round each image and scrolled, which is exactly what the frame exists to prevent.
+
 What they concluded about *look* was traded for a stylesheet well under half the size: the floating dock and
-its blur (the sticky nav is the dock now), the fixed 75vw x 75vh preview frame and its `::backdrop` (the
-Pico modal sizes to the image), the pill radius (Pico's 0.25rem), and the dark palette (Pico's, in both
-themes). None of those was the reason a round was won.
+its blur (the sticky nav is the dock now), the preview's own `::backdrop` (Pico's overlay), the pill radius
+(Pico's 0.25rem), and the dark palette (Pico's, in both themes). None of those was the reason a round was
+won.
 
 ## Consequences
 

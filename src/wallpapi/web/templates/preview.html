@@ -1,5 +1,5 @@
 {#
-  The preview: a Pico modal over the **Batch**, opened by clicking a tile's thumbnail.
+  The preview: a fixed frame over the **Batch** under Pico's overlay, opened by clicking a tile's thumbnail.
 
   One dialog for the whole page rather than one per tile: only one **Wallpaper** is ever being looked at.
   It sits outside `main` and outside anything htmx swaps, so the Alpine component on it lives as long as
@@ -10,14 +10,20 @@
   Wallhaven only when somebody asks to see it and a dismissed preview stops downloading (ADR 0003). The
   tile carries the URLs as data attributes, which cost nothing until read.
 
-  A click on anything that is not a control dismisses it: the overlay round the article, the image, the
-  bare header and footer. Escape does the same natively. In fullscreen a click on the image leaves
-  fullscreen instead, since the dialog is no longer what is on screen.
+  The frame is one fixed size, three quarters of the screen, whatever shape the wallpaper is: every
+  preview opens in the same place at the same size, so the eye never has to re-find it, and letterboxing
+  is the price. Not Pico's card: a card resizes round its content and scrolls when it is too tall, which
+  is the one thing a frame must not do. Pico still paints the overlay round it.
 
-  The footer is the preview's own **Verdict** rail, below the image where it covers nothing. It posts
-  nothing of its own: it clicks the matching control on the tile behind, so there is one route, one swap
-  and one marked state. After any swap the rail reads the tile's mark back, which is how the ring and
-  the rail agree. Marking does not dismiss the preview.
+  A click on anything that is not a control dismisses it: the overlay round the frame, the image, the
+  rail's gaps. Escape does the same natively. In fullscreen a click on the image leaves fullscreen
+  instead, since the dialog is no longer what is on screen.
+
+  The rail is the preview's own **Verdict** rail, below the image where it covers nothing; the two pills
+  in the top corner are the way out to Wallhaven and fullscreen. The rail posts nothing of its own: it
+  clicks the matching control on the tile behind, so there is one route, one swap and one marked state.
+  After any swap the rail reads the tile's mark back, which is how the ring and the rail agree. Marking
+  does not dismiss the preview.
 #}
 <dialog
   id="preview-dialog"
@@ -69,18 +75,12 @@
   x-on:htmx:after-settle.camel.window="sync()"
 >
   <article class="preview">
-    <header>
-      <a x-ref="source" href="#" target="_blank" rel="noopener noreferrer">wallhaven</a>
-      <button
-        type="button"
-        class="outline secondary"
-        title="Fullscreen"
-        aria-label="Fullscreen"
-        x-on:click="fullscreen()"
-      >⛶</button>
-    </header>
     <img x-ref="image" alt="" />
-    <footer>
+    <div class="preview-bar">
+      <a x-ref="source" href="#" target="_blank" rel="noopener noreferrer">wallhaven</a>
+      <button type="button" title="Fullscreen" aria-label="Fullscreen" x-on:click="fullscreen()">⛶</button>
+    </div>
+    <div class="preview-verdicts">
       {% for choice in ["favourite", "like", "ban"] %}
         <button
           type="button"
@@ -91,6 +91,6 @@
           x-on:click="mark($el.dataset.verdict)"
         >{{ choice }}</button>
       {% endfor %}
-    </footer>
+    </div>
   </article>
 </dialog>
