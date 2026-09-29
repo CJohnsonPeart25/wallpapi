@@ -76,7 +76,7 @@ body:has(#batch-grid) [data-refill]:not(:has([data-refill-problem])) {
 }
 
 .bulk > button,
-:is(.history-filter, .history-paging) > * {
+:is(.history-filter, .history-paging) > [role="button"] {
   --pico-form-element-spacing-horizontal: 0.75rem;
   --pico-form-element-spacing-vertical: 0.3rem;
   flex: 0 0 auto;
