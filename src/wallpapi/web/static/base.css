@@ -233,6 +233,31 @@ ul.batch > li {
   line-height: 1;
 }
 
+/* ---------- Settings: Pico's articles and forms; only the Mix table needs saying ---------- */
+
+/* A field in a table cell sits on the row's line: Pico gives every field a bottom margin for a form. */
+td > input,
+th > input {
+  margin-bottom: 0;
+}
+
+/* Pico stretches a submit button across its form, which on a page this wide is a bar, not a button; and
+   in a table cell two of them should sit side by side. */
+form > button[type="submit"],
+td > button {
+  width: auto;
+}
+
+td > button {
+  margin-bottom: 0;
+}
+
+/* Delete is the one Mix action that cannot be taken back, so it takes the ban colour under the pointer. */
+[data-mix-delete]:is(:hover, :focus-visible) {
+  border-color: var(--ban);
+  color: var(--ban);
+}
+
 /* ---------- the preview: Pico's overlay round a frame of our own ---------- */
 
 /*

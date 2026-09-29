@@ -9,301 +9,386 @@
 
   The fields are rendered from whatever the form last carried rather than from storage, so a refused save
   comes back with what the user typed still in it.
+
+  Pico's own elements and nothing else: an <article> per group, a <label>, its <input> and a <small> hint
+  under it. The only classes are Pico's button variants — Save settings is the one primary button, and
+  every other action is outline secondary.
 #}
 {% block title %}wallpapi — settings{% endblock %}
-{# Body left at the indentation it had inside <main>, so this change is the shell and nothing
-   else; restyling it on Pico is #41. #}
 {% block main %}
-      <h1>Settings</h1>
-      {% if saved %}
-        <p class="saved">Settings saved.</p>
-      {% endif %}
-      {% if deleted %}
-        <p class="saved">Mix deleted.</p>
-      {% endif %}
-      {# All three counts, always, three zeroes included: a page that came back looking untouched would
-         read as a button that did nothing rather than as a library that was already complete. #}
-      {% if download and download.downloaded %}
-        <p class="saved">Favourites: {{ download.written }} downloaded,
-          {{ download.skipped }} already there, {{ download.failed }} failed.
-          {% if download.failed %}Press the button again to retry the ones that failed.{% endif %}</p>
-      {% endif %}
-      {% if refused %}
-        {# The Core service's refusal reason, said in words. One branch per reason; the last branch is a
-           fallback that names the reason rather than guessing, so a reason added later is visibly
-           unhandled instead of being described as something else. #}
-        <p class="refused">
-          {% if refused.reason.value == "batch_size_out_of_range" %}
-            Batch size must be between {{ min_batch_size }} and {{ max_batch_size }}.
-          {% elif refused.reason.value == "batch_size_not_a_number" %}
-            Batch size must be a whole number between {{ min_batch_size }} and {{ max_batch_size }}.
-          {% elif refused.reason.value == "library_path_empty" %}
-            The library folder cannot be blank.
-          {% elif refused.reason.value == "library_path_not_absolute" %}
-            The library folder must be an absolute path, such as C:\Users\you\Pictures\wallpapi.
-          {% elif refused.reason.value == "pool_target_size_invalid" %}
-            Pool target size must be a whole number between {{ min_pool_target_size }} and
-            {{ max_pool_target_size }}.
-          {% elif refused.reason.value == "min_width_invalid" %}
-            Minimum width must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
-          {% elif refused.reason.value == "min_height_invalid" %}
-            Minimum height must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
-          {% elif refused.reason.value == "allowed_ratios_invalid" %}
-            Allowed ratios must be a comma-separated list of ratios Wallhaven knows:
-            {{ wallhaven_ratios }}.
-          {% elif refused.reason.value == "min_favourites_invalid" %}
-            Minimum favourites must be a whole number, 0 or more.
-          {% elif refused.reason.value == "similarity_radius_invalid" %}
-            Similarity radius must be a number from 0 to 1.
-          {% elif refused.reason.value == "similarity_decay_invalid" %}
-            Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
-          {% elif refused.reason.value == "thumbnail_cache_max_mb_invalid" %}
-            The thumbnail cache limit must be a whole number of megabytes, 0 or more.
-          {% elif refused.reason.value == "revisit_weight_invalid" %}
-            Revisit weight must be a number from 0 to 1.
-          {% elif refused.reason.value == "mix_percentages_invalid" %}
-            Mix percentages must be whole numbers, 0 or more, that add up to {{ mix_total }}.
-          {% elif refused.reason.value == "mix_name_invalid" %}
-            A mix needs a name, of no more than {{ max_mix_name_length }} characters.
-          {% elif refused.reason.value == "mix_unknown" %}
-            No mix goes by that name — it may have been deleted in another tab.
-          {% elif refused.reason.value == "mix_in_use" %}
-            That is the active mix. Switch to another on the batch page before deleting it.
-          {% elif refused.reason.value == "mix_not_deletable" %}
-            Explore and refine can be edited but cannot be deleted.
-          {% else %}
-            That value was refused ({{ refused.reason.value }}).
-          {% endif %}
-          Nothing was changed.
-        </p>
-      {% endif %}
-      <form method="post" action="/settings">
-        <p>
-          <label for="batch_size">Batch size</label>
-          <input
-            type="number"
-            id="batch_size"
-            name="batch_size"
-            min="{{ min_batch_size }}"
-            max="{{ max_batch_size }}"
-            step="1"
-            value="{{ batch_size }}"
-          />
-          <span class="hint">Wallpapers per batch, {{ min_batch_size }} to {{ max_batch_size }}. Applies
-            to the next batch — the one on screen keeps the size it was built with.</span>
-        </p>
-        <p>
-          <label for="library_path">Library folder</label>
-          <input type="text" id="library_path" name="library_path" size="60" value="{{ library_path }}" />
-          <span class="hint">An absolute path. Favourites are downloaded here; the folder is created the
-            first time one is written.</span>
-        </p>
-
-        <h2>Filters</h2>
-        <p class="hint">The hard rules a wallpaper must pass before it joins the pool. Changing them drops
-          undecided pool wallpapers that no longer pass; anything you have already judged stays, and so
-          does the batch on screen. Only safe-for-work wallpapers are ever fetched.</p>
-        <p>
-          <label for="min_width">Minimum width</label>
-          <input
-            type="number"
-            id="min_width"
-            name="min_width"
-            min="0"
-            max="{{ max_filter_pixels }}"
-            step="1"
-            value="{{ min_width }}"
-          />
-          <span class="hint">Pixels. A minimum, not an exact size — anything larger counts.</span>
-        </p>
-        <p>
-          <label for="min_height">Minimum height</label>
-          <input
-            type="number"
-            id="min_height"
-            name="min_height"
-            min="0"
-            max="{{ max_filter_pixels }}"
-            step="1"
-            value="{{ min_height }}"
-          />
-          <span class="hint">Pixels. Set either to 0 to stop filtering on that side.</span>
-        </p>
-        <p>
-          <label for="allowed_ratios">Allowed ratios</label>
-          <input
-            type="text"
-            id="allowed_ratios"
-            name="allowed_ratios"
-            size="40"
-            value="{{ allowed_ratios }}"
-          />
-          <span class="hint">Comma-separated, from {{ wallhaven_ratios }}.</span>
-        </p>
-        <p>
-          <label for="min_favourites">Minimum favourites</label>
-          <input type="number" id="min_favourites" name="min_favourites" min="0" step="1"
-            value="{{ min_favourites }}" />
-          <span class="hint">How many Wallhaven favourites a wallpaper needs. Applied here rather than in
-            the search — Wallhaven has no parameter for it.</span>
-        </p>
-
-        <h2>Pool</h2>
-        <p>
-          <label for="pool_target_size">Pool target size</label>
-          <input
-            type="number"
-            id="pool_target_size"
-            name="pool_target_size"
-            min="{{ min_pool_target_size }}"
-            max="{{ max_pool_target_size }}"
-            step="1"
-            value="{{ pool_target_size }}"
-          />
-          <span class="hint">How many filtered wallpapers to keep waiting. The background refill fetches at
-            full speed until the pool reaches this, then idles.</span>
-        </p>
-
-        <h2>Scoring</h2>
-        <p class="hint">How far a verdict spreads to wallpapers that look like it. Every score is worked out
-          from the decision log each time a batch is built, so changing these two takes effect on the next
-          batch and nothing has to be rebuilt. Both are starting points rather than tuned numbers.</p>
-        <p>
-          <label for="similarity_radius">Similarity radius</label>
-          <input
-            type="number"
-            id="similarity_radius"
-            name="similarity_radius"
-            min="0"
-            max="1"
-            step="0.01"
-            value="{{ similarity_radius }}"
-          />
-          <span class="hint">From 0 to 1. How different two wallpapers can be and still tell you anything
-            about each other — beyond it, a verdict counts for nothing at all.</span>
-        </p>
-        <p>
-          <label for="similarity_decay">Similarity decay</label>
-          <input
-            type="number"
-            id="similarity_decay"
-            name="similarity_decay"
-            min="0"
-            max="{{ max_similarity_decay }}"
-            step="0.1"
-            value="{{ similarity_decay }}"
-          />
-          <span class="hint">From 0 to {{ max_similarity_decay }}. How fast a verdict fades with distance.
-            Higher is fussier; 0 counts everything inside the radius equally.</span>
-        </p>
-        <h2>Repeats</h2>
-        <p>
-          <label for="revisit_weight">Revisit weight</label>
-          <input
-            type="number"
-            id="revisit_weight"
-            name="revisit_weight"
-            min="0"
-            max="1"
-            step="0.05"
-            value="{{ revisit_weight }}"
-          />
-          <span class="hint">From 0 to 1. How likely a wallpaper you have already favourited or liked is
-            to come round again, against one you have not judged at all. 1 shows them as often as anything
-            else; 0 never shows them again while there is something else to show. Wallpapers you only
-            skipped past are not affected, and banned ones never come back whatever this says.</span>
-        </p>
-
-        <h2>Thumbnails</h2>
-        <p>
-          <label for="thumbnail_cache_max_mb">Thumbnail cache limit</label>
-          <input type="number" id="thumbnail_cache_max_mb" name="thumbnail_cache_max_mb" min="0" step="1"
-            value="{{ thumbnail_cache_max_mb }}" />
-          <span class="hint">Megabytes. Thumbnails of wallpapers you have judged are never deleted —
-            history needs them — so this only limits the ones still waiting in the pool. Anything deleted
-            is fetched again the next time it is shown.</span>
-        </p>
-        <button type="submit">Save settings</button>
-      </form>
-
-      {#
-        Downloading the favourites (#14). A form of its own and outside the settings form, because HTML
-        does not nest forms and this posts no fields at all — the operation takes no arguments, which is
-        what makes it safe to press twice.
-
-        One way only. There is no button anywhere that empties the library: files leave it when a
-        favourite is replaced, and never because the folder and the log were compared.
-      #}
-      <h2>Favourites</h2>
-      <p class="hint">Favourites are downloaded to the library folder as you submit each batch, so this is
-        only needed when the folder and your decisions have come apart — you deleted the files, you moved
-        the library, or you brought the database to another machine. It downloads every favourite that has
-        no file and leaves everything else alone. It never deletes anything, and deleting a file yourself
-        never changes your decision log.</p>
-      <form method="post" action="/settings/library/download" class="library-download">
-        <button type="submit" data-download-favourites>Download all favourites</button>
-      </form>
-
-      {#
-        Mixes (#12). Outside the settings form and not inside it: each row is a form of its own, HTML
-        does not nest forms, and a mix row posts four fields under names every other row posts too — so
-        one big form would send three copies of "unknown" and the server would have to guess.
-
-        Editing and adding post to the same route. A mix is saved under its name, and whether one was
-        already there is not a question worth asking the user; that also means there is no rename —
-        saving under a new name makes a second mix.
-
-        No delete control on explore, on refine, or on the active mix. All three are refusals the core
-        service makes anyway, and a page that offers a button which cannot work is a page telling the
-        user something untrue — the same reason history renders no clear control on a row with nothing
-        to clear.
-      #}
-      <h2>Mixes</h2>
-      <p class="hint">How much of a batch comes from each zone — unknown, banger and dud — as whole
-        percentages adding up to {{ mix_total }}. Edits apply to the next batch; the one on screen keeps
-        the mix it was built with. Switch between mixes on the batch page.</p>
-      {% for row in mix_rows %}
-        <form method="post" action="/settings/mixes" class="mix-row" data-mix-row="{{ row.name }}">
-          <input type="hidden" name="name" value="{{ row.name }}" />
-          <strong{% if row.active %} data-mix-active="{{ row.name }}"{% endif %}>{{ row.name }}</strong>
-          {% if row.active %}<span class="hint">active — the next batch is built from this one</span>{% endif %}
-          <label>Unknown
-            <input type="number" name="unknown" min="0" max="{{ mix_total }}" step="1"
-              value="{{ row.unknown }}" />
-          </label>
-          <label>Banger
-            <input type="number" name="banger" min="0" max="{{ mix_total }}" step="1"
-              value="{{ row.banger }}" />
-          </label>
-          <label>Dud
-            <input type="number" name="dud" min="0" max="{{ mix_total }}" step="1" value="{{ row.dud }}" />
-          </label>
-          <button type="submit">Save {{ row.name }}</button>
-        </form>
-        {% if row.deletable %}
-          <form method="post" action="/settings/mixes/delete" class="mix-delete">
-            <input type="hidden" name="name" value="{{ row.name }}" />
-            <button type="submit" data-mix-delete="{{ row.name }}">Delete {{ row.name }}</button>
-          </form>
+  <h1>Settings</h1>
+  {% if saved %}
+    <p>Settings saved.</p>
+  {% endif %}
+  {% if deleted %}
+    <p>Mix deleted.</p>
+  {% endif %}
+  {# All three counts, always, three zeroes included: a page that came back looking untouched would
+     read as a button that did nothing rather than as a library that was already complete. #}
+  {% if download and download.downloaded %}
+    <p>Favourites: {{ download.written }} downloaded,
+      {{ download.skipped }} already there, {{ download.failed }} failed.
+      {% if download.failed %}Press the button again to retry the ones that failed.{% endif %}</p>
+  {% endif %}
+  {% if refused %}
+    {# The Core service's refusal reason, said in words. One branch per reason; the last branch is a
+       fallback that names the reason rather than guessing, so a reason added later is visibly
+       unhandled instead of being described as something else. In an article so that it stands out
+       from the page it is about. #}
+    <article>
+      <p>
+        {% if refused.reason.value == "batch_size_out_of_range" %}
+          Batch size must be between {{ min_batch_size }} and {{ max_batch_size }}.
+        {% elif refused.reason.value == "batch_size_not_a_number" %}
+          Batch size must be a whole number between {{ min_batch_size }} and {{ max_batch_size }}.
+        {% elif refused.reason.value == "library_path_empty" %}
+          The library folder cannot be blank.
+        {% elif refused.reason.value == "library_path_not_absolute" %}
+          The library folder must be an absolute path, such as C:\Users\you\Pictures\wallpapi.
+        {% elif refused.reason.value == "pool_target_size_invalid" %}
+          Pool target size must be a whole number between {{ min_pool_target_size }} and
+          {{ max_pool_target_size }}.
+        {% elif refused.reason.value == "min_width_invalid" %}
+          Minimum width must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
+        {% elif refused.reason.value == "min_height_invalid" %}
+          Minimum height must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
+        {% elif refused.reason.value == "allowed_ratios_invalid" %}
+          Allowed ratios must be a comma-separated list of ratios Wallhaven knows:
+          {{ wallhaven_ratios }}.
+        {% elif refused.reason.value == "min_favourites_invalid" %}
+          Minimum favourites must be a whole number, 0 or more.
+        {% elif refused.reason.value == "similarity_radius_invalid" %}
+          Similarity radius must be a number from 0 to 1.
+        {% elif refused.reason.value == "similarity_decay_invalid" %}
+          Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
+        {% elif refused.reason.value == "thumbnail_cache_max_mb_invalid" %}
+          The thumbnail cache limit must be a whole number of megabytes, 0 or more.
+        {% elif refused.reason.value == "revisit_weight_invalid" %}
+          Revisit weight must be a number from 0 to 1.
+        {% elif refused.reason.value == "mix_percentages_invalid" %}
+          Mix percentages must be whole numbers, 0 or more, that add up to {{ mix_total }}.
+        {% elif refused.reason.value == "mix_name_invalid" %}
+          A mix needs a name, of no more than {{ max_mix_name_length }} characters.
+        {% elif refused.reason.value == "mix_unknown" %}
+          No mix goes by that name — it may have been deleted in another tab.
+        {% elif refused.reason.value == "mix_in_use" %}
+          That is the active mix. Switch to another on the batch page before deleting it.
+        {% elif refused.reason.value == "mix_not_deletable" %}
+          Explore and refine can be edited but cannot be deleted.
+        {% else %}
+          That value was refused ({{ refused.reason.value }}).
         {% endif %}
-      {% endfor %}
-      <form method="post" action="/settings/mixes" class="mix-row" data-mix-new>
-        <label>New mix
-          <input type="text" name="name" size="24" maxlength="{{ max_mix_name_length }}"
-            value="{{ new_mix.name }}" />
-        </label>
-        <label>Unknown
-          <input type="number" name="unknown" min="0" max="{{ mix_total }}" step="1"
-            value="{{ new_mix.unknown }}" />
-        </label>
-        <label>Banger
-          <input type="number" name="banger" min="0" max="{{ mix_total }}" step="1"
-            value="{{ new_mix.banger }}" />
-        </label>
-        <label>Dud
-          <input type="number" name="dud" min="0" max="{{ mix_total }}" step="1"
-            value="{{ new_mix.dud }}" />
-        </label>
-        <button type="submit">Add mix</button>
+        Nothing was changed.
+      </p>
+    </article>
+  {% endif %}
+  <form method="post" action="/settings">
+    {# The two settings that came before there were groups, so they have no heading of their own. #}
+    <article>
+      <label for="batch_size">Batch size</label>
+      <input
+        type="number"
+        id="batch_size"
+        name="batch_size"
+        min="{{ min_batch_size }}"
+        max="{{ max_batch_size }}"
+        step="1"
+        value="{{ batch_size }}"
+      />
+      <small>Wallpapers per batch, {{ min_batch_size }} to {{ max_batch_size }}. Applies to the next batch —
+        the one on screen keeps the size it was built with.</small>
+      <label for="library_path">Library folder</label>
+      <input type="text" id="library_path" name="library_path" value="{{ library_path }}" />
+      <small>An absolute path. Favourites are downloaded here; the folder is created the first time one is
+        written.</small>
+    </article>
+
+    <article>
+      <h2>Filters</h2>
+      <p><small>The hard rules a wallpaper must pass before it joins the pool. Changing them drops
+        undecided pool wallpapers that no longer pass; anything you have already judged stays, and so does
+        the batch on screen. Only safe-for-work wallpapers are ever fetched.</small></p>
+      <label for="min_width">Minimum width</label>
+      <input
+        type="number"
+        id="min_width"
+        name="min_width"
+        min="0"
+        max="{{ max_filter_pixels }}"
+        step="1"
+        value="{{ min_width }}"
+      />
+      <small>Pixels. A minimum, not an exact size — anything larger counts.</small>
+      <label for="min_height">Minimum height</label>
+      <input
+        type="number"
+        id="min_height"
+        name="min_height"
+        min="0"
+        max="{{ max_filter_pixels }}"
+        step="1"
+        value="{{ min_height }}"
+      />
+      <small>Pixels. Set either to 0 to stop filtering on that side.</small>
+      <label for="allowed_ratios">Allowed ratios</label>
+      <input type="text" id="allowed_ratios" name="allowed_ratios" value="{{ allowed_ratios }}" />
+      <small>Comma-separated, from {{ wallhaven_ratios }}.</small>
+      <label for="min_favourites">Minimum favourites</label>
+      <input
+        type="number"
+        id="min_favourites"
+        name="min_favourites"
+        min="0"
+        step="1"
+        value="{{ min_favourites }}"
+      />
+      <small>How many Wallhaven favourites a wallpaper needs. Applied here rather than in the search —
+        Wallhaven has no parameter for it.</small>
+    </article>
+
+    <article>
+      <h2>Pool</h2>
+      <label for="pool_target_size">Pool target size</label>
+      <input
+        type="number"
+        id="pool_target_size"
+        name="pool_target_size"
+        min="{{ min_pool_target_size }}"
+        max="{{ max_pool_target_size }}"
+        step="1"
+        value="{{ pool_target_size }}"
+      />
+      <small>How many filtered wallpapers to keep waiting. The background refill fetches at full speed until
+        the pool reaches this, then idles.</small>
+    </article>
+
+    <article>
+      <h2>Scoring</h2>
+      <p><small>How far a verdict spreads to wallpapers that look like it. Every score is worked out from the
+        decision log each time a batch is built, so changing these two takes effect on the next batch and
+        nothing has to be rebuilt. Both are starting points rather than tuned numbers.</small></p>
+      <label for="similarity_radius">Similarity radius</label>
+      <input
+        type="number"
+        id="similarity_radius"
+        name="similarity_radius"
+        min="0"
+        max="1"
+        step="0.01"
+        value="{{ similarity_radius }}"
+      />
+      <small>From 0 to 1. How different two wallpapers can be and still tell you anything about each other —
+        beyond it, a verdict counts for nothing at all.</small>
+      <label for="similarity_decay">Similarity decay</label>
+      <input
+        type="number"
+        id="similarity_decay"
+        name="similarity_decay"
+        min="0"
+        max="{{ max_similarity_decay }}"
+        step="0.1"
+        value="{{ similarity_decay }}"
+      />
+      <small>From 0 to {{ max_similarity_decay }}. How fast a verdict fades with distance. Higher is fussier;
+        0 counts everything inside the radius equally.</small>
+    </article>
+
+    <article>
+      <h2>Repeats</h2>
+      <label for="revisit_weight">Revisit weight</label>
+      <input
+        type="number"
+        id="revisit_weight"
+        name="revisit_weight"
+        min="0"
+        max="1"
+        step="0.05"
+        value="{{ revisit_weight }}"
+      />
+      <small>From 0 to 1. How likely a wallpaper you have already favourited or liked is to come round again,
+        against one you have not judged at all. 1 shows them as often as anything else; 0 never shows them
+        again while there is something else to show. Wallpapers you only skipped past are not affected, and
+        banned ones never come back whatever this says.</small>
+    </article>
+
+    <article>
+      <h2>Thumbnails</h2>
+      <label for="thumbnail_cache_max_mb">Thumbnail cache limit</label>
+      <input
+        type="number"
+        id="thumbnail_cache_max_mb"
+        name="thumbnail_cache_max_mb"
+        min="0"
+        step="1"
+        value="{{ thumbnail_cache_max_mb }}"
+      />
+      <small>Megabytes. Thumbnails of wallpapers you have judged are never deleted — history needs them — so
+        this only limits the ones still waiting in the pool. Anything deleted is fetched again the next time
+        it is shown.</small>
+    </article>
+    <button type="submit">Save settings</button>
+  </form>
+
+  {#
+    Downloading the favourites (#14). A form of its own and outside the settings form, because HTML
+    does not nest forms and this posts no fields at all — the operation takes no arguments, which is
+    what makes it safe to press twice.
+
+    One way only. There is no button anywhere that empties the library: files leave it when a
+    favourite is replaced, and never because the folder and the log were compared.
+  #}
+  <article>
+    <h2>Favourites</h2>
+    <p><small>Favourites are downloaded to the library folder as you submit each batch, so this is only
+      needed when the folder and your decisions have come apart — you deleted the files, you moved the
+      library, or you brought the database to another machine. It downloads every favourite that has no
+      file and leaves everything else alone. It never deletes anything, and deleting a file yourself never
+      changes your decision log.</small></p>
+    <form method="post" action="/settings/library/download">
+      <button type="submit" class="outline secondary" data-download-favourites>Download all favourites</button>
+    </form>
+  </article>
+
+  {#
+    Mixes (#12). Outside the settings form and not inside it: each row posts four fields under names
+    every other row posts too — so one big form would send three copies of "unknown" and the server
+    would have to guess.
+
+    A table, one Mix per row. HTML allows no <form> inside a <tr> — a browser moves it out, and the
+    inputs are left posting nothing — so each row's forms are empty ones before the table, carrying only
+    the name, and every field and button in the row names its form with `form=`.
+
+    Editing and adding post to the same route. A mix is saved under its name, and whether one was
+    already there is not a question worth asking the user; that also means there is no rename —
+    saving under a new name makes a second mix.
+
+    No delete control on explore, on refine, or on the active mix. All three are refusals the core
+    service makes anyway, and a page that offers a button which cannot work is a page telling the
+    user something untrue — the same reason history renders no clear control on a row with nothing
+    to clear.
+
+    Each row adds itself up as it is typed into, and marks its three numbers when they do not come to
+    the total: an Alpine component on the row. It is only a hint before the post — the Core service is
+    still what refuses a Mix that does not add up. A row left entirely blank, as the add row starts, is
+    not marked; nothing has been got wrong yet.
+  #}
+  {% set running_total %}{
+      sum: 0,
+      blank: true,
+      get off() { return !this.blank && this.sum !== {{ mix_total }}; },
+      count() {
+        const values = [this.$refs.unknown.value, this.$refs.banger.value, this.$refs.dud.value];
+        this.blank = values.every(function (value) { return value.trim() === ''; });
+        this.sum = values.reduce(function (sum, value) { return sum + Number(value); }, 0);
+      },
+    }{% endset %}
+  <article>
+    <h2>Mixes</h2>
+    <p><small>How much of a batch comes from each zone — unknown, banger and dud — as whole percentages
+      adding up to {{ mix_total }}. Edits apply to the next batch; the one on screen keeps the mix it was
+      built with. Switch between mixes on the batch page.</small></p>
+    {% for row in mix_rows %}
+      <form method="post" action="/settings/mixes" id="mix-{{ loop.index }}">
+        <input type="hidden" name="name" value="{{ row.name }}" />
       </form>
+      {% if row.deletable %}
+        <form method="post" action="/settings/mixes/delete" id="mix-{{ loop.index }}-delete">
+          <input type="hidden" name="name" value="{{ row.name }}" />
+        </form>
+      {% endif %}
+    {% endfor %}
+    <form method="post" action="/settings/mixes" id="mix-new"></form>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Mix</th>
+          <th scope="col">Unknown</th>
+          <th scope="col">Banger</th>
+          <th scope="col">Dud</th>
+          <th scope="col">Total</th>
+          <th scope="col"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in mix_rows %}
+          {% set form = "mix-" ~ loop.index %}
+          <tr
+            data-mix-row="{{ row.name }}"
+            x-data="{{ running_total }}"
+            x-init="$nextTick(function () { count(); })"
+            x-on:input="count()"
+          >
+            <th scope="row">
+              <strong{% if row.active %} data-mix-active="{{ row.name }}"{% endif %}>{{ row.name }}</strong>
+              {% if row.active %}<br /><small>active — the next batch is built from this one</small>{% endif %}
+            </th>
+            {% for field in ["unknown", "banger", "dud"] %}
+              <td>
+                <input
+                  type="number"
+                  form="{{ form }}"
+                  name="{{ field }}"
+                  aria-label="{{ field | capitalize }}"
+                  min="0"
+                  max="{{ mix_total }}"
+                  step="1"
+                  value="{{ row[field] }}"
+                  x-ref="{{ field }}"
+                  x-bind:aria-invalid="off ? 'true' : null"
+                />
+              </td>
+            {% endfor %}
+            <td><output x-text="blank ? '' : sum + ' / {{ mix_total }}'"></output></td>
+            <td>
+              <button type="submit" class="outline secondary" form="{{ form }}">Save {{ row.name }}</button>
+              {% if row.deletable %}
+                <button
+                  type="submit"
+                  class="outline secondary"
+                  form="{{ form }}-delete"
+                  data-mix-delete="{{ row.name }}"
+                >Delete {{ row.name }}</button>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        <tr
+          data-mix-new
+          x-data="{{ running_total }}"
+          x-init="$nextTick(function () { count(); })"
+          x-on:input="count()"
+        >
+          <th scope="row">
+            <input
+              type="text"
+              form="mix-new"
+              name="name"
+              aria-label="New mix"
+              placeholder="New mix"
+              maxlength="{{ max_mix_name_length }}"
+              value="{{ new_mix.name }}"
+            />
+          </th>
+          {% for field in ["unknown", "banger", "dud"] %}
+            <td>
+              <input
+                type="number"
+                form="mix-new"
+                name="{{ field }}"
+                aria-label="{{ field | capitalize }}"
+                min="0"
+                max="{{ mix_total }}"
+                step="1"
+                value="{{ new_mix[field] }}"
+                x-ref="{{ field }}"
+                x-bind:aria-invalid="off ? 'true' : null"
+              />
+            </td>
+          {% endfor %}
+          <td><output x-text="blank ? '' : sum + ' / {{ mix_total }}'"></output></td>
+          <td><button type="submit" class="outline secondary" form="mix-new">Add mix</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </article>
 {% endblock %}

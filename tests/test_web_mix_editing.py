@@ -99,7 +99,7 @@ def test_an_invalid_mix_shows_the_reason_and_persists_nothing(db_path: Path) -> 
     assert "add up to 100" in refused.text
     assert harness.core.active_mix() == EXPLORE_MIX
     # The refused numbers are back in **Explore**'s own row, not the stored 75/20/5 and not the add row.
-    row = refused.text.split('data-mix-row="explore"', 1)[1].split("</form>", 1)[0]
+    row = refused.text.split('data-mix-row="explore"', 1)[1].split("</tr>", 1)[0]
     assert row.count('value="30"') == 3
 
 
