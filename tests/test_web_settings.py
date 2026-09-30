@@ -7,6 +7,7 @@ between.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -352,3 +353,131 @@ def test_a_failed_download_is_reported_on_the_page(db_path: Path, tmp_path: Path
 
     assert "1 failed" in response.text
     assert "0 downloaded" in response.text
+
+
+# -- On the shared shell (#41) ---------------------------------------------------------------------------
+
+CLASS_ATTRIBUTE = re.compile(r'class="([^"]*)"')
+
+
+def _main(body: str) -> str:
+    """The page's own markup: everything inside `<main>`, and not the shell's tag or its nav."""
+    return body[body.index(">", body.index("<main")) + 1 : body.index("</main>")]
+
+
+def _inside_an_article(body: str, index: int) -> bool:
+    before = body[:index]
+    return before.rfind("<article") > before.rfind("</article>")
+
+
+def test_every_group_of_settings_is_an_article(db_path: Path) -> None:
+    """One Pico card per `<h2>` group, so the page reads as sections rather than one long form."""
+    harness = make_harness(db_path)
+
+    with TestClient(create_app(harness.core)) as client:
+        main = _main(client.get("/settings").text)
+
+    headings = [match.start() for match in re.finditer(r"<h2>", main)]
+    assert len(headings) == 7, "filters, pool, scoring, repeats, thumbnails, favourites, mixes"
+    for heading in headings:
+        assert _inside_an_article(main, heading), main[heading : heading + 40]
+    assert _inside_an_article(main, main.index('name="batch_size"'))
+
+
+def test_the_page_uses_pico_elements_and_no_classes_of_its_own(db_path: Path) -> None:
+    """Pico's label, input and small hint, and no layout classes: the only class on the page is the
+    button variant Pico names."""
+    harness = make_harness(db_path)
+    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
+
+    with TestClient(create_app(harness.core)) as client:
+        main = _main(client.get("/settings").text)
+
+    tokens = {token for value in CLASS_ATTRIBUTE.findall(main) for token in value.split()}
+    assert tokens <= {"outline", "secondary"}, tokens
+    assert re.search(r'<input\b[^>]*id="batch_size"[^>]*/>\s*<small>', main), "the hint follows its input"
+    assert '<label for="batch_size">' in main
+
+
+def test_save_is_primary_and_every_other_action_is_outline_secondary(db_path: Path) -> None:
+    harness = make_harness(db_path)
+    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
+
+    with TestClient(create_app(harness.core)) as client:
+        main = _main(client.get("/settings").text)
+
+    buttons = re.findall(r"<button\b[^>]*>[^<]*</button>", main)
+    primary = [button for button in buttons if "class=" not in button]
+    assert primary == ['<button type="submit">Save settings</button>']
+    others = [button for button in buttons if button not in primary]
+    assert len(others) == 6, "download, three saves, one delete and add"
+    for button in others:
+        assert 'class="outline secondary"' in button, button
+
+
+def test_the_saved_and_refused_messages_are_plain_paragraphs(db_path: Path) -> None:
+    """A refusal sits in an `<article>` so it stands out from the page; a saved note does not need to."""
+    harness = make_harness(db_path)
+
+    with TestClient(create_app(harness.core)) as client:
+        saved = client.get("/settings?saved=1").text
+        refused = client.post("/settings", data={"batch_size": "0"}).text
+
+    assert "<p>Settings saved.</p>" in saved
+    reason = refused.index("Batch size must be between")
+    assert _inside_an_article(refused, reason)
+    assert refused.rfind("<p>", 0, reason) > refused.rfind("<article>", 0, reason)
+    assert "Nothing was changed." in refused
+
+
+def test_the_mixes_are_a_table_whose_rows_post_through_forms_outside_it(db_path: Path) -> None:
+    """HTML has no `<form>` inside a `<tr>`: a browser moves it out and the inputs are left posting
+    nothing. So each row's form sits before the table, and every field and button names it."""
+    harness = make_harness(db_path)
+    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
+
+    with TestClient(create_app(harness.core)) as client:
+        main = _main(client.get("/settings").text)
+
+    table = main[main.index("<table") : main.index("</table>")]
+    assert "<form" not in table
+    rows = re.findall(r"<tr\b[^>]*data-mix-(?:row|new)[^>]*>.*?</tr>", table, re.S)
+    assert len(rows) == 4, "explore, refine, duds only and the add row"
+    form_ids = set(re.findall(r'<form\b[^>]*id="([^"]+)"', main))
+    for row in rows:
+        controls = re.findall(r"<(?:input|button)\b[^>]*>", row)
+        assert controls
+        for control in controls:
+            owner = re.search(r'form="([^"]+)"', control)
+            assert owner, control
+            assert owner.group(1) in form_ids, control
+        visible = [control for control in controls if control.startswith("<input")]
+        assert len(visible) >= 3
+
+
+def test_every_mix_row_totals_itself_in_the_browser(db_path: Path) -> None:
+    """Tested by proxy: no browser runs here, so this checks every row carries the Alpine component
+    that shows the total and marks a row not adding up to 100. The Core service still refuses one."""
+    harness = make_harness(db_path)
+    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
+
+    with TestClient(create_app(harness.core)) as client:
+        main = _main(client.get("/settings").text)
+
+    rows = re.findall(r"<tr\b[^>]*data-mix-(?:row|new)[^>]*>", main)
+    assert len(rows) == 4
+    for row in rows:
+        assert "x-data=" in row, row
+    assert main.count("x-text=") >= 4
+    assert "100" in main[main.index("<table") :]
+
+
+def test_the_stylesheet_turns_delete_the_ban_colour_on_hover(db_path: Path) -> None:
+    harness = make_harness(db_path)
+
+    with TestClient(create_app(harness.core)) as client:
+        stylesheet = client.get("/static/base.css").text
+
+    rule = next(block for block in stylesheet.split("}") if "[data-mix-delete]" in block)
+    assert ":hover" in rule
+    assert "var(--ban)" in rule

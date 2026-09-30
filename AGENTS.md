@@ -57,10 +57,12 @@ two disagree, issue #1 is the spec and wins.
 attribute in a template, and anything that can be a CSS rule is one — the **Verdict** rail appearing on
 hover or keyboard focus, and the ring round a marked tile, are both CSS. What is left is split two ways and
 no further. `web/static/wallpapi.js` sizes the **Batch** grid to the viewport and does nothing else.
-Alpine owns three things, each an inline `x-data` on the element it belongs to: the preview (on the
-`<dialog>`, which htmx never swaps), the **Mix** dropdown's two labels (on `#mix-switcher`), and the theme
-button. Alpine state never lives on markup htmx replaces — a tile or the grid — and the preview's image
-source is set and removed by hand, never bound, so the markup carries none. The theme is applied before
+Alpine owns four things, each an inline `x-data` on the element it belongs to: the preview (on the
+`<dialog>`, which htmx never swaps), the **Mix** dropdown's two labels (on `#mix-switcher`), the theme
+button, and the running total on each **Mix** row of the settings page (on its `<tr>`), which marks a row
+that does not add up before it is posted and never instead of the Core service refusing it. Alpine state
+never lives on markup htmx replaces — a tile, the grid or a **History** row — and the preview's image source
+is set and removed by hand, never bound, so the markup carries none. The theme is applied before
 first paint by an inline script in the head, which is the one inline script and is not an asset. Every
 asset the page loads is served from `/static`.
 

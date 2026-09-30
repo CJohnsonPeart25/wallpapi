@@ -7,6 +7,7 @@ the Core service ends up holding, never anything in between.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -217,3 +218,145 @@ def test_every_page_links_to_the_other_two(db_path: Path) -> None:
         assert 'href="/history"' in body
         assert 'href="/settings"' in body
         assert 'href="/"' in body
+
+
+# -- On the shared shell (#41) ---------------------------------------------------------------------------
+
+CLASS_ATTRIBUTE = re.compile(r'class="([^"]*)"')
+
+
+def _row(body: str, wallpaper_id: str) -> str:
+    """The markup of one row, from its opening `<tr` to its `</tr>`."""
+    start = body.rindex("<tr", 0, body.index(f'id="history-{wallpaper_id}"'))
+    return body[start : body.index("</tr>", start) + len("</tr>")]
+
+
+def test_the_listing_is_a_striped_table_with_a_row_per_wallpaper(db_path: Path) -> None:
+    """Pico's own table, and the row is one `<tr>` whether it is rendered in the page or swapped alone.
+
+    The swap target is the row's `<tr>`: a `<li>` or a `<div>` coming back into a `<tbody>` would be
+    dropped by the parser, and the edit would appear to do nothing.
+    """
+    harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
+    judge(harness, judged=Verdict.LIKE)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        body = client.get("/history").text
+        swapped = client.post("/history/verdict", data={"wallpaper_id": "judged", "verdict": "ban"}).text
+
+    table = body[body.index('<table class="striped">') : body.index("</table>")]
+    assert table.count('class="history-row"') == 1
+    assert body.count('hx-target="closest tr"') == 4, "three verdicts and a clear, each swapping its row"
+    assert re.sub(r"\{#.*?#\}", "", swapped, flags=re.S).lstrip().startswith("<tr")
+    assert swapped.rstrip().endswith("</tr>")
+
+
+def test_a_row_shows_its_thumbnail_verdict_time_controls_and_link(db_path: Path) -> None:
+    """The five columns: the thumbnail off the cache, the resolved **Verdict** by name, the time, the
+    controls, and the Wallhaven link shown rather than hidden as it was under the tile's rules.
+
+    The thumbnail has no `width`/`height` attributes, for the reason the tile has none: they describe the
+    full-resolution file, not `thumbs.small`, and laid the image out at the wallpaper's size.
+    """
+    harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
+    judge(harness, judged=Verdict.FAVOURITE)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        row = _row(client.get("/history").text, "judged")
+
+    assert row.count("<td") == 5
+    thumbnail = re.search(r"<img\b[^>]*>", row)
+    assert thumbnail
+    assert 'src="/thumb/judged"' in thumbnail.group(0)
+    assert "width=" not in thumbnail.group(0)
+    assert "height=" not in thumbnail.group(0)
+    assert ">favourite<" in row
+    assert "<time" in row
+    assert 'href="https://wallhaven.cc/w/judged"' in row
+    assert "links" not in CLASS_ATTRIBUTE.findall(row), "the tile's rule hid anything classed links"
+
+
+def test_the_row_controls_are_pico_buttons_and_not_the_tile_rail(db_path: Path) -> None:
+    """The tile rail is absolutely positioned, hidden until hover and has its words at `font-size: 0`.
+    A row carrying its class would inherit all of that the moment a selector stopped being scoped."""
+    harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
+    judge(harness, judged=Verdict.LIKE)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        row = _row(client.get("/history").text, "judged")
+
+    tokens = {token for value in CLASS_ATTRIBUTE.findall(row) for token in value.split()}
+    assert "verdicts" not in tokens
+    assert "verdict" not in tokens
+    assert "history-verdicts" in tokens
+    buttons = re.findall(r"<button\b[^>]*>", row)
+    assert len(buttons) == 4, "three verdicts and a clear"
+    for button in buttons:
+        assert 'class="outline secondary"' in button or 'class="secondary"' in button
+    marked = [button for button in buttons if 'aria-pressed="true"' in button]
+    assert len(marked) == 1
+    assert 'data-verdict="like"' in marked[0]
+    assert 'class="secondary"' in marked[0], "the standing verdict is the filled one"
+
+
+def test_the_filter_is_a_group_of_buttons_with_the_current_one_marked_and_not_a_link(db_path: Path) -> None:
+    """A link to the page you are on is a click that does nothing, so the current filter is marked
+    with `aria-current` and has no `href` — as it was a bare span before Pico."""
+    harness = make_harness(db_path, catalogue=catalogue_of(2))
+    judge(harness, wp0000=Verdict.LIKE, wp0001=Verdict.BAN)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        everything = client.get("/history").text
+        liked = client.get("/history?verdict=like").text
+
+    for body, current in ((everything, "all"), (liked, "like")):
+        group = body[body.index('<div role="group"') : body.index("</div>", body.index('<div role="group"'))]
+        assert group.count('aria-current="true"') == 1
+        assert f'aria-current="true">{current}</span>' in group
+        assert 'class="outline secondary"' in group
+        assert group.count('role="button"') == 5, "all, and the four verdicts"
+    assert 'href="/history?verdict=like"' in everything
+    assert 'href="/history?verdict=like"' not in liked
+    assert 'href="/history?verdict=ban"' in liked
+
+
+def test_the_count_is_small_print_and_paging_is_a_group_of_button_links(db_path: Path) -> None:
+    count = HISTORY_PAGE_SIZE + 1
+    harness = make_harness(db_path, catalogue=catalogue_of(count), page_size=count)
+    judge(harness, **{f"wp{n:04d}": Verdict.LIKE for n in range(count)})
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        first = client.get("/history").text
+        second = client.get("/history?page=2").text
+
+    assert re.search(r"<small>\s*101 wallpapers,\s*page 1 of 2\.\s*</small>", first)
+    button = '<a role="button" class="outline secondary"'
+    assert f'{button} href="/history?page=2">next</a>' in first
+    assert f'{button} href="/history?page=1">previous</a>' in second
+    assert "next</a>" not in second
+
+
+def test_the_stylesheet_rings_a_history_thumbnail_as_it_rings_a_tile(db_path: Path) -> None:
+    """The same outline in the same colour for the resolved **Verdict** as for a marked tile, so a
+    **Favourite** reads the same on both pages; and the row's buttons take the rail's glyphs."""
+    harness = make_harness(db_path)
+
+    with TestClient(create_app(harness.core)) as client:
+        stylesheet = client.get("/static/base.css").text
+
+    for verdict in ("favourite", "like", "ban"):
+        resolved = f'.history-row[data-resolved-verdict="{verdict}"]'
+        ring = next(block for block in stylesheet.split("}") if resolved in block)
+        assert f'.tile[data-draft-verdict="{verdict}"]' in ring, "one rule for both, so they cannot drift"
+        assert f"var(--{verdict})" in ring
+        glyph = next(
+            block
+            for block in stylesheet.split("}")
+            if f'[data-verdict="{verdict}"]::before' in block and "content:" in block
+        )
+        assert ".history-verdicts" in glyph

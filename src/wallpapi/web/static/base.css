@@ -60,12 +60,23 @@ body:has(#batch-grid) [data-refill]:not(:has([data-refill-problem])) {
 }
 
 /* The bulk row: small and centred, a shortcut over the batch rather than the thing the eye lands on.
-   Pico gives a group's buttons 2rem of side padding and stretches the group across the page. */
+   Pico gives a group's buttons 2rem of side padding and stretches the group across the page. History's
+   filter and paging are the same kind of control and get the same size, left where they are. */
 .bulk {
   justify-content: center;
 }
 
-.bulk > button {
+:is(.history-filter, .history-paging) {
+  width: auto;
+}
+
+/* The current filter is marked and not a link, so it should not offer the pointer a link would. */
+.history-filter [aria-current] {
+  cursor: default;
+}
+
+.bulk > button,
+:is(.history-filter, .history-paging) > [role="button"] {
   --pico-form-element-spacing-horizontal: 0.75rem;
   --pico-form-element-spacing-vertical: 0.3rem;
   flex: 0 0 auto;
@@ -102,10 +113,21 @@ ul.batch > li {
   cursor: zoom-in; /* the thumbnail is what opens the preview */
 }
 
-/* The ring: the mark, readable across the grid with the pointer nowhere near it. Ban also fades. */
-.tile[data-draft-verdict="favourite"] img { outline: 4px solid var(--favourite); outline-offset: -4px; }
-.tile[data-draft-verdict="like"] img { outline: 4px solid var(--like); outline-offset: -4px; }
-.tile[data-draft-verdict="ban"] img { outline: 4px solid var(--ban); outline-offset: -4px; opacity: 0.4; }
+/* The ring: the mark, readable across the grid with the pointer nowhere near it. Ban also fades. One rule
+   for a tile's draft and a History row's resolved Verdict, so a favourite reads the same on both pages. */
+:is(.tile[data-draft-verdict="favourite"], .history-row[data-resolved-verdict="favourite"]) img {
+  outline: 4px solid var(--favourite);
+  outline-offset: -4px;
+}
+:is(.tile[data-draft-verdict="like"], .history-row[data-resolved-verdict="like"]) img {
+  outline: 4px solid var(--like);
+  outline-offset: -4px;
+}
+:is(.tile[data-draft-verdict="ban"], .history-row[data-resolved-verdict="ban"]) img {
+  outline: 4px solid var(--ban);
+  outline-offset: -4px;
+  opacity: 0.4;
+}
 
 /* The Zone the wallpaper was drawn from, as a word: hue alone is no use to anyone colour-blind. */
 .zone {
@@ -157,17 +179,83 @@ ul.batch > li {
   filter: drop-shadow(0 1px 3px rgb(0 0 0 / 55%));
 }
 
-:is(.tile .verdict, .preview-verdict)[data-verdict="favourite"]::before { content: "⭐"; }
-:is(.tile .verdict, .preview-verdict)[data-verdict="like"]::before { content: "👍"; }
-:is(.tile .verdict, .preview-verdict)[data-verdict="ban"]::before { content: "💩"; }
+:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="favourite"]::before { content: "⭐"; }
+:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="like"]::before { content: "👍"; }
+:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="ban"]::before { content: "💩"; }
 
 /* Only the segment under the pointer takes colour, the colour its ring will be once clicked. */
-:is(.tile .verdict, .preview-verdict)[data-verdict="favourite"]:hover { background-color: var(--favourite); }
-:is(.tile .verdict, .preview-verdict)[data-verdict="like"]:hover { background-color: var(--like); }
-:is(.tile .verdict, .preview-verdict)[data-verdict="ban"]:hover { background-color: var(--ban); }
+:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="favourite"]:hover {
+  background-color: var(--favourite);
+}
+:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="like"]:hover {
+  background-color: var(--like);
+}
+:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="ban"]:hover {
+  background-color: var(--ban);
+}
 
 :is(.tile .verdict, .preview-verdict).marked {
   box-shadow: inset 0 0 0 2px var(--pico-contrast);
+}
+
+/* ---------- History: a Pico table; only the thumbnail and the row's controls need saying ---------- */
+
+/* A fixed width at the tile's 3:2, so the rows line up and one thumbnail cannot fill the table. */
+.history-row img {
+  display: block;
+  width: 9rem;
+  max-width: none;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+/* Pico buttons wearing the rail's glyphs, sized for a table row rather than a form. */
+.history-verdicts {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.history-verdicts button {
+  --pico-form-element-spacing-horizontal: 0.6rem;
+  --pico-form-element-spacing-vertical: 0.3rem;
+  font-size: 0.8rem;
+}
+
+/* The word is hidden as the rail hides it, and kept for anything reading the page aloud. */
+.history-verdicts [data-verdict] {
+  font-size: 0;
+}
+
+.history-verdicts [data-verdict]::before {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+/* ---------- Settings: Pico's articles and forms; only the Mix table needs saying ---------- */
+
+/* A field in a table cell sits on the row's line: Pico gives every field a bottom margin for a form. */
+td > input,
+th > input {
+  margin-bottom: 0;
+}
+
+/* Pico stretches a submit button across its form, which on a page this wide is a bar, not a button; and
+   in a table cell two of them should sit side by side. */
+form > button[type="submit"],
+td > button {
+  width: auto;
+}
+
+td > button {
+  margin-bottom: 0;
+}
+
+/* Delete is the one Mix action that cannot be taken back, so it takes the ban colour under the pointer. */
+[data-mix-delete]:is(:hover, :focus-visible) {
+  border-color: var(--ban);
+  color: var(--ban);
 }
 
 /* ---------- the preview: Pico's overlay round a frame of our own ---------- */
