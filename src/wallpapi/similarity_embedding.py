@@ -378,6 +378,18 @@ class EmbeddingSimilarityProvider:
             return None
         return _COVERAGE.format(embedded=embedded, pool=len(embeddable))
 
+    def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
+        """The cached CLIP rows of `pool`, in its order, for the varied **Unknown** draw (#45).
+
+        Never `None`, even with nothing cached: this provider does place **Wallpapers**, it has just not
+        placed these yet, and an all-zero answer says exactly that. A row of the wrong width is a zero row,
+        for `similarities`' reason — it came from another model.
+        """
+        held = self._vectors.vectors_for([w.id for w in pool])
+        width = next(iter(held.values())).size if held else 0
+        rows, _ = _rows([w.id for w in pool], held, width)
+        return rows
+
     def _ready(self, stop_event: threading.Event) -> bool:
         """Fetch and open the model, once. `False` means this stays on the baseline for now."""
         if self._model is None:

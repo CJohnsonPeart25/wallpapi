@@ -12,7 +12,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from tests.fakes import (
     THUMBNAIL_BYTES,
@@ -68,6 +70,7 @@ def make_harness(
     similarities: dict[tuple[str, str], float] | None = None,
     similarity_notice: str | None = None,
     catch_up_waits: Sequence[float] = (),
+    vectors: Mapping[str, NDArray[np.float32]] | None = None,
 ) -> Harness:
     """Build a Core service over `db_path`, with the **Pool** already primed.
 
@@ -85,6 +88,9 @@ def make_harness(
     `similarity_notice` is what that provider says about itself on the **Batch** page — `None`, a provider
     working at full strength, unless a test is about the notice. `catch_up_waits` is what its upkeep asks
     the background thread to wait between steps.
+
+    `vectors` is each **Wallpaper**'s position for the varied **Unknown** draw (#45), keyed by ID. `None`,
+    a provider with no positions, unless a test is about that draw.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
@@ -97,7 +103,9 @@ def make_harness(
         like_results=like_results,
     )
     library = FakeLibraryWriter()
-    similarity = FakeSimilarityProvider(similarities, notice=similarity_notice, catch_up_waits=catch_up_waits)
+    similarity = FakeSimilarityProvider(
+        similarities, notice=similarity_notice, catch_up_waits=catch_up_waits, vectors=vectors
+    )
     clock = FakeClock(now)
     core = CoreService(
         db_path=db_path,

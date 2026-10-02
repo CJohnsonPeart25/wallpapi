@@ -88,6 +88,11 @@ def test_colours_too_close_to_tell_apart_count_as_the_same_colour() -> None:
     assert _one(RED, NEARLY_RED, categories=True) == pytest.approx(1.0)
 
 
+def test_it_has_no_vectors_to_cluster_on() -> None:
+    """The varied **Unknown** draw (#45) falls back to today's draw under this provider."""
+    assert MetadataSimilarityProvider().vectors([wallpaper("a"), wallpaper("b")]) is None
+
+
 def test_the_matrix_is_pool_by_decided_and_never_pool_by_pool() -> None:
     """Invariant 2's shape, including the degenerate column count a new install starts with.
 

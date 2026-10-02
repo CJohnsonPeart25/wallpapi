@@ -197,3 +197,8 @@ def test_the_cache_serves_the_provider_it_was_built_for(tmp_path: Path) -> None:
     matrix = TagSimilarityProvider(cache).similarities([wallpaper("a")], [wallpaper("b")])
 
     assert float(matrix[0, 0]) == 1.0
+
+
+def test_it_has_no_vectors_to_cluster_on() -> None:
+    """A tag set is not a position: the varied **Unknown** draw (#45) falls back to today's draw."""
+    assert provider({"a": (1, 2)}).vectors([wallpaper("a")]) is None

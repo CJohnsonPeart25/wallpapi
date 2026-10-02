@@ -242,6 +242,11 @@ class TagSimilarityProvider:
         del pool
         return None
 
+    def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
+        """None. A tag set is not a position, and the varied **Unknown** draw falls back to today's."""
+        del pool
+        return None
+
 
 def _indicator(tag_sets: Sequence[tuple[int, ...]], columns: Mapping[int, int]) -> NDArray[np.float32]:
     """The `len(tag_sets)` x `len(columns)` matrix with a 1.0 wherever a **Wallpaper** carries that tag."""
