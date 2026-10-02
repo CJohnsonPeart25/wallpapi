@@ -25,7 +25,7 @@ def test_app_boots_and_serves_the_batch_page(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert response.status_code == 200
     body = response.text
@@ -43,7 +43,7 @@ def test_the_page_does_not_reach_wallhaven_for_thumbnails(db_path: Path) -> None
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/batch").text
 
     assert body.count('src="/thumb/') == 8
 

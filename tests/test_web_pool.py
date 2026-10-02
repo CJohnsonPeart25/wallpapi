@@ -22,7 +22,7 @@ def test_an_empty_pool_renders_a_page_rather_than_a_500(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert response.status_code == 503
     assert "text/html" in response.headers["content-type"]
@@ -39,7 +39,7 @@ def test_an_unreachable_wallhaven_renders_the_error_and_when_it_happened(db_path
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert response.status_code == 503
     body = response.text
@@ -59,7 +59,7 @@ def test_a_non_200_from_wallhaven_reads_the_same_way_as_a_transport_failure(db_p
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert response.status_code == 503
     assert "cannot reach Wallhaven" in response.text
@@ -71,7 +71,7 @@ def test_the_batch_page_shows_the_refill_indicator(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert "Pool 24 of 2000" in response.text
     assert "Refill not running" in response.text, "nothing started the thread in this app"
@@ -83,7 +83,7 @@ def test_the_indicator_is_on_the_unavailable_page_too(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert "Pool 0 of 2000" in response.text
     assert "Refill not running" in response.text
@@ -97,7 +97,7 @@ def test_the_indicator_shows_the_last_refill_error(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert response.status_code == 200, "a stocked pool still shows a Batch"
     assert "Last error" in response.text
@@ -114,7 +114,7 @@ def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Pat
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert "searching at random" in response.text
     assert "lookalikes" not in response.text, "no Favourites yet, so nothing to look like"
@@ -134,7 +134,7 @@ def test_the_indicator_says_when_the_refill_is_searching_for_lookalikes(db_path:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert "searching for lookalikes of a favourite" in response.text
 
@@ -153,7 +153,7 @@ def test_the_batch_page_says_when_the_similarity_provider_is_not_at_full_strengt
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert "Image similarity is still fetching its model." in response.text
 
@@ -165,7 +165,7 @@ def test_the_notice_is_on_the_unavailable_page_too(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert response.status_code == 503
     assert "Still fetching its model." in response.text
@@ -177,6 +177,6 @@ def test_a_provider_at_full_strength_adds_no_line(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
 
     assert "similarity-notice" not in response.text

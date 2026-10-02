@@ -131,11 +131,11 @@ def test_submit_and_the_mix_are_in_the_nav_and_nowhere_near_the_tiles(db_path: P
     body = _pages(db_path)["/"]
     nav = body[body.index("<nav") : body.index("</nav>")]
 
-    assert 'action="/submit"' in nav
+    assert 'hx-post="/submit"' in nav
     assert '<button type="submit">Submit batch</button>' in nav
     assert '<section id="mix-switcher"' in nav
     assert "<select" in nav
-    assert 'action="/submit"' not in body[body.index("<main") :], "Submit is not under the grid"
+    assert 'hx-post="/submit"' not in body[body.index("<main") :], "Submit is not under the grid"
 
 
 def test_the_stylesheet_carries_what_alpine_needs_and_pico_cannot_say(db_path: Path) -> None:
@@ -151,19 +151,22 @@ def test_the_stylesheet_carries_what_alpine_needs_and_pico_cannot_say(db_path: P
 
 
 def test_the_fragments_htmx_swaps_in_are_still_fragments(db_path: Path) -> None:
-    """A tile, the grid and the **Mix** switcher never extend the shell: a swap is a fragment, not a page."""
+    """The **Batch**, a tile, the grid, the **Mix** switcher and the submission banner never extend the
+    shell: a swap is a fragment, not a page."""
     harness = make_harness(db_path)
 
     with TestClient(create_app(harness.core)) as client:
-        batch_id = batch_id_of(client.get("/").text)
-        live = client.get("/").text
-        wallpaper_id = re.findall(r'data-wallpaper-id="([^"]+)"', live)[0]
+        fetched = client.get("/batch")
+        batch_id = batch_id_of(fetched.text)
+        wallpaper_id = re.findall(r'data-wallpaper-id="([^"]+)"', fetched.text)[0]
         swaps = [
+            fetched,
             client.post(
                 "/draft", data={"batch_id": batch_id, "wallpaper_id": wallpaper_id, "verdict": "ban"}
             ),
             client.post("/draft/all", data={"batch_id": batch_id, "verdict": "ban"}),
             client.post("/mix", data={"mix": "refine"}),
+            client.post("/submit", data={"batch_id": batch_id}),
         ]
 
     for swap in swaps:

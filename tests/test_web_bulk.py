@@ -35,7 +35,7 @@ def test_selecting_all_marks_every_tile_in_one_post(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
 
         response = client.post("/draft/all", data={"batch_id": batch_id, "verdict": "favourite"})
 
@@ -53,7 +53,7 @@ def test_clearing_all_removes_every_mark_in_one_post(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         client.post("/draft/all", data={"batch_id": batch_id, "verdict": "ban"})
 
         response = client.post("/draft/all", data={"batch_id": batch_id, "verdict": ""})
@@ -75,7 +75,7 @@ def test_a_bulk_mark_keeps_the_single_tile_controls_working(db_path: Path) -> No
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         client.post("/draft/all", data={"batch_id": batch_id, "verdict": "like"})
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
@@ -104,7 +104,7 @@ def test_an_ignore_cannot_be_bulk_drafted(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
 
         response = client.post("/draft/all", data={"batch_id": batch_id, "verdict": "ignore"})
 
@@ -117,7 +117,7 @@ def test_an_unknown_bulk_verdict_is_refused(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
 
         response = client.post("/draft/all", data={"batch_id": batch_id, "verdict": "adore"})
 
@@ -130,7 +130,7 @@ def test_a_bulk_mark_against_an_already_submitted_batch_is_refused(db_path: Path
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         client.post("/submit", data={"batch_id": batch_id})
 
         response = client.post("/draft/all", data={"batch_id": batch_id, "verdict": "favourite"})
@@ -154,7 +154,7 @@ def test_a_bulk_post_and_a_tile_post_cannot_be_in_flight_together(db_path: Path)
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/batch").text
 
     assert body.count('hx-target="#batch-grid"') == 4, "each bulk control swaps the whole grid"
     assert body.count('hx-sync="#batch-grid:replace"') == 4, "a second bulk click replaces the first"
@@ -171,7 +171,7 @@ def test_the_batch_carries_favourite_like_ban_and_clear_controls_for_the_whole_b
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/batch").text
 
     for choice in ("favourite", "like", "ban"):
         assert body.count(f'data-bulk-verdict="{choice}"') == 1
@@ -193,7 +193,7 @@ def test_every_tile_links_to_its_wallhaven_page(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/").text + client.get("/batch").text
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
 
@@ -219,7 +219,7 @@ def test_the_page_carries_a_fullscreen_preview_dialog_and_fetches_nothing_for_it
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/").text + client.get("/batch").text
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
 
@@ -249,7 +249,7 @@ def test_the_preview_is_an_alpine_component_on_a_dialog_htmx_never_swaps(db_path
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/").text + client.get("/batch").text
 
     opening = body[body.index("<dialog") : body.index("<article")]
     assert "x-data=" in opening
@@ -299,7 +299,7 @@ def test_a_tile_is_the_shape_of_the_thumbnail_in_it(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/batch").text
         stylesheet = client.get("/static/base.css").text
 
     start = body.index('<li class="tile"')

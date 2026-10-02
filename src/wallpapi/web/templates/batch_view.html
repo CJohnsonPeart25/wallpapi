@@ -1,0 +1,33 @@
+{#
+  What `/batch` swaps into the shell's `#batch`: the **Batch**, or why there is none, and the two status
+  lines under it.
+
+  The **Batch** ID rides along as `#batch-id`, which the nav's Submit includes in its post — it changes
+  with every fetch and the nav does not. The refill and similarity lines are here rather than in the
+  shell so that each fetch brings them up to date.
+#}
+{% if batch %}
+  <input type="hidden" id="batch-id" name="batch_id" value="{{ batch.id }}" />
+  {# One include, because the grid is also what a bulk mark swaps back in on its own. #}
+  {% include "grid.html" %}
+{% else %}
+  {# Never a 500, and never a bare reason code (#15). An empty pool because nothing has arrived yet
+     and an empty pool because Wallhaven is unreachable look identical from here, and they are not
+     the same problem: one is a matter of waiting and the other is not. #}
+  {% if unavailable.reason.value == "wallhaven_unreachable" %}
+    <p>Nothing to show: wallpapi cannot reach Wallhaven, so the pool has not filled.</p>
+    <p><small>
+      The last attempt failed{% if unavailable.error_at %} at
+      {{ unavailable.error_at.strftime("%H:%M") }} UTC{% endif %}: {{ unavailable.error }}.
+      The refill keeps trying.
+    </small></p>
+  {% else %}
+    <p>
+      Nothing to show yet — the pool is empty. The background refill fills it from Wallhaven; give it
+      a moment and reload.
+    </p>
+  {% endif %}
+  <p><a href="/">Try again</a></p>
+{% endif %}
+{% include "refill.html" %}
+{% include "similarity.html" %}
