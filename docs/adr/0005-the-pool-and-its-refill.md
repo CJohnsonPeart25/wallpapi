@@ -4,7 +4,9 @@ Date: 2026-09-27
 
 ## Status
 
-Accepted
+Accepted. Two parts superseded by ADR 0016: "Other **Verdicts** may reappear" — every **Verdict**, an
+**Ignore** included, now retires a **Wallpaper** from the **Pool** — and the default `pool_target_size`,
+now 500 rather than 2000. The rest stands.
 
 ## Context
 

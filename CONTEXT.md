@@ -11,7 +11,7 @@ One Wallhaven image, identified by its Wallhaven ID.
 _Avoid_: image, picture, background, wall
 
 **Pool**:
-The wallpapers fetched and stored locally that passed the filters and are eligible to appear in a batch.
+The wallpapers fetched and stored locally that passed the filters, have never been decided, and are eligible to appear in a batch. Deciding a wallpaper retires it: submitting a batch takes everything it showed out of the pool, ignores included, and the refill never lets a wallpaper the decision log mentions back in. A retired wallpaper still counts towards every score.
 _Avoid_: cache, candidates, queue
 
 **Filters**:
@@ -31,7 +31,7 @@ A search for the wallpapers Wallhaven considers similar to one favourite. The re
 _Avoid_: similar search, related, recommendations, more like this
 
 **Pool target size**:
-How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. A setting.
+How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. Every submitted batch takes the pool below it again, so the pool is a stream rather than a backlog, and 500 by default is enough to draw from while keeping every whole-pool calculation cheap. Lowering it never trims the pool: one above target drains as batches are submitted. A setting.
 _Avoid_: quota, capacity, limit, threshold
 
 **Walk**:
@@ -61,7 +61,7 @@ A weaker positive verdict, recorded in history but never downloaded.
 _Avoid_: maybe, shortlist, upvote
 
 **Ignore**:
-The mildly negative verdict given to every wallpaper in a submitted batch left unmarked — including one that came up marked with an earlier verdict and was unmarked. Ignores do not stack: seeing a wallpaper ten times and passing it over counts the same as passing it over once.
+The mildly negative verdict given to every wallpaper in a submitted batch left unmarked — including one that came up marked with an earlier verdict and was unmarked. Seen once, done: like every verdict it retires the wallpaper from the pool, so it is not shown again. Unlike a ban it spreads only an ignore's weight, and history can overturn it. Ignores do not stack: passing a wallpaper over twice, once in a batch and once from history, counts the same as once.
 _Avoid_: skip, pass, no-op
 
 **Ban**:
@@ -69,7 +69,7 @@ The strongest negative verdict. The wallpaper is never shown again, and its weig
 _Avoid_: block, hide, reject, dislike
 
 **Draft Batch**:
-The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log. A batch's draft starts with every wallpaper whose latest decision is an explicit verdict already marked with it, so leaving a tile alone records the same verdict again and only a change has to be made.
+The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log. A batch's draft starts with every wallpaper whose latest decision is an explicit verdict already marked with it, so leaving a tile alone records the same verdict again and only a change has to be made. Dormant while nothing shows a decided wallpaper again, and kept for when something does.
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:
@@ -85,7 +85,7 @@ A decision log entry that withdrew a wallpaper's explicit verdict, leaving it as
 _Avoid_: undo, reset, delete, revert
 
 **History**:
-The view listing past verdicts, where any verdict can be changed to any other, ignore included. A view over the decision log, not a second store.
+The view listing past verdicts, where any verdict can be changed to any other, ignore included. A view over the decision log, not a second store, and the only way to revisit a decision: a batch never shows a decided wallpaper again, and changing its verdict here does not put it back in the pool.
 _Avoid_: log, activity, timeline
 
 ### Learning
@@ -115,19 +115,19 @@ How fast a verdict fades with distance inside the radius. The radius is a cliff;
 _Avoid_: falloff, gamma, damping
 
 **Zone**:
-The category a pool wallpaper falls into: banger, dud or unknown.
+The category a pool wallpaper falls into: banger, dud or unknown. Only undecided wallpapers have one, because only undecided wallpapers are in the pool.
 _Avoid_: bucket, tier, band, class
 
 **Banger**:
-A wallpaper with a positive score.
+An undecided wallpaper with a positive score — a prediction about something not yet shown, never a past favourite.
 _Avoid_: hit, winner, match, recommended
 
 **Dud**:
-A wallpaper with a negative score that isn't banned.
+An undecided wallpaper with a negative score.
 _Avoid_: miss, reject, bad
 
 **Unknown**:
-A wallpaper with no decided wallpaper within the similarity radius, or with a score of exactly zero.
+An undecided wallpaper with no decided wallpaper within the similarity radius, or with a score of exactly zero.
 _Avoid_: new, unseen, undecided
 
 ### Building a batch
@@ -160,10 +160,6 @@ _Avoid_: seat, position, pick
 The slots a zone was allocated and cannot fill, because it holds fewer eligible wallpapers than it was asked for. They are filled from unknown, then banger, then dud — so a decision log with no favourites in it yet gives an all-unknown batch. A shortfall is ordinary, not an error: the tile still shows the zone its wallpaper came from, never the zone its slot wanted.
 _Avoid_: deficit, underfill, fallback
 
-**Revisit weight**:
-The setting that reduces how often a wallpaper with an explicit verdict reappears in a batch. A multiplier from 0 to 1 on that wallpaper's selection weight, read when a batch is minted: 1 is no reduction at all, and 0 puts it last in its zone, so it never comes round again while there is anything else to show. Ignores are not explicit verdicts and are untouched by it; a ban is an exclusion rather than a weight, and no setting can soften one.
-_Avoid_: cooldown, decay, penalty
-
 ### Output
 
 **Library**:
@@ -193,7 +189,7 @@ _Avoid_: engine, manager, API, backend
 ### Configuration
 
 **Settings**:
-Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, the thumbnail cache limit, the revisit weight and the active mix. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
+Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, the thumbnail cache limit and the active mix. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
 _Avoid_: config, preferences, options
 
 **Batch size**:

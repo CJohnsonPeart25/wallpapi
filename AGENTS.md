@@ -93,8 +93,10 @@ Each of these is one careless line away from being silently violated.
    array operation across the whole **Pool**, so the **Similarity provider** interface is
    `similarities(pool, decided) -> ndarray` — a matrix, never a pairwise call. A pairwise interface
    forces a Python loop over a 10k **Pool**, which is seconds per **Batch**, which makes caching **Scores**
-   tempting, which breaks the rule. The matrix is **Pool** x decided (decided is small), never **Pool** x
-   **Pool** — 10k x 10k is 800MB of float64 and is never needed. `numpy` must be a **direct** dependency
+   tempting, which breaks the rule. The matrix is **Pool** x decided, never **Pool** x **Pool** — 10k x 10k
+   is 800MB of float64 and is never needed. Since #38 decided is every **Wallpaper** ever shown, so it grows
+   with the **Decision log** and can outnumber the **Pool**; the two sides never overlap, because nothing
+   decided is in the **Pool** (ADR 0016). `numpy` must be a **direct** dependency
    and never transitive via onnxruntime — onnxruntime arrived as a real dependency at #14, so this is now
    a thing that can actually be got wrong by someone tidying `pyproject.toml`.
 
@@ -161,12 +163,14 @@ Each of these is one careless line away from being silently violated.
    Setting a tile to none deletes the row — absence already means **Ignore**. Since #37 a **Batch** is minted
    with a row already written for every **Wallpaper** whose latest decision is an **Explicit Verdict**, so
    leaving a tile alone records that **Verdict** again; it is a row, never a fallback in the template, so
-   absence keeps meaning **Ignore**. Each tile carries
+   absence keeps meaning **Ignore**. Dormant since #38 — nothing reshows a decided **Wallpaper** — and kept
+   for when re-evaluation does (#52). Each tile carries
    `hx-sync="this:replace"` so an out-of-order response cannot swap a stale tile back in. Select-all and
    select-none (#8) are one post that rewrites the whole **Draft Batch** in one transaction, not 32 posts.
 
    Submit is a **single transaction** that appends the **Explicit Verdicts** and the derived **Ignores**
-   together, then clears the **Draft Batch**. The **Decision log** is append-only; a half-recorded **Batch**
+   together, retires every shown **Wallpaper** from the **Pool** (#38, ADR 0016), then clears the **Draft
+   Batch**. The **Decision log** is append-only; a half-recorded **Batch**
    cannot be retracted.
 
 7. **A Batch can be submitted once.** Submitting, or drafting against, an already-submitted **Batch** returns a
@@ -177,8 +181,9 @@ Each of these is one careless line away from being silently violated.
    do not hotlink 32 tiles per **Batch**. Separate directory from the **Library** (which is favourites-only and
    write-only). Eviction is *not* "when it leaves the **Pool**": **History** renders a thumbnail for every
    past **Verdict**, and **Banned** **Wallpapers** leave every **Zone** immediately and permanently. Keep
-   thumbnails for anything with an **Explicit Verdict**; evict only undecided **Wallpapers** that left the
-   **Pool**; size cap as a backstop.
+   thumbnails for anything with an **Explicit Verdict**; evict only **Wallpapers** with none that left the
+   **Pool**; size cap as a backstop. Since #38 that includes every **Ignored** one, which leaves the **Pool**
+   at the submission that recorded it and loses its thumbnail there; **History** re-fetches it on demand.
 
    Built at #7 as `evict_thumbnails()`, run at the tail of `submit_batch`. Two passes: everything with no
    **Explicit Verdict** standing, not in the **Pool** and not in the live **Batch** goes outright; then, over
@@ -291,7 +296,8 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | Restarting a refill thread that has died | later | #6 landed the thread, its clean shutdown and the indicator. There is no supervisor: `refill_step` never raises and `refill_wait` only reads locally, so the loop has nothing to die of short of SQLite being gone — and `refill_status().running` puts that on the page rather than hiding it. Build a supervisor when something is actually seen to kill it. |
 | Throttling thumbnail and full-resolution fetches | later | Invariant 11 asks for modest throttling of `th.wallhaven.cc` and `w.wallhaven.cc`, which are not the 45-per-minute hosts. Deliberately not built at #6: those fetches happen on a request thread, which has no `stop_event` to wait on cancellably (invariant 12), and the **Thumbnail cache** already means each tile is fetched once ever. It needs the fetches to move off the request path first. |
 | Renaming a **Mix** | later | #12 identifies a **Mix** by its name: `save_mix` upserts, so a new name makes a second **Mix** and the old one stays. A rename would have to move the `active_mix` setting with it in the same transaction — a second write and a second thing to get wrong — for a case delete-and-add already covers in two clicks. **Explore** and **Refine** would have to refuse it outright, which is a fourth refusal reason nobody has asked for. |
-| Tuning the **Revisit weight** against a real **Decision log** | later | #11 landed it at 0.2 by reasoning, not by measurement — the same footing as the similarity radius and decay. Nothing is instrumented to say how often a decided **Wallpaper** actually comes round, so the default is a starting point and the settings page is how it gets corrected. |
 | **Decision log** backup procedure | later | Cheap because the database is a single file at a known path: `VACUUM INTO`. |
 | Evicting a thumbnail the moment a **History** edit withdraws its **Verdict** | later | #7 evicts at the tail of `submit_batch` only. A **History** edit is a single-row htmx post and a directory scan does not belong on one; the next submission picks the file up. See `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`. |
-| Letting old **Verdicts** fade, so taste can drift | later | Nothing in the **Score** forgets: a **Verdict** from the first **Batch** counts as much as one from today until **History** edits or clears it. If drift is wanted, the half-life is counted in **Decision log** sequence, never in time — `v · 2^(-(N - seq) / h)`, with `seq` the deciding entry `_RESOLUTION_CTE` already finds — because timestamps are display-only (invariant 4). Cheap to build and still derived, never stored. Deferred because `h` would be a third number tuned against no real **Decision log**, and ADR 0012 rejected time-weighting for the **Revisit weight** as a second setting in disguise; whoever builds this answers that argument. It also moves **Zones** with no submission, which nothing does today. The milder variant decays only **Ignores**. |
+| Letting old **Verdicts** fade, so taste can drift | later | Nothing in the **Score** forgets: a **Verdict** from the first **Batch** counts as much as one from today until **History** edits or clears it. If drift is wanted, the half-life is counted in **Decision log** sequence, never in time — `v · 2^(-(N - seq) / h)`, with `seq` the deciding entry `_RESOLUTION_CTE` already finds — because timestamps are display-only (invariant 4). Cheap to build and still derived, never stored. Deferred because `h` would be a third number tuned against no real **Decision log**, and ADR 0012 (superseded by ADR 0016) rejected time-weighting for the **Revisit weight** as a second setting in disguise; whoever builds this answers that argument. It also moves **Zones** with no submission, which nothing does today. The milder variant decays only **Ignores**. |
+| Showing decided **Wallpapers** again | #52 | Since #38 a decision is made once (ADR 0016) and **History** is the only way back. Re-evaluation would reshow a small share — about 5% of a **Batch** — perhaps favouring old **Wallpapers** the **Score** now rates higher than it did. Pre-marking (ADR 0015) is built for it and dormant until then. It has to answer near-duplicates too: the same image re-uploaded, cropped or posted by another user is a new Wallhaven ID, and admitting those freely would over-tune the **Pool** towards **Favourites**. Needs its own grilling. |
+| Refill strategy and **Dud** accumulation | #52 | The default **Mixes** draw 5% **Dud**, so arrivals scored as **Duds** mostly stay in the **Pool** until a **Shortfall** shows them, and a **Pool** that drains only by submission can fill up with them. Today's remedy is to **Ban** or **Ignore** a page of them and submit, which retires them. Changing what the refill fetches, or when, is deferred. |
