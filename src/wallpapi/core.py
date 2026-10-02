@@ -3176,13 +3176,17 @@ _REVISIT_WEIGHT_KEY = "revisit_weight"
 def _migration_10() -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Migration 10: decide once (#38, ADR 0016).
 
-    Three things, each the migration half of something the code now does on its own.
+    Four things, each the migration half of something the code now does on its own.
 
     **The Pool gives up everything the Decision log mentions.** The third enforcement point of the standing
     rule, beside `submit_batch` and `_admit_to_pool`: a database from before #38 still holds every
     **Wallpaper** an earlier **Batch** showed. Any entry counts, a legacy `cleared` one included. Only the
     membership row goes — the `wallpapers` row, the log and any **Embedding** stay, and each stays a decided
     column of every **Score** (ADR 0007).
+
+    **The Decision log is indexed by Wallpaper**, because admission now asks it "is this one mentioned?"
+    for every **Wallpaper** a search returns. Without the index each question scans a log that only grows.
+    Here rather than in a later step because a migration not yet applied anywhere costs nothing to widen.
 
     **The Revisit weight's row is deleted**, because the setting is gone and a row nothing reads is a
     setting that looks configured and is not.
@@ -3196,6 +3200,7 @@ def _migration_10() -> tuple[tuple[str, tuple[str, ...]], ...]:
     target = _defaults()[_POOL_TARGET_SIZE]
     return (
         ("DELETE FROM pool WHERE wallpaper_id IN (SELECT wallpaper_id FROM decision_log)", ()),
+        ("CREATE INDEX IF NOT EXISTS decision_log_by_wallpaper ON decision_log (wallpaper_id)", ()),
         ("DELETE FROM settings WHERE key = ?", (_REVISIT_WEIGHT_KEY,)),
         (_RETUNE_SETTING, (target, _POOL_TARGET_SIZE, str(SUPERSEDED_POOL_TARGET_SIZE))),
         *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
