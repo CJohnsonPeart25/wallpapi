@@ -61,7 +61,7 @@ A weaker positive verdict, recorded in history but never downloaded.
 _Avoid_: maybe, shortlist, upvote
 
 **Ignore**:
-The implicit, mildly negative verdict given to every wallpaper in a submitted batch that wasn't picked. Ignores stack, but only while the wallpaper has no explicit verdict.
+The mildly negative verdict given to every wallpaper in a submitted batch left unmarked — including one that came up marked with an earlier verdict and was unmarked. Ignores do not stack: seeing a wallpaper ten times and passing it over counts the same as passing it over once.
 _Avoid_: skip, pass, no-op
 
 **Ban**:
@@ -69,23 +69,23 @@ The strongest negative verdict. The wallpaper is never shown again, and its weig
 _Avoid_: block, hide, reject, dislike
 
 **Draft Batch**:
-The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log.
+The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log. A batch's draft starts with every wallpaper whose latest decision is an explicit verdict already marked with it, so leaving a tile alone records the same verdict again and only a change has to be made.
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:
-The rule that turns a wallpaper's decision log entries into one value: the latest entry that is not an ignore decides. An explicit verdict counts alone and every ignore on the wallpaper is disregarded, before it and after it alike; a clearance, or no such entry, lets every ignore stack.
+The rule that turns a wallpaper's decision log entries into one value: the latest entry decides, whatever it is, and nothing before it counts. An ignore after a like overturns the like; a like after an ignore overturns the ignore.
 _Avoid_: aggregation, tallying
 
 **Decision log**:
-The append-only record of every verdict, history edit and clearance. It is the single source of truth.
+The append-only record of every verdict and history edit. It is the single source of truth.
 _Avoid_: history table, audit log, events
 
 **Clearance**:
-The decision log entry that removes a wallpaper's explicit verdict, after which its ignores stack again. A clearance is an entry in its own right, not a verdict.
+A decision log entry that withdrew a wallpaper's explicit verdict, leaving it as if never seen. No longer made: withdrawing a verdict is now an ignore, from history as from a batch. A wallpaper whose latest entry is a clearance still resolves to nothing.
 _Avoid_: undo, reset, delete, revert
 
 **History**:
-The view listing past verdicts, where any verdict can be changed or cleared. A view over the decision log, not a second store.
+The view listing past verdicts, where any verdict can be changed to any other, ignore included. A view over the decision log, not a second store.
 _Avoid_: log, activity, timeline
 
 ### Learning

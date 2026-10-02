@@ -137,18 +137,18 @@ Each of these is one careless line away from being silently violated.
    default — the thing to guard against is someone "optimising" it down to NORMAL.
 
 4. **Verdict resolution orders by sequence, not timestamp.** Every **Decision log** row written in one submit
-   transaction can share a timestamp, so "the latest **Explicit Verdict** wins" is only well defined against an
-   autoincrement sequence. Timestamp is display-only. A **Clearance** and an edit made from **History** share
-   one too — the clock has whole-second granularity and both are clicks — so this is not only about the rows
-   of one transaction.
+   transaction can share a timestamp, so "the latest entry wins" is only well defined against an
+   autoincrement sequence. Timestamp is display-only. Two edits made from **History** share one too — the
+   clock has whole-second granularity and both are clicks — so this is not only about the rows of one
+   transaction.
 
-   The rule itself, extended at #7 for the **Clearance**, lives in one SQL fragment (`_RESOLUTION_CTE`)
-   because **History** filters and pages over the resolved **Verdict** and cannot resolve a log of thousands
-   of rows in Python first. The latest entry that is not an **Ignore** decides: an **Explicit Verdict** counts
-   alone and disregards every **Ignore** before and after it; a **Clearance**, or no such entry, lets every
-   **Ignore** stack. Anything needing resolution in a `WHERE` clause builds on that fragment rather than
-   spelling the rule a second time. See
-   `docs/adr/0008-a-clearance-is-an-entry-and-resolution-is-decided-in-sql.md`.
+   The rule itself lives in one SQL fragment (`_RESOLUTION_CTE`) because **History** filters and pages over
+   the resolved **Verdict** and cannot resolve a log of thousands of rows in Python first. Since #37 the
+   latest entry decides and nothing before it counts: **Ignores** do not stack, an **Ignore** after an
+   **Explicit Verdict** overturns it, and a legacy `cleared` entry resolves to nothing. Anything needing
+   resolution in a `WHERE` clause builds on that fragment rather than spelling the rule a second time. See
+   `docs/adr/0008-a-clearance-is-an-entry-and-resolution-is-decided-in-sql.md` and
+   `docs/adr/0015-the-latest-entry-decides-and-a-reshown-wallpaper-comes-up-marked.md`.
 
 5. **Timestamps are ISO 8601 UTC strings.** Register no `sqlite3` adapters — the default `datetime` adapters
    have been deprecated since Python 3.12. On 3.14 they still work but emit a `DeprecationWarning`, and 3.14
@@ -158,7 +158,10 @@ Each of these is one careless line away from being silently violated.
 6. **A Draft Batch is not the Decision log.** Tile clicks are htmx posts that **set** a **Draft Batch** entry
    rather than toggling it, so a replayed or duplicated click cannot flip the state the wrong way. Entries are
    keyed `(batch_id, wallpaper_id)`, which enforces one **Verdict** per **Wallpaper** per submission for free.
-   Setting a tile to none deletes the row — absence already means **Ignore**. Each tile carries
+   Setting a tile to none deletes the row — absence already means **Ignore**. Since #37 a **Batch** is minted
+   with a row already written for every **Wallpaper** whose latest decision is an **Explicit Verdict**, so
+   leaving a tile alone records that **Verdict** again; it is a row, never a fallback in the template, so
+   absence keeps meaning **Ignore**. Each tile carries
    `hx-sync="this:replace"` so an out-of-order response cannot swap a stale tile back in. Select-all and
    select-none (#8) are one post that rewrites the whole **Draft Batch** in one transaction, not 32 posts.
 
@@ -290,5 +293,5 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | Renaming a **Mix** | later | #12 identifies a **Mix** by its name: `save_mix` upserts, so a new name makes a second **Mix** and the old one stays. A rename would have to move the `active_mix` setting with it in the same transaction — a second write and a second thing to get wrong — for a case delete-and-add already covers in two clicks. **Explore** and **Refine** would have to refuse it outright, which is a fourth refusal reason nobody has asked for. |
 | Tuning the **Revisit weight** against a real **Decision log** | later | #11 landed it at 0.2 by reasoning, not by measurement — the same footing as the similarity radius and decay. Nothing is instrumented to say how often a decided **Wallpaper** actually comes round, so the default is a starting point and the settings page is how it gets corrected. |
 | **Decision log** backup procedure | later | Cheap because the database is a single file at a known path: `VACUUM INTO`. |
-| Evicting a thumbnail the moment a **Clearance** withdraws its **Verdict** | later | #7 evicts at the tail of `submit_batch` only. A **History** edit is a single-row htmx post and a directory scan does not belong on one; the next submission picks the file up. See `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`. |
+| Evicting a thumbnail the moment a **History** edit withdraws its **Verdict** | later | #7 evicts at the tail of `submit_batch` only. A **History** edit is a single-row htmx post and a directory scan does not belong on one; the next submission picks the file up. See `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`. |
 | Letting old **Verdicts** fade, so taste can drift | later | Nothing in the **Score** forgets: a **Verdict** from the first **Batch** counts as much as one from today until **History** edits or clears it. If drift is wanted, the half-life is counted in **Decision log** sequence, never in time — `v · 2^(-(N - seq) / h)`, with `seq` the deciding entry `_RESOLUTION_CTE` already finds — because timestamps are display-only (invariant 4). Cheap to build and still derived, never stored. Deferred because `h` would be a third number tuned against no real **Decision log**, and ADR 0012 rejected time-weighting for the **Revisit weight** as a second setting in disguise; whoever builds this answers that argument. It also moves **Zones** with no submission, which nothing does today. The milder variant decays only **Ignores**. |
