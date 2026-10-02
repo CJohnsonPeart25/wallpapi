@@ -80,6 +80,10 @@ class FakeWallhavenClient:
     `fail_from_call` makes every call from the Nth onwards a transport failure. Together they cover both
     halves of the refill's error handling.
 
+    `failing_thumbnails` maps a thumbnail URL to what fetching it raises — a `ThumbnailUnavailable` for a
+    host that refused that one file, a `RateLimited` for a 429, a `WallhavenUnreachable` for a connection
+    that failed. Mutable, so a test can make a fetch fail, then remove the entry and watch it be retried.
+
     `like_results` is the second catalogue: what a `q=like:<wallhaven id>` search answers, keyed by that
     ID (#13). A **Favourite** with no entry answers an empty page, which is also how a real like: search
     ends — Wallhaven has only so many lookalikes to offer for any one **Wallpaper**.
@@ -109,6 +113,7 @@ class FakeWallhavenClient:
         self.retry_after = retry_after
         self.searches: list[dict[str, object]] = []
         self.thumbnail_fetches: list[str] = []
+        self.failing_thumbnails: dict[str, Exception] = {}
         self.searched = threading.Event()
         """Set by every search. The one thread test waits on this rather than guessing how long the
         refill thread needs, so it is deterministic without sleeping."""
@@ -160,6 +165,9 @@ class FakeWallhavenClient:
 
     def fetch_thumbnail(self, url: str) -> bytes:
         self.thumbnail_fetches.append(url)
+        failure = self.failing_thumbnails.get(url)
+        if failure is not None:
+            raise failure
         return self.thumbnail_bytes
 
 

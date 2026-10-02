@@ -17,7 +17,7 @@ from typing import Any
 import httpx2
 import pytest
 
-from wallpapi.wallhaven import RateLimited, WallhavenClient
+from wallpapi.wallhaven import RateLimited, ThumbnailUnavailable, WallhavenClient
 
 FIXTURE = Path(__file__).parent / "fixtures" / "wallhaven_search.json"
 RECORDED: dict[str, Any] = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -223,3 +223,31 @@ def test_fetch_tags_raises_rate_limited_on_a_429() -> None:
         client.fetch_tags("oxkzwm")
 
     assert raised.value.retry_after == 9.0
+
+
+def test_a_thumbnail_429_is_rate_limited() -> None:
+    """#44: the background downloader backs off a minute on a 429, so it has to be told one apart."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(429, headers={"Retry-After": "90"})
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    with pytest.raises(RateLimited) as raised:
+        client.fetch_thumbnail("https://th.wallhaven.cc/small/ox/oxkzwm.jpg")
+    assert raised.value.retry_after == 90.0
+
+
+def test_a_thumbnail_the_host_refuses_is_unavailable() -> None:
+    """Any other non-2xx is about that one file, and the downloader skips it rather than backing off."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(404)
+
+    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+
+    with pytest.raises(ThumbnailUnavailable) as raised:
+        client.fetch_thumbnail("https://th.wallhaven.cc/small/ox/oxkzwm.jpg")
+    assert raised.value.status == 404

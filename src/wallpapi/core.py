@@ -26,11 +26,11 @@ from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
 from wallpapi.model import Clearance, DecisionEntry, Mix, Verdict, Wallpaper, Zone
-from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
+from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, gap_needed, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
-from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
+from wallpapi.wallhaven import RateLimited, SearchPage, ThumbnailUnavailable, Wallhaven
 
 SCHEMA_VERSION = 10
 
@@ -60,6 +60,22 @@ ERROR_BACKOFF_SECONDS = 60.0
 
 A minute, which is the window the 45-per-minute budget is counted over: if Wallhaven is refusing calls, the
 cheapest correct thing to do is to stop spending the budget for one whole window.
+"""
+
+THUMBNAIL_IDLE_RECHECK_SECONDS = 30.0
+"""How long the thumbnail downloader waits before looking again once no **Pool** member is missing one.
+
+The refill's idle recheck, for the same reasons: not zero, which would spin on a directory listing, and not
+minutes, because a submission retires a **Batch**'s worth of the **Pool** and the refill admits newcomers
+straight after, each of them work for the downloader (#44).
+"""
+
+THUMBNAIL_BACKOFF_SECONDS = 60.0
+"""How long the thumbnail downloader leaves the host alone after a 429 or a connection that failed.
+
+The refill's minute, for the same reason: whatever made that fetch fail would make the next one fail too.
+A `Retry-After` asking for longer is given longer; one asking for less does not shorten it, because the
+minute is the downloader's own manners towards a host with no published limit (invariant 11).
 """
 
 POOL_SOURCE_RANDOM = "random"
@@ -720,6 +736,13 @@ class CoreService:
         self._refill_last_error: str | None = None
         self._refill_last_error_at: dt.datetime | None = None
         self._refill_thread_running = False
+
+        # The thumbnail downloader's own state (#44). Touched only by its thread, which is the one caller of
+        # `thumbnail_wait` and `thumbnail_step`, so it needs no lock.
+        self._last_thumbnail_fetch: float | None = None
+        self._thumbnails_not_before: float | None = None
+        self._thumbnail_pass: deque[tuple[str, Path, str]] = deque()
+        """What is left of the current pass round the **Pool**: `(wallpaper id, destination, source URL)`."""
 
         self._migrate()
 
@@ -1916,6 +1939,59 @@ class CoreService:
         write_atomically(destination, data)
         return destination
 
+    def thumbnail_wait(self) -> float:
+        """Seconds the thumbnail downloader should wait before calling `thumbnail_step` again."""
+        now = self._clock.monotonic()
+        paced = gap_needed(self._last_thumbnail_fetch, now=now)
+        held = 0.0 if self._thumbnails_not_before is None else self._thumbnails_not_before - now
+        return max(paced, held, 0.0)
+
+    def thumbnail_step(self) -> None:
+        """One step of the thumbnail downloader: at most one fetch from the thumbnail host, never raising."""
+        now = self._clock.monotonic()
+        if not self._thumbnail_pass:
+            self._thumbnail_pass.extend(self._pool_missing_thumbnails())
+            if not self._thumbnail_pass:
+                self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
+                return
+
+        wallpaper_id, destination, source_url = self._thumbnail_pass.popleft()
+        if not self._thumbnail_pass:
+            # The end of a pass. Whatever this one failed to fetch is asked for once a pass, not as fast as
+            # the gap allows: a file the host keeps refusing must not be requested four times a second.
+            self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
+        if destination.exists() or not self._in_pool(wallpaper_id):
+            return
+
+        self._last_thumbnail_fetch = now
+        try:
+            data = self._wallhaven.fetch_thumbnail(source_url)
+        except ThumbnailUnavailable:
+            return
+        except RateLimited as limited:
+            self._thumbnails_not_before = now + max(limited.retry_after or 0.0, THUMBNAIL_BACKOFF_SECONDS)
+            return
+        except Exception:
+            self._thumbnails_not_before = now + THUMBNAIL_BACKOFF_SECONDS
+            return
+        write_atomically(destination, data)
+
+    def _pool_missing_thumbnails(self) -> list[tuple[str, Path, str]]:
+        """Every **Pool** member with no file in the **Thumbnail cache**, in `wallpaper_id` order."""
+        missing: list[tuple[str, Path, str]] = []
+        for row in self._connect().execute(_SELECT_POOL_THUMBNAILS).fetchall():
+            wallpaper_id, source_url = str(row["id"]), str(row["thumbnail_url"])
+            destination = self.thumbnail_dir / f"{wallpaper_id}{_url_suffix(source_url)}"
+            if not destination.exists():
+                missing.append((wallpaper_id, destination, source_url))
+        return missing
+
+    def _in_pool(self, wallpaper_id: str) -> bool:
+        return (
+            self._connect().execute("SELECT 1 FROM pool WHERE wallpaper_id = ?", (wallpaper_id,)).fetchone()
+            is not None
+        )
+
     def evict_thumbnails(self) -> ThumbnailEviction:
         """Clear out the **Thumbnail cache**, by **Verdict** first and by size only as a backstop.
 
@@ -2852,6 +2928,17 @@ ORDER BY pool.rowid
 
 Ordered because the sample is drawn by the seeded random source: without an `ORDER BY`, SQLite's row order
 is an implementation detail and the same seed over the same **Pool** could produce a different **Batch**.
+"""
+
+_SELECT_POOL_THUMBNAILS = """
+SELECT w.id, w.thumbnail_url
+FROM pool
+JOIN wallpapers AS w ON w.id = pool.wallpaper_id
+ORDER BY pool.wallpaper_id
+"""
+"""Every **Pool** member's thumbnail URL, in the order the downloader fetches them (#44).
+
+By `wallpaper_id`, the primary key, so the order is deterministic and needs no index of its own.
 """
 
 _SELECT_DECIDED_WALLPAPERS = """

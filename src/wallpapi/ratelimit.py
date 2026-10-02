@@ -44,3 +44,28 @@ def wait_needed(
     # further along.
     ages_out = inside[len(inside) - limit]
     return max(0.0, ages_out + window - now)
+
+
+THUMBNAIL_GAP_SECONDS = 0.25
+"""The fixed gap between two of the downloader's thumbnail fetches (#44). A constant, never a setting.
+
+`th.wallhaven.cc` is not the 45-per-minute API, but it sits behind DDoS protection with no published limit
+(invariant 11), and it is the host the user's own browser loads thumbnails from when browsing Wallhaven.
+One at a time and about four a second looks like one person browsing, and still covers a **Pool** of 500
+in two or three minutes.
+"""
+
+
+def gap_needed(last_fetch: float | None, *, now: float, gap: float = THUMBNAIL_GAP_SECONDS) -> float:
+    """Seconds to wait before the next thumbnail fetch, or zero if one may be made now.
+
+    The thumbnail hosts' counterpart to `wait_needed`, and pure for the same reason: the caller is a
+    background thread whose every wait is a cancellable `stop_event.wait(n)` (invariant 12). `last_fetch` and
+    `now` are monotonic seconds from the injected clock; `None` means nothing has been fetched yet.
+
+    A gap rather than a window. Nothing is published to count against, so the only promise is spacing:
+    never two fetches closer together than `gap`.
+    """
+    if last_fetch is None:
+        return 0.0
+    return max(0.0, last_fetch + gap - now)
