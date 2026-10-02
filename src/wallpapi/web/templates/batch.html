@@ -1,80 +1,62 @@
 {% extends "base.html" %}
 {% set page = "batch" %}
 {#
-  The **Batch** page: the tiles, and in the nav the two things that act on the **Batch** as a whole.
+  The **Batch** page: a shell that fetches its **Batch** rather than drawing one.
+
+  `#batch` loads `/batch` as soon as the page is up, and again on `batch-submitted`, which `/submit` fires
+  when it has recorded one. So there is one route that draws a **Batch**, one that records it, and neither
+  knows about the other; a refresh is a plain GET of this shell and never offers to repost a form. Until
+  the first fetch lands, `#batch` holds one empty tile per **Batch** slot, so the grid is laid out at its
+  real size and the thumbnails arrive into it rather than pushing the page about.
 
   Submit and the **Mix** are in the nav's right-hand list rather than anywhere near the grid. Submit
   because a button below a grid of thumbnails is a button you reach for a tile and hit by mistake — and
   submitting a **Batch** is the one action on this page that cannot be taken back. The **Mix** because it
   is about the **Batch** after this one, and must not read as a control that rearranges the tiles
   underneath it.
+
+  htmx 2 swaps nothing on an error status, and a refusal (404, 409) and an empty **Pool** (503) are both
+  the answer the page has to show, so each target says so for the one status it expects. The handler is
+  on the target and not on the form, because htmx fires `beforeSwap` on the element being swapped. The
+  grid's check is on `#batch` itself: a tile or bulk swap inside it bubbles its own event up through here.
 #}
 {% block actions %}
-  {% if batch %}
-    <li>
-      {% include "mix.html" %}
-    </li>
-    <li>
-      {# The grid sits outside this form: the tiles post to /draft on their own, and submitting is the
-         one plain form post left. A refresh that resubmits is refused rather than silently absorbed. #}
-      <form method="post" action="/submit">
-        <input type="hidden" name="batch_id" value="{{ batch.id }}" />
-        <button type="submit">Submit batch</button>
-      </form>
-    </li>
-  {% endif %}
+  <li>
+    {% include "mix.html" %}
+  </li>
+  <li>
+    {# Posts the Batch ID the last fetch left in #batch-id, which is why the form holds no input of its
+       own: the ID changes with every Batch and the nav does not. #}
+    <form
+      data-submit
+      hx-post="/submit"
+      hx-include="#batch-id"
+      hx-target="#batch-banner"
+      hx-disabled-elt="find button"
+    >
+      <button type="submit">Submit batch</button>
+    </form>
+  </li>
 {% endblock %}
 {% block main %}
-  {% if recorded %}
-    {# Said as it was recorded: calling three Favourites "ignores" because most of the Batch was
-       unmarked would be a plain lie about what went into the Decision log. #}
-    <p><small>
-      {% if recorded == ignored %}
-        Recorded {{ ignored }} ignore{{ "" if ignored == 1 else "s" }}.
-      {% else %}
-        Recorded {{ recorded - ignored }} verdict{{ "" if recorded - ignored == 1 else "s" }}
-        and {{ ignored }} ignore{{ "" if ignored == 1 else "s" }}.
-      {% endif %}
-    </small></p>
-  {% endif %}
-  {% if batch %}
-    {# One include, because the grid is also what a bulk mark swaps back in on its own. #}
-    {% include "grid.html" %}
-  {% elif refused %}
-    <p>
-      {% if refused.reason.value == "already_submitted" %}
-        That batch has already been submitted — nothing was recorded a second time.
-      {% else %}
-        That batch is not one this instance knows about.
-      {% endif %}
-    </p>
-    <p><a href="/">Start a new batch</a></p>
-  {% else %}
-    {# Never a 500, and never a bare reason code (#15). An empty pool because nothing has arrived yet
-       and an empty pool because Wallhaven is unreachable look identical from here, and they are not
-       the same problem: one is a matter of waiting and the other is not. #}
-    {% if unavailable.reason.value == "wallhaven_unreachable" %}
-      <p>Nothing to show: wallpapi cannot reach Wallhaven, so the pool has not filled.</p>
-      <p><small>
-        The last attempt failed{% if unavailable.error_at %} at
-        {{ unavailable.error_at.strftime("%H:%M") }} UTC{% endif %}: {{ unavailable.error }}.
-        The refill keeps trying.
-      </small></p>
-    {% else %}
-      <p>
-        Nothing to show yet — the pool is empty. The background refill fills it from Wallhaven; give it
-        a moment and reload.
-      </p>
-    {% endif %}
-    <p><a href="/">Try again</a></p>
-  {% endif %}
-  {% include "refill.html" %}
-  {% include "similarity.html" %}
+  <div
+    id="batch-banner"
+    aria-live="polite"
+    hx-on::before-swap="if ([404, 409].includes(event.detail.xhr.status)) event.detail.shouldSwap = true"
+  ></div>
+  <div
+    id="batch"
+    hx-get="/batch"
+    hx-trigger="load, batch-submitted from:body"
+    hx-on::before-swap="if (event.target === this && event.detail.xhr.status === 503) event.detail.shouldSwap = true"
+  >
+    <ul class="batch">
+      {% for _ in range(batch_size) %}<li class="placeholder"></li>{% endfor %}
+    </ul>
+  </div>
 {% endblock %}
 {% block tail %}
-  {% if batch %}
-    {% include "preview.html" %}
-    {# Only the grid fit is left in here; the preview, the Mix labels and the theme are Alpine. #}
-    <script src="/static/wallpapi.js" defer></script>
-  {% endif %}
+  {% include "preview.html" %}
+  {# Only the grid fit is left in here; the preview, the Mix labels and the theme are Alpine. #}
+  <script src="/static/wallpapi.js" defer></script>
 {% endblock %}

@@ -111,14 +111,14 @@ def test_the_batch_page_shows_each_tile_its_zone(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        first = client.get("/")
+        first = client.get("/batch")
         batch = harness.core.get_next_batch()
         assert isinstance(batch, Batch)
         loved = batch.wallpapers[0].id
         harness.similarity.similarity_by_pair.update(_everything_resembles(loved))
         client.post("/draft", data={"batch_id": batch.id, "wallpaper_id": loved, "verdict": "favourite"})
         client.post("/submit", data={"batch_id": batch.id})
-        second = client.get("/")
+        second = client.get("/batch")
 
     assert 'data-zone="unknown"' in first.text
     assert 'data-zone="banger"' in second.text

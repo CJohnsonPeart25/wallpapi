@@ -256,68 +256,81 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-    def render(
-        request: Request,
-        result: Batch | BatchUnavailable | SubmissionRefused,
-        *,
-        recorded: int | None = None,
-        ignored: int | None = None,
-    ) -> HTMLResponse:
-        """One template and one status code per outcome, so every route answers the same way.
+    def render(request: Request, result: Batch | BatchUnavailable | SubmissionRefused) -> HTMLResponse:
+        """One fragment and one status code per outcome, so every route answers the same way.
 
-        Every outcome carries the refill status, because the indicator is on the page in all of them —
-        most of all on the one that says there is nothing to show, where what the refill is doing is the
-        answer to "why".
+        A **Batch** or an empty **Pool** is what `#batch` shows, and carries the refill status, because
+        the indicator is under the grid in both — most of all on the one that says there is nothing to
+        show, where what the refill is doing is the answer to "why". A refusal is what `#batch-banner`
+        shows.
         """
-        context: dict[str, object] = {
-            "status": core.refill_status(),
-            "similarity_notice": core.similarity_notice(),
-            **_mix_context(core),
-        }
-        if isinstance(result, Batch):
-            return templates.TemplateResponse(
-                request,
-                "batch.html",
-                {**context, "batch": result, "recorded": recorded, "ignored": ignored},
-            )
         if isinstance(result, SubmissionRefused):
             already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
             return templates.TemplateResponse(
                 request,
-                "batch.html",
-                {**context, "refused": result},
+                "banner.html",
+                {"refused": result},
                 status_code=HTTPStatus.CONFLICT if already else HTTPStatus.NOT_FOUND,
             )
+        context: dict[str, object] = {
+            "status": core.refill_status(),
+            "similarity_notice": core.similarity_notice(),
+        }
+        if isinstance(result, Batch):
+            return templates.TemplateResponse(request, "batch_view.html", {**context, "batch": result})
         # 503 and never a 500 (#15). Nothing here failed: the **Pool** is empty, which is a state the page
         # can explain and which the refill may well fix by itself.
         return templates.TemplateResponse(
             request,
-            "batch.html",
+            "batch_view.html",
             {**context, "unavailable": result},
             status_code=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
     @app.get("/", response_class=HTMLResponse)
     def batch_page(request: Request) -> HTMLResponse:
-        """The **Batch** page. Tiles are served from the **Thumbnail cache**, never hotlinked."""
+        """The **Batch** page's shell, which fetches its **Batch** from `/batch` once it is up.
+
+        It mints nothing: one empty tile per slot of the configured batch size holds the grid's shape
+        until the fetch lands.
+        """
+        return templates.TemplateResponse(
+            request,
+            "batch.html",
+            {"batch_size": core.get_settings().batch_size, **_mix_context(core)},
+        )
+
+    @app.get("/batch", response_class=HTMLResponse)
+    def batch_view(request: Request) -> HTMLResponse:
+        """The live **Batch**, as the fragment the shell swaps in. Tiles are served from the **Thumbnail
+        cache**, never hotlinked."""
         return render(request, core.get_next_batch())
 
     @app.post("/submit", response_class=HTMLResponse)
     def submit(request: Request, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-        """Submit the **Batch** and render the next one.
+        """Submit the **Batch**, answer with what was recorded, and tell the page to fetch the next one.
 
-        A plain form post: #2 has no **Draft Batch**, so there is nothing for htmx to swap in and out yet.
-        No post-redirect-get either — a refresh that resubmits is refused outright rather than silently
-        absorbed, which is the better answer to the two-tabs case.
+        The response is the banner alone. `HX-Trigger: batch-submitted` is what has the shell's `#batch`
+        fetch `/batch` again, so this route records and says so, and drawing the next **Batch** stays
+        `/batch`'s job. No redirect and nothing stored: the page never navigated, so a refresh is a plain
+        GET of the shell.
+
+        A refusal triggers the refetch too. The second tab (invariant 7) is told why nothing happened and
+        is then shown the **Batch** that is live now, rather than the one it failed to submit.
         """
         result = core.submit_batch(batch_id)
         if not isinstance(result, Batch):
-            return render(request, result)
-        # Counted from the Decision log, not from the form: the page reports what was appended rather
-        # than what the browser claimed to be showing.
-        appended = core.list_history(batch_id=batch_id)
-        ignored = sum(1 for entry in appended if entry.entry is Verdict.IGNORE)
-        return render(request, result, recorded=len(appended), ignored=ignored)
+            response = render(request, result)
+        else:
+            # Counted from the Decision log, not from the form: the page reports what was appended rather
+            # than what the browser claimed to be showing.
+            appended = core.list_history(batch_id=batch_id)
+            ignored = sum(1 for entry in appended if entry.entry is Verdict.IGNORE)
+            response = templates.TemplateResponse(
+                request, "banner.html", {"recorded": len(appended), "ignored": ignored}
+            )
+        response.headers["HX-Trigger"] = "batch-submitted"
+        return response
 
     @app.post("/draft", response_class=HTMLResponse)
     def draft(
@@ -554,9 +567,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         half-rendered page — from resetting the fields it never knew about. An *empty* field is not that:
         it is a value, and the Core service refuses the ones that are not settings.
 
-        Post-redirect-get on success, which is the opposite of `/submit`. Resubmitting a **Batch** is
-        refused loudly because it would append to the **Decision log** twice; re-saving settings writes the
-        same values, so a refresh may as well be a page load.
+        Post-redirect-get on success, so a refresh is a page load rather than a repost.
         """
         posted = {
             name: value

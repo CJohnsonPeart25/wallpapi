@@ -36,7 +36,7 @@ def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> N
     app = create_app(harness.core, refill=True)
 
     with TestClient(app) as client:
-        response = client.get("/")
+        response = client.get("/batch")
         assert response.status_code == 200
         assert harness.core.refill_status().running, "the lifespan should have started the thread"
         assert "Refill idle" in response.text
@@ -59,7 +59,7 @@ def test_the_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> None:
     app = create_app(harness.core, refill=True)
 
     with TestClient(app) as client:
-        client.get("/")
+        client.get("/batch")
         assert harness.wallhaven.searched.wait(JOIN_TIMEOUT), "the thread should have searched"
 
     assert harness.core.refill_status().pool_size == 24

@@ -103,6 +103,18 @@ ul.batch > li {
   border-radius: var(--pico-border-radius);
 }
 
+/* The shell's stand-ins until /batch lands: the shape of a tile and nothing in it. */
+ul.batch > li.placeholder {
+  aspect-ratio: var(--tile-ratio);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+/* Nothing to submit or mix for until a batch has loaded, and nothing at all while the pool is empty.
+   Hidden rather than removed, so the nav does not shift when one arrives. */
+body:not(:has(#batch-id)) :is([data-submit], #mix-switcher) {
+  visibility: hidden;
+}
+
 /* cover rather than contain: at 3:2 into a 3:2 box they agree, and cover degrades better if that changes */
 .tile img {
   display: block;

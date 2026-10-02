@@ -49,7 +49,7 @@ def test_every_tile_carries_favourite_like_and_ban_controls(db_path: Path) -> No
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/").text + client.get("/batch").text
 
     # Nine of each, not eight: one per tile, plus the preview's own rail, which is the same three
     # controls for whichever **Wallpaper** the preview is open on.
@@ -70,7 +70,7 @@ def test_every_control_posts_with_hx_sync_so_a_late_response_cannot_win(db_path:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/").text
+        body = client.get("/batch").text
 
     assert body.count('hx-sync="this:replace"') == 24
 
@@ -81,7 +81,7 @@ def test_marking_a_tile_from_the_page_records_the_draft_and_appends_nothing(db_p
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        page = client.get("/").text
+        page = client.get("/batch").text
         batch_id = batch_id_of(page)
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
@@ -107,7 +107,7 @@ def test_the_marked_control_posts_a_clear_so_a_second_click_unmarks_it(db_path: 
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
         marked = live.wallpapers[0].id
@@ -133,7 +133,7 @@ def test_a_page_load_after_a_partial_draft_shows_the_marks_already_set(db_path: 
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
         client.post(
@@ -141,7 +141,7 @@ def test_a_page_load_after_a_partial_draft_shows_the_marks_already_set(db_path: 
             data={"batch_id": batch_id, "wallpaper_id": live.wallpapers[0].id, "verdict": "like"},
         )
 
-        reloaded = client.get("/").text
+        reloaded = client.get("/batch").text
 
     assert reloaded.count('data-draft-verdict="like"') == 1
     assert reloaded.count('data-draft-verdict=""') == 7
@@ -154,7 +154,7 @@ def test_marking_a_tile_of_an_already_submitted_batch_is_refused(db_path: Path) 
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
         marked = live.wallpapers[0].id
@@ -179,7 +179,7 @@ def test_an_ignore_cannot_be_drafted(db_path: Path) -> None:
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
 
@@ -202,7 +202,7 @@ def test_the_next_page_reports_the_explicit_verdicts_separately_from_the_ignores
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/").text)
+        batch_id = batch_id_of(client.get("/batch").text)
         live = harness.core.get_next_batch()
         assert isinstance(live, Batch)
         for wallpaper in live.wallpapers[:2]:

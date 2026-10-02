@@ -98,18 +98,23 @@ def test_a_mix_nobody_has_heard_of_is_a_bad_request_and_changes_nothing(db_path:
 def test_there_is_no_switcher_on_a_page_with_no_batch_to_switch_for(db_path: Path) -> None:
     """A **Batch** page with no **Batch** is the one place the switcher is deliberately *not* rendered.
 
-    It sits inside the grid's branch, because a **Mix** with no **Pool** to apply it to is a control that
-    cannot do anything and an extra thing to explain on the page whose whole job is explaining why there
-    is nothing. The refill indicator is what answers that page's question.
+    A **Mix** with no **Pool** to apply it to is a control that cannot do anything and an extra thing to
+    explain on the page whose whole job is explaining why there is nothing. The refill indicator is what
+    answers that page's question. The shell is drawn before it knows whether there is a **Batch**, so the
+    switcher is in its nav and the stylesheet hides it until a fetch leaves a `#batch-id` behind.
     """
     harness = make_harness(db_path, fill_pool=0)
 
     with TestClient(create_app(harness.core)) as client:
-        page = client.get("/")
+        fetched = client.get("/batch")
+        stylesheet = client.get("/static/base.css").text
 
-    assert page.status_code == HTTPStatus.SERVICE_UNAVAILABLE
-    assert 'id="mix-switcher"' not in page.text
-    assert "Pool 0 of" in page.text
+    assert fetched.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+    assert 'id="batch-id"' not in fetched.text
+    assert "Pool 0 of" in fetched.text
+    rule = next(block for block in stylesheet.split("}") if "body:not(:has(#batch-id))" in block)
+    assert "#mix-switcher" in rule
+    assert "visibility: hidden" in rule
 
 
 def test_a_stored_mix_that_is_gone_is_still_what_the_page_says_was_chosen(db_path: Path) -> None:

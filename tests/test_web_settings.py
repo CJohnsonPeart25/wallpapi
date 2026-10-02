@@ -170,13 +170,16 @@ def test_a_batch_size_saved_from_the_page_reaches_the_next_batch(db_path: Path, 
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        shown = client.get("/").text
+        shown = client.get("/batch").text
         assert shown.count('data-wallpaper-id="') == 8
         batch_id = shown.split('name="batch_id" value="')[1].split('"')[0]
         client.post("/settings", data={"batch_size": "2", "library_path": str(tmp_path / "Wallpapers")})
-        after = client.post("/submit", data={"batch_id": batch_id})
+        client.post("/submit", data={"batch_id": batch_id})
+        after = client.get("/batch")
+        shell = client.get("/")
 
     assert after.text.count('data-wallpaper-id="') == 2
+    assert shell.text.count('class="placeholder"') == 2, "the shell's stand-ins follow the setting too"
 
 
 def test_the_page_renders_the_filters_and_the_pool_target(db_path: Path) -> None:
