@@ -15,7 +15,7 @@ from collections import Counter
 
 import pytest
 
-from wallpapi.allocation import ZONE_ORDER, allocate, weighted_order
+from wallpapi.allocation import ZONE_ORDER, allocate
 from wallpapi.core import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX, SettingsRefused, validated_mix
 from wallpapi.model import Mix, Zone
 from wallpapi.rng import SeededRandom
@@ -136,57 +136,6 @@ def test_the_same_seed_allocates_the_same_way_and_a_different_one_need_not() -> 
 
     differing = {tuple(allocate(EXPLORE_MIX, 32, SeededRandom(seed)).items()) for seed in range(20)}
     assert len(differing) > 1
-
-
-def test_a_draw_order_is_a_permutation_and_a_seed_reproduces_it() -> None:
-    """`weighted_order` gives back everything it was given, once each, in an order the seed fixes.
-
-    Everything one **Zone** holds, in the order it will give them up in — so anything lost here is a
-    **Wallpaper** that can never be drawn, and anything duplicated is one that can be drawn twice.
-    """
-    items = [f"wp{n:02d}" for n in range(30)]
-    weights = [1.0] * len(items)
-
-    ordered = weighted_order(items, weights, SeededRandom(3))
-
-    assert sorted(ordered) == sorted(items)
-    assert weighted_order(items, weights, SeededRandom(3)) == ordered
-    assert weighted_order(items, weights, SeededRandom(4)) != ordered
-
-
-def test_equal_weights_are_a_plain_shuffle() -> None:
-    """At the 1.0 every **Wallpaper** carries today, no position is favoured.
-
-    The property the **Unknown** and **Dud** slots depend on being "sampled at random", and the baseline
-    #11 will move away from deliberately rather than by accident.
-    """
-    firsts = Counter(
-        weighted_order(["a", "b", "c", "d"], [1.0] * 4, SeededRandom(seed))[0] for seed in range(ROLLS)
-    )
-
-    for item in "abcd":
-        assert firsts[item] / ROLLS == pytest.approx(0.25, abs=TOLERANCE)
-
-
-def test_a_heavier_item_comes_sooner() -> None:
-    """The seam #11 lands on, exercised at a weight that is not 1.0.
-
-    Nothing in wallpapi passes anything but 1.0 today, so without this the seam would be an untested
-    claim in a docstring. Ten to one is a ten-to-one favourite for the first place.
-    """
-    firsts = Counter(
-        weighted_order(["heavy", "light"], [10.0, 1.0], SeededRandom(seed))[0] for seed in range(ROLLS)
-    )
-
-    assert firsts["heavy"] / ROLLS > 0.8
-
-
-def test_a_weight_of_nothing_goes_last_rather_than_dividing_by_zero() -> None:
-    """Zero is the limit of the weighting, not a crash. #11's revisit weight is a setting, and a setting
-    that can be typed can be typed as nought."""
-    ordered = weighted_order(["gone", "here", "also"], [0.0, 1.0, 1.0], SeededRandom(1))
-
-    assert ordered[-1] == "gone"
 
 
 def test_a_mix_must_be_three_whole_percentages_that_sum_to_a_hundred() -> None:

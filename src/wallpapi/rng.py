@@ -24,8 +24,8 @@ class SeededRandom:
     def fraction(self) -> float:
         """One number in `[0, 1)`.
 
-        The primitive **Allocation** is built on: the leftover-slot roll and the weighted draw order both
-        need a raw uniform, and neither is a `sample`. Kept as narrow as the rest of this class — no
+        The primitive **Allocation** is built on: the leftover-slot roll needs a raw uniform, and it is
+        not a `sample`. Kept as narrow as the rest of this class — no
         `randrange`, no `choices`, because nothing needs them.
         """
         return self._random.random()

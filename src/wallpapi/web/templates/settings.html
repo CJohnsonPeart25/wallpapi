@@ -63,8 +63,6 @@
           Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
         {% elif refused.reason.value == "thumbnail_cache_max_mb_invalid" %}
           The thumbnail cache limit must be a whole number of megabytes, 0 or more.
-        {% elif refused.reason.value == "revisit_weight_invalid" %}
-          Revisit weight must be a number from 0 to 1.
         {% elif refused.reason.value == "mix_percentages_invalid" %}
           Mix percentages must be whole numbers, 0 or more, that add up to {{ mix_total }}.
         {% elif refused.reason.value == "mix_name_invalid" %}
@@ -191,24 +189,6 @@
       />
       <small>From 0 to {{ max_similarity_decay }}. How fast a verdict fades with distance. Higher is fussier;
         0 counts everything inside the radius equally.</small>
-    </article>
-
-    <article>
-      <h2>Repeats</h2>
-      <label for="revisit_weight">Revisit weight</label>
-      <input
-        type="number"
-        id="revisit_weight"
-        name="revisit_weight"
-        min="0"
-        max="1"
-        step="0.05"
-        value="{{ revisit_weight }}"
-      />
-      <small>From 0 to 1. How likely a wallpaper you have already favourited or liked is to come round again,
-        against one you have not judged at all. 1 shows them as often as anything else; 0 never shows them
-        again while there is something else to show. Wallpapers you only skipped past are not affected, and
-        banned ones never come back whatever this says.</small>
     </article>
 
     <article>
