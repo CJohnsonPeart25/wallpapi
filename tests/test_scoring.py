@@ -160,8 +160,8 @@ def test_an_ignore_spreads_as_a_mild_negative(db_path: Path) -> None:
     """**Ignores** are **Verdicts** too, and they spread like the rest of them.
 
     Nothing is marked, so submitting gives both shown **Wallpapers** the derived **Ignore** that absence
-    means. A **Wallpaper** very like one of them is a **Dud** — mildly, at -10 a stack rather than -100 —
-    which is what "ignores stack" is supposed to buy once similarity is involved.
+    means. A **Wallpaper** very like one of them is a **Dud** — mildly, at -10 rather than -100 — which is
+    what an **Ignore** is supposed to buy once similarity is involved.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     ignored, _, rest = _decide_two(harness)

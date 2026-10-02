@@ -55,7 +55,7 @@ def test_submitting_returns_a_fresh_batch(harness: Harness) -> None:
     assert len(second.wallpapers) == 8
 
 
-def test_ignores_stack_across_two_batches_containing_the_same_wallpaper(db_path: Path) -> None:
+def test_a_second_ignore_is_appended_not_folded_into_the_first(db_path: Path) -> None:
     """The Decision log is append-only: a second Ignore is appended, not folded into the first.
 
     The catalogue holds exactly 8, so both Batches contain all 8 and every Wallpaper is Ignored twice.

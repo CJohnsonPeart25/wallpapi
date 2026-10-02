@@ -597,15 +597,6 @@ class HistoryRow:
     resolved: ResolvedVerdict
     latest_at: dt.datetime
 
-    @property
-    def clearable(self) -> bool:
-        """Whether there is an **Explicit Verdict** here for a **Clearance** to withdraw.
-
-        A row resolving to **Ignore**, or to nothing at all, has none — the page renders no clear control
-        for it, and `clear_verdict` refuses one if a hand-made post arrives anyway.
-        """
-        return self.resolved.verdict is not None and self.resolved.verdict is not Verdict.IGNORE
-
 
 @dataclass(frozen=True, slots=True)
 class HistoryPage:
@@ -642,15 +633,6 @@ class HistoryRefused:
     class Reason(StrEnum):
         UNKNOWN_WALLPAPER = "unknown_wallpaper"
         """No such **Wallpaper** in this database, so there is nothing to append an entry against."""
-
-        IGNORE_NOT_CHOOSABLE = "ignore_not_choosable"
-        """An **Ignore** is derived for everything unmarked at submit; it is never chosen. Choosing one
-        from **History** would be a second way to say what a **Clearance** already says, and the two would
-        resolve differently — a stored **Ignore** stacks, a **Clearance** lets the earlier ones stack."""
-
-        NOTHING_TO_CLEAR = "nothing_to_clear"
-        """The **Wallpaper** has no **Explicit Verdict** standing. Appending a **Clearance** anyway would
-        put an entry in an append-only log that changes nothing and means nothing."""
 
     reason: Reason
 
@@ -1070,7 +1052,7 @@ class CoreService:
         user could work around. The active **Mix** is `MIX_IN_USE`: the draw would fall back, but a
         delete that quietly changed what the next **Batch** is made of is not a delete.
 
-        `None` on success, in the style of `set_draft_verdict` and `clear_verdict` — there is no value to
+        `None` on success, in the style of `set_draft_verdict` and `edit_verdict` — there is no value to
         hand back, and the caller re-reads `list_mixes` to render.
         """
         trimmed = name.strip()
@@ -1116,6 +1098,12 @@ class CoreService:
 
         The batch size is read when a **Batch** is minted and not afterwards, so changing it applies to the
         next **Batch** rather than rebuilding the one on screen and discarding its **Draft Batch**.
+
+        **A reshown Wallpaper comes up marked with its latest decision (#37, ADR 0015).** Every chosen
+        **Wallpaper** whose resolved **Verdict** is an **Explicit Verdict** gets a **Draft Batch** row in the
+        same transaction, so leaving its tile alone records that **Verdict** again and unmarking it records
+        an **Ignore** that means what it says. Rows rather than a fallback in the template, so absence keeps
+        meaning **Ignore** (invariant 6) and `submit_batch` does not need to know.
         """
         live = self._live_batch()
         if live is not None:
@@ -1148,14 +1136,25 @@ class CoreService:
                     for position, scored in enumerate(chosen)
                 ],
             )
+            # Resolved under the write lock, on this thread's one connection, so a **History** edit cannot
+            # land between reading a **Verdict** and pre-filling it.
+            resolved = self.resolve_verdicts([scored.wallpaper.id for scored in chosen])
+            drafts = {
+                wallpaper_id: standing.verdict
+                for wallpaper_id, standing in resolved.items()
+                if standing.verdict is not None and _is_explicit(standing)
+            }
+            write.executemany(
+                "INSERT INTO draft_batch (batch_id, wallpaper_id, verdict) VALUES (?, ?, ?)",
+                [(batch_id, wallpaper_id, verdict.value) for wallpaper_id, verdict in drafts.items()],
+            )
 
-        # A freshly minted **Batch** has nothing marked on it yet.
         return Batch(
             id=batch_id,
             size=len(chosen),
             created_at=created_at,
             wallpapers=tuple(scored.wallpaper for scored in chosen),
-            drafts={},
+            drafts=drafts,
             zones={scored.wallpaper.id: scored.zone for scored in chosen},
         )
 
@@ -1237,10 +1236,10 @@ class CoreService:
         """How much draw weight each classified **Wallpaper** keeps: the **Revisit weight**, or 1.0.
 
         A **Wallpaper** qualifies for the reduction when its resolved **Verdict** is present and is not an
-        **Ignore**. That rule is `resolve_verdicts` and is never restated here (invariant 4): **Ignores**
-        stack into a resolved **Ignore** and are not an **Explicit Verdict**, and a **Clearance** withdraws
-        one so that the **Wallpaper** counts as undecided again (#7). A second "has it been judged" query
-        would have to learn both of those and would drift from the first the day either changed.
+        **Ignore**. That rule is `resolve_verdicts` and is never restated here (invariant 4): the latest
+        entry decides, so an **Explicit Verdict** overturned by a later **Ignore** no longer qualifies
+        (#37). A second "has it been judged" query would have to learn that and would drift from the first
+        the day it changed.
 
         Plural for the reason `resolve_verdicts` is plural (invariant 2): one query for the whole **Pool**,
         never one per **Wallpaper**. It is a second pass over the **Decision log** in the same mint —
@@ -1540,8 +1539,8 @@ class CoreService:
         """Every **Wallpaper** whose *resolved* **Verdict** is **Favourite**, in a fixed order.
 
         Resolved rather than merely recorded, which is what makes a **Favourite** replaced by a **Like**
-        or a **Ban** — or **Cleared** at #7 — drop out of the like: rotation by itself. There is no list
-        of subjects kept anywhere to fall out of step with the **Decision log**.
+        or a **Ban** — or overturned by an **Ignore** — drop out of the like: rotation by itself. There is
+        no list of subjects kept anywhere to fall out of step with the **Decision log**.
 
         Ordered, because the subject of the next walk is drawn by the seeded random source: over an
         unordered query the same seed and the same **Favourites** could pick differently.
@@ -1625,7 +1624,7 @@ class CoreService:
         1080p **Wallpaper** must stop appearing once the minimum is raised to 1440p exactly as an undecided
         one does — and an **Ignored** one certainly must. Nothing is lost by it: only the membership row
         goes. The `wallpapers` row and every **Decision log** entry stay, so **History** at #7 still renders
-        each of them, and a **Clearance** there works on the log rather than on **Pool** membership.
+        each of them, and an edit there works on the log rather than on **Pool** membership.
 
         The live unsubmitted **Batch** is untouched for free — a **Batch** holds `batch_wallpapers` rows,
         not **Pool** membership — so nobody loses the **Draft Batch** they are part way through.
@@ -1773,8 +1772,8 @@ class CoreService:
 
         Derived, not a side effect of a click. Every **Wallpaper** whose resolved **Verdict** is
         **Favourite** and which has no recorded **Library** file gets one; every recorded file whose
-        **Wallpaper** is no longer a **Favourite** — replaced by a **Like** or a **Ban** now, **Cleared**
-        at #7 — is deleted. Nothing else is touched.
+        **Wallpaper** is no longer a **Favourite** — replaced by a **Like**, a **Ban** or an
+        **Ignore** — is deleted. Nothing else is touched.
 
         That makes this idempotent, which is the whole point. Calling it twice writes once. A download that
         fails is not bookkept as failed and retried later; it is simply still a **Favourite** with no file,
@@ -2018,8 +2017,8 @@ class CoreService:
         """The **Wallpapers** whose resolved **Verdict** is an **Explicit Verdict**.
 
         Bounded by what the user has actually judged rather than by the **Pool**, and read through the same
-        resolution CTE as everything else — so a **Cleared Favourite** is not in it, and an un-**Banned**
-        **Wallpaper** stops being in it the moment the **Clearance** lands.
+        resolution CTE as everything else — so a **Favourite** overturned by an **Ignore** is not in it, and
+        an un-**Banned** **Wallpaper** stops being in it the moment that **Ignore** lands.
         """
         return {str(row["wallpaper_id"]) for row in self._connect().execute(_EXPLICITLY_DECIDED)}
 
@@ -2037,8 +2036,8 @@ class CoreService:
         Plural because #9 scores a whole **Pool** in one go, and a per-**Wallpaper** call would force a
         Python loop over 10k rows. Derived on every call because **Scores** are never stored (invariant 2).
 
-        A **Wallpaper** with no entries, one whose **Explicit Verdict** has been **Cleared** with no
-        **Ignores** left standing, and one this database has never seen all resolve to absent and zero.
+        A **Wallpaper** with no entries, one whose latest entry is a legacy **Clearance**, and one this
+        database has never seen all resolve to absent and zero.
         """
         requested = list(dict.fromkeys(wallpaper_ids))
         resolved = dict.fromkeys(requested, _ABSENT)
@@ -2048,17 +2047,17 @@ class CoreService:
         # the 10k **Pool** #9 will hand in.
         placeholders = ",".join("?" * len(requested))
         query = _resolution_query(
-            "SELECT wallpaper_id, resolved, ignores FROM resolution",
+            "SELECT wallpaper_id, resolved FROM resolution",
             restriction=f"WHERE wallpaper_id IN ({placeholders})",
         )
         for row in self._connect().execute(query, requested).fetchall():
-            resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"], int(row["ignores"]))
+            resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
         return resolved
 
     # -- history ---------------------------------------------------------------------------------------
 
     def edit_verdict(self, wallpaper_id: str, verdict: Verdict) -> HistoryRefused | None:
-        """Change a **Wallpaper**'s **Verdict** from **History** by appending a new **Explicit Verdict**.
+        """Change a **Wallpaper**'s **Verdict** from **History** by appending a new entry.
 
         Appended, never a rewrite. The **Decision log** is the single source of truth and it is append-only
         (invariant 6): what the user thought in March is a fact, and changing their mind in September is a
@@ -2068,51 +2067,24 @@ class CoreService:
         `batch_id` is `NULL` on the entry, which is how an edit made from **History** is told apart from
         one given to a **Batch** — the only distinction the log draws between them.
 
-        **Ignore** is refused. It is derived for every **Wallpaper** left unmarked at submit, so choosing
-        one here would be a stored **Ignore** that stacks, sitting next to a **Clearance** that means the
-        opposite. An unknown **Wallpaper** is refused rather than left to the foreign key, so the caller
-        gets a reason instead of an `IntegrityError`.
+        **Ignore** is choosable, since #37 (ADR 0015): it is how **History** withdraws a **Verdict**, the
+        same entry unmarking a tile writes, so the two screens mean one thing by one action. It is the
+        latest entry, so it overturns whatever stood. Un-**Banning** falls out of this rather than being
+        built: a **Batch** excludes by *resolved* **Verdict**, and a **Ban** overturned by an **Ignore** is
+        no longer one. Nothing writes a **Clearance** any more.
+
+        An unknown **Wallpaper** is refused rather than left to the foreign key, so the caller gets a reason
+        instead of an `IntegrityError`.
 
         The **Library** is reconciled afterwards, outside the transaction and for the same reasons
         `submit_batch` does it there (ADR 0006): a new **Favourite** gains a file and a replaced one loses
         the file wallpapi actually wrote.
         """
-        if verdict is Verdict.IGNORE:
-            return HistoryRefused(reason=HistoryRefused.Reason.IGNORE_NOT_CHOOSABLE)
         recorded_at = self._clock.now().isoformat()
         with self._write() as write:
             if not _wallpaper_exists(write, wallpaper_id):
                 return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
             write.execute(_APPEND_HISTORY_ENTRY, (wallpaper_id, verdict.value, recorded_at))
-        self.reconcile_library()
-        return None
-
-    def clear_verdict(self, wallpaper_id: str) -> HistoryRefused | None:
-        """Withdraw a **Wallpaper**'s **Explicit Verdict** by appending a **Clearance**.
-
-        A **Clearance** is an entry in its own right and not a fifth **Verdict** (CONTEXT.md): it says that
-        what was judged is no longer judged. After it, every **Ignore** on the **Wallpaper** stacks again —
-        the ones from before the **Verdict** as well as the ones after it — because nothing is disregarding
-        them any more.
-
-        Un-**Banning** falls out of this rather than being built: a **Batch** excludes by *resolved*
-        **Verdict**, so a **Wallpaper** whose **Ban** has been **Cleared** is eligible again with no code
-        anywhere that knows the word.
-
-        Refused when there is no **Explicit Verdict** standing — never seen, only **Ignored**, or already
-        **Cleared**. The alternative is an append-only log accumulating entries that change nothing, and a
-        page whose clear button means "nothing will happen" half the time.
-        """
-        recorded_at = self._clock.now().isoformat()
-        with self._write() as write:
-            if not _wallpaper_exists(write, wallpaper_id):
-                return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
-            # Read inside the write transaction, on this thread's one connection: the check and the append
-            # cannot then be split by a second tab clearing the same row.
-            standing = self.resolve_verdicts([wallpaper_id])[wallpaper_id].verdict
-            if standing is None or standing is Verdict.IGNORE:
-                return HistoryRefused(reason=HistoryRefused.Reason.NOTHING_TO_CLEAR)
-            write.execute(_APPEND_HISTORY_ENTRY, (wallpaper_id, Clearance.CLEARED.value, recorded_at))
         self.reconcile_library()
         return None
 
@@ -2146,7 +2118,7 @@ class CoreService:
     def get_history_row(self, wallpaper_id: str) -> HistoryRow | None:
         """One **Wallpaper**'s **History** row, or `None` if it has no entries.
 
-        What an edit or a **Clearance** swaps back into the page. Built by the same query as the listing,
+        What an edit swaps back into the page. Built by the same query as the listing,
         so the row the user is left looking at is the row a reload would give them.
         """
         row = self._connect().execute(_HISTORY_ROW, (wallpaper_id,)).fetchone()
@@ -2637,10 +2609,10 @@ _ABSENT = ResolvedVerdict(verdict=None, value=0)
 """A **Wallpaper** with no **Decision log** entries at all."""
 
 _EXPLICIT_VALUES = {Verdict.FAVOURITE: 100, Verdict.LIKE: 50, Verdict.BAN: -100}
-"""What each **Explicit Verdict** resolves to. An **Ignore** is not here — it stacks instead."""
+"""What each **Explicit Verdict** resolves to. An **Ignore** is not here — it is `_IGNORE_VALUE`."""
 
 _IGNORE_VALUE = -10
-"""One **Ignore**. They stack, but only while the **Wallpaper** has no **Explicit Verdict**."""
+"""What a resolved **Ignore** is worth. Once, never stacked (#37)."""
 
 
 def _entry_from(stored: object) -> Verdict | Clearance:
@@ -2659,73 +2631,61 @@ def _is_explicit(resolved: ResolvedVerdict) -> bool:
     question, asked of an already-resolved answer rather than of the **Decision log**.
 
     Present and not an **Ignore**, which is the whole rule. Everything difficult about it has already
-    happened in `_RESOLUTION_CTE`: stacked **Ignores** resolve to an **Ignore** and are not explicit, and a
-    **Clearance** that withdrew an **Explicit Verdict** resolves to nothing at all, so the **Wallpaper**
-    counts as undecided again (#7). A **Ban** would answer `True` and never be asked — `classify_pool`
-    leaves **Banned** **Wallpapers** out of the draw entirely.
+    happened in `_RESOLUTION_CTE`: an **Explicit Verdict** overturned by a later **Ignore** resolves to the
+    **Ignore** and is not explicit (#37), and a legacy **Clearance** resolves to nothing at all. A **Ban**
+    would answer `True` and never be asked — `classify_pool` leaves **Banned** **Wallpapers** out of the
+    draw entirely.
     """
     return resolved.verdict is not None and resolved.verdict is not Verdict.IGNORE
 
 
-def _resolved_from(resolved: object, ignores: int) -> ResolvedVerdict:
+def _resolved_from(resolved: object) -> ResolvedVerdict:
     """What a resolved **Verdict** is worth. The rule that *chose* it is `_RESOLUTION_CTE`.
 
     Deliberately not a second copy of the rule. The **History** listing has to filter by resolved
     **Verdict** in SQL — a page of 100 rows cannot be sliced out of a log resolved in Python — so the rule
     has to exist in SQL, and the moment it exists in two places is the moment they disagree. So SQL chooses
     the **Verdict** and this turns it into a number, which is the half SQL has no business knowing.
+
+    An **Ignore** is worth `_IGNORE_VALUE` once, however many came before it (#37): passing a **Wallpaper**
+    over ten times is not ten times the dislike of a **Dud** seen once.
     """
     if resolved is None:
         return _ABSENT
     verdict = Verdict(str(resolved))
     if verdict is Verdict.IGNORE:
-        return ResolvedVerdict(verdict=verdict, value=_IGNORE_VALUE * ignores)
+        return ResolvedVerdict(verdict=verdict, value=_IGNORE_VALUE)
     return ResolvedVerdict(verdict=verdict, value=_EXPLICIT_VALUES[verdict])
 
 
 _RESOLUTION_CTE = f"""
 WITH entries AS (
-    SELECT
-        wallpaper_id,
-        MAX(seq) AS latest_seq,
-        COUNT(*) FILTER (WHERE verdict = '{Verdict.IGNORE.value}') AS ignores,
-        (
-            SELECT decisive.verdict
-            FROM decision_log AS decisive
-            WHERE decisive.wallpaper_id = decision_log.wallpaper_id
-              AND decisive.verdict != '{Verdict.IGNORE.value}'
-            ORDER BY decisive.seq DESC
-            LIMIT 1
-        ) AS latest_decisive
+    SELECT wallpaper_id, MAX(seq) AS latest_seq
     FROM decision_log
     {{restriction}}
     GROUP BY wallpaper_id
 ),
 resolution AS (
     SELECT
-        wallpaper_id,
-        latest_seq,
-        ignores,
-        CASE
-            WHEN latest_decisive IS NOT NULL AND latest_decisive != '{Clearance.CLEARED.value}'
-                THEN latest_decisive
-            WHEN ignores > 0 THEN '{Verdict.IGNORE.value}'
-        END AS resolved
+        entries.wallpaper_id,
+        entries.latest_seq,
+        CASE WHEN latest.verdict != '{Clearance.CLEARED.value}' THEN latest.verdict END AS resolved
     FROM entries
+    JOIN decision_log AS latest ON latest.seq = entries.latest_seq
 )
 """
 """**Verdict resolution**, in one place, as the prelude to every query that needs it.
 
-The rule, extended by #7 for the **Clearance**: the latest entry that is not an **Ignore** decides. If it
-is an **Explicit Verdict**, that alone counts and every **Ignore** on the **Wallpaper** is disregarded,
-before it and after it alike. If it is a **Clearance** — or if there is no such entry at all — every
-**Ignore** stacks, again before and after. The `CASE` falls off the end to `NULL` for a **Wallpaper** whose
-only entries are an **Explicit Verdict** and the **Clearance** that withdrew it: nothing has been said
-about it that still stands, which is the same answer as never having seen it.
+The rule since #37 (ADR 0015): the latest entry decides, whatever it is, and nothing before it counts. An
+**Ignore** after an **Explicit Verdict** overturns it — the batch page pre-marks a reshown **Wallpaper**
+with its standing **Verdict**, so that **Ignore** can only be the user unmarking it — and an **Explicit
+Verdict** after an **Ignore** overturns the **Ignore**. A legacy **Clearance**, which nothing writes any
+more, resolves to `NULL` when it is the latest entry: the same answer as never having seen the
+**Wallpaper**.
 
-`ORDER BY decisive.seq` and never `recorded_at` (invariant 4): every entry from one submit transaction
-shares a timestamp, and a **Clearance** made from **History** in the same frozen second as a **Verdict** is
-exactly the case that has no answer without the sequence.
+`MAX(seq)` and never `recorded_at` (invariant 4): every entry from one submit transaction shares a
+timestamp, and two **History** edits in the same frozen second are exactly the case that has no answer
+without the sequence.
 
 `{{restriction}}` is a `WHERE` over `decision_log` that narrows the aggregate to the **Wallpapers** a
 caller cares about, or empty for the whole log. It is always a literal built here — never anything a caller
@@ -2771,7 +2731,7 @@ def _history_count_query(*, filtered: bool) -> str:
 
 
 _HISTORY_ROW = _resolution_query(_HISTORY_SELECT, restriction="WHERE wallpaper_id = ?")
-"""One **Wallpaper**'s **History** row — what an edit or a **Clearance** swaps back into the page."""
+"""One **Wallpaper**'s **History** row — what an edit swaps back into the page."""
 
 _EXPLICITLY_DECIDED = _resolution_query(
     f"SELECT wallpaper_id FROM resolution WHERE resolved IS NOT NULL AND resolved != '{Verdict.IGNORE.value}'"
@@ -2793,7 +2753,7 @@ has pruned one of its **Wallpapers** out of the **Pool** while it is on screen."
 _APPEND_HISTORY_ENTRY = """
 INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)
 """
-"""An edit or a **Clearance** made from **History**.
+"""An edit made from **History**, an **Ignore** included.
 
 `batch_id` is `NULL` because there is no **Batch**: the user was looking at a list, not judging a screenful.
 That null is the only thing in the log that distinguishes the two, and `list_history(batch_id=...)`

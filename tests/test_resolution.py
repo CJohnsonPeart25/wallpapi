@@ -1,17 +1,21 @@
 """**Verdict resolution**: turning a **Wallpaper**'s **Decision log** entries into one value.
 
-Issue #3's resolution criteria. Every test enters through the Core service, and the entries under test are
-made the way the app makes them — by drafting and submitting — rather than by writing rows behind the seam.
+Issue #3's resolution criteria, as #37 changed them: the latest entry decides, and a reshown **Wallpaper**
+comes up marked with its latest **Verdict**. Every test enters through the Core service, and the entries
+under test are made the way the app makes them — by drafting and submitting — rather than by writing rows
+behind the seam. The one exception is the legacy **Clearance**, which nothing can make any more.
 """
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import FIXED_NOW, Harness, make_harness
 from tests.fakes import catalogue_of
 from wallpapi.core import Batch, ResolvedVerdict
-from wallpapi.model import Verdict
+from wallpapi.model import Clearance, Verdict
 
 
 def test_a_wallpaper_with_no_entries_resolves_to_nothing(harness: Harness) -> None:
@@ -26,12 +30,12 @@ def test_a_wallpaper_with_no_entries_resolves_to_nothing(harness: Harness) -> No
     assert resolved["never-seen"].value == 0
 
 
-def test_ignores_stack_at_minus_ten_each(db_path: Path) -> None:
-    """Acceptance criterion: each **Ignore** is -10, and they stack while no **Explicit Verdict** exists.
+def test_ignores_do_not_stack(db_path: Path) -> None:
+    """An **Ignore** is -10 once, however many there are (#37, ADR 0015).
 
     The catalogue holds exactly 8, so both **Batches** show all 8 and every **Wallpaper** is **Ignored**
-    twice. The resolved **Verdict** is the **Ignore** itself, not absence — "ignored twice" and "never seen"
-    are different states and #7 renders them differently.
+    twice. Passing a **Wallpaper** over twice is not twice the dislike of a **Dud** seen once. The resolved
+    **Verdict** is the **Ignore** itself, not absence — "ignored" and "never seen" are different states.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(8))
     first = harness.core.get_next_batch()
@@ -45,14 +49,16 @@ def test_ignores_stack_at_minus_ten_each(db_path: Path) -> None:
     resolved = harness.core.resolve_verdicts([twice_ignored])
 
     assert resolved[twice_ignored].verdict is Verdict.IGNORE
-    assert resolved[twice_ignored].value == -20
+    assert resolved[twice_ignored].value == -10
 
 
-def submit_with(harness: Harness, marks: dict[str, Verdict]) -> Batch:
+def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
     """Draft `marks` against the live **Batch** and submit it, returning the **Batch** that was submitted.
 
     The catalogue these tests use holds exactly `batch_size` **Wallpapers**, so every **Batch** shows all of
-    them and anything left out of `marks` is **Ignored**.
+    them. A tile left out of `marks` keeps whatever the **Batch** was minted with — its latest **Explicit
+    Verdict**, or nothing and so an **Ignore** — and a mark of `None` unmarks it, as clicking its mark
+    again does on the page.
     """
     batch = harness.core.get_next_batch()
     assert isinstance(batch, Batch)
@@ -87,24 +93,126 @@ def test_each_explicit_verdict_resolves_to_its_own_value(db_path: Path) -> None:
     assert resolved[ban] == ResolvedVerdict(verdict=Verdict.BAN, value=-100)
 
 
-def test_an_explicit_verdict_disregards_ignores_before_and_after_it(db_path: Path) -> None:
-    """Acceptance criterion: an **Explicit Verdict** disregards every **Ignore** on that **Wallpaper**.
-
-    Three submissions: **Ignored**, then **Liked**, then **Ignored** again. The naive implementation sums
-    everything and lands on +30; the one that lets the **Ignores** before it count lands on +40. Only
-    +50 — the **Like** alone — is right. Scrolling past something you have already said you like is not
-    evidence against it.
-    """
+def test_an_explicit_verdict_overturns_the_ignores_before_it(db_path: Path) -> None:
+    """**Ignored** twice, then **Liked**: the latest entry decides, so +50 — the **Like** alone, with
+    nothing subtracted for having been passed over first."""
     harness = make_harness(db_path, catalogue=catalogue_of(8))
     subject = harness.core.get_next_batch()
     assert isinstance(subject, Batch)
     liked = subject.wallpapers[0].id
 
     submit_with(harness, {})
+    submit_with(harness, {})
+    submit_with(harness, {liked: Verdict.LIKE})
+
+    assert harness.core.resolve_verdicts([liked])[liked] == ResolvedVerdict(verdict=Verdict.LIKE, value=50)
+
+
+def test_a_reshown_wallpaper_comes_up_marked_with_its_latest_verdict(db_path: Path) -> None:
+    """The **Batch** after a **Like** is minted with that **Like** already in its **Draft Batch**, so the
+    tile shows it and the page knows what was decided last time (#37)."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    subject = harness.core.get_next_batch()
+    assert isinstance(subject, Batch)
+    liked, favourite, banned = (w.id for w in subject.wallpapers[:3])
+
+    submit_with(harness, {liked: Verdict.LIKE, favourite: Verdict.FAVOURITE, banned: Verdict.BAN})
+    reshown = harness.core.get_next_batch()
+
+    assert isinstance(reshown, Batch)
+    assert reshown.drafts == {liked: Verdict.LIKE, favourite: Verdict.FAVOURITE}, "a Ban is never reshown"
+    assert reshown == harness.core.get_next_batch(), "read back from storage, so a reload keeps it"
+
+
+def test_a_verdict_given_from_history_is_what_the_next_batch_comes_up_marked_with(db_path: Path) -> None:
+    """The latest decision wherever it was made: a **Like** given from **History** is pre-filled the
+    next time the **Wallpaper** is drawn, exactly as one given to a **Batch** would be."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    first = submit_with(harness, {})
+    subject = first.wallpapers[0].id
+    assert harness.core.edit_verdict(subject, Verdict.LIKE) is None
+    submit_with(harness, {subject: Verdict.LIKE})  # the Batch open during the edit, re-marked by hand
+
+    reshown = harness.core.get_next_batch()
+
+    assert isinstance(reshown, Batch)
+    assert reshown.drafts == {subject: Verdict.LIKE}
+
+
+def test_leaving_a_reshown_wallpaper_alone_records_its_verdict_again(db_path: Path) -> None:
+    """Inaction keeps what was decided. Before #37 the untouched tile wrote an **Ignore** that resolution
+    then had to disregard; now it writes the **Like** again, and the **Like** stands."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    subject = harness.core.get_next_batch()
+    assert isinstance(subject, Batch)
+    liked = subject.wallpapers[0].id
+
     submit_with(harness, {liked: Verdict.LIKE})
     submit_with(harness, {})
 
+    assert [e.entry for e in harness.core.list_history(wallpaper_id=liked)] == [Verdict.LIKE, Verdict.LIKE]
     assert harness.core.resolve_verdicts([liked])[liked] == ResolvedVerdict(verdict=Verdict.LIKE, value=50)
+
+
+def test_unmarking_a_reshown_wallpaper_overturns_its_verdict(db_path: Path) -> None:
+    """The heart of #37. **Liked**, then shown again and unmarked: that **Ignore** is the latest entry and
+    it decides. The **Like** no longer stands and the **Wallpaper** is worth -10."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    subject = harness.core.get_next_batch()
+    assert isinstance(subject, Batch)
+    liked = subject.wallpapers[0].id
+
+    submit_with(harness, {liked: Verdict.LIKE})
+    submit_with(harness, {liked: None})
+
+    assert harness.core.resolve_verdicts([liked])[liked] == ResolvedVerdict(verdict=Verdict.IGNORE, value=-10)
+
+
+def test_select_none_unmarks_the_pre_filled_tiles_too(db_path: Path) -> None:
+    """Select-none is a decision about every tile on the **Batch**, the pre-filled ones included."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    first = submit_with(harness, {})
+    liked = first.wallpapers[0].id
+    submit_with(harness, {liked: Verdict.LIKE})
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    assert batch.drafts == {liked: Verdict.LIKE}
+
+    assert harness.core.set_all_draft_verdicts(batch.id, None) is None
+    harness.core.submit_batch(batch.id)
+
+    assert harness.core.resolve_verdicts([liked])[liked].verdict is Verdict.IGNORE
+
+
+def test_a_legacy_clearance_resolves_to_nothing_when_it_is_the_latest_entry(db_path: Path) -> None:
+    """Nothing writes a **Clearance** since #37, but a database from before may hold one, and the log is
+    append-only. When it is the latest entry the **Wallpaper** resolves to nothing, as if never seen;
+    anything after it decides as usual.
+
+    The one row in these tests written behind the seam, because no Core service operation can make it any
+    more — which is the point.
+    """
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    first = submit_with(harness, {})
+    cleared, judged_again = (w.id for w in first.wallpapers[:2])
+    submit_with(harness, {cleared: Verdict.FAVOURITE, judged_again: Verdict.BAN})
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        connection.executemany(
+            "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
+            [
+                (wallpaper_id, Clearance.CLEARED.value, FIXED_NOW.isoformat())
+                for wallpaper_id in (cleared, judged_again)
+            ],
+        )
+    finally:
+        connection.close()
+    assert harness.core.edit_verdict(judged_again, Verdict.LIKE) is None
+
+    resolved = harness.core.resolve_verdicts([cleared, judged_again])
+
+    assert resolved[cleared] == ResolvedVerdict(verdict=None, value=0)
+    assert resolved[judged_again] == ResolvedVerdict(verdict=Verdict.LIKE, value=50)
 
 
 def test_a_later_explicit_verdict_replaces_an_earlier_one(db_path: Path) -> None:
