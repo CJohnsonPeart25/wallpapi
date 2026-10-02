@@ -245,6 +245,9 @@ body:not(:has(#batch-id)) :is([data-submit], #mix-switcher) {
   line-height: 1;
 }
 
+/* History's alone: a tile un-marks by clicking its mark again, and its Ignore is derived at submit. */
+.history-verdicts button[data-verdict="ignore"]::before { content: "➖"; }
+
 /* ---------- Settings: Pico's articles and forms; only the Mix table needs saying ---------- */
 
 /* A field in a table cell sits on the row's line: Pico gives every field a bottom margin for a form. */

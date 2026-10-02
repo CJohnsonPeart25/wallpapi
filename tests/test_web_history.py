@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import Harness, make_harness
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import HISTORY_PAGE_SIZE, Batch
-from wallpapi.model import Clearance, Verdict
+from wallpapi.model import Verdict
 from wallpapi.web.app import create_app
 
 
@@ -48,11 +48,12 @@ def test_the_page_lists_a_row_per_judged_wallpaper_with_its_thumbnail_and_verdic
     assert "untouched" not in response.text
 
 
-def test_every_row_carries_the_edit_and_clear_controls(db_path: Path) -> None:
-    """Any **Verdict** can be changed from **History**, and an **Explicit Verdict** can be cleared.
+def test_every_row_carries_the_four_verdict_controls(db_path: Path) -> None:
+    """Any **Verdict** can be changed to any other from **History**, **Ignore** included (#37).
 
     Each control posts the **Verdict** the row should end up with, and carries `hx-sync="this:replace"`
-    exactly as a tile does, so a late response cannot swap a stale row back over a newer one.
+    exactly as a tile does, so a late response cannot swap a stale row back over a newer one. There is no
+    separate clear: withdrawing a **Verdict** is posting the **Ignore**.
     """
     harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
     judge(harness, judged=Verdict.LIKE)
@@ -61,18 +62,14 @@ def test_every_row_carries_the_edit_and_clear_controls(db_path: Path) -> None:
     with TestClient(app) as client:
         body = client.get("/history").text
 
-    for choice in ("favourite", "like", "ban"):
+    for choice in ("favourite", "like", "ban", "ignore"):
         assert f'"verdict": "{choice}"' in body
-    assert 'hx-post="/history/clear"' in body
-    assert body.count('hx-sync="this:replace"') == 4, "three verdicts and a clear"
+    assert "/history/clear" not in body
+    assert body.count('hx-sync="this:replace"') == 4, "four verdicts"
 
 
-def test_a_row_with_nothing_standing_has_no_clear_control(db_path: Path) -> None:
-    """An **Ignored** **Wallpaper** has no **Explicit Verdict** to withdraw, so no button offers to.
-
-    `clear_verdict` refuses one anyway; a control whose answer is always "nothing happened" should not be
-    on the page in the first place.
-    """
+def test_an_ignored_row_shows_ignore_as_its_standing_verdict(db_path: Path) -> None:
+    """An **Ignored** **Wallpaper** has its **Ignore** filled, as any standing **Verdict** is."""
     harness = make_harness(db_path, catalogue=(wallpaper("ignored"),))
     harness.core.update_settings(batch_size=1)
     batch = harness.core.get_next_batch()
@@ -81,10 +78,11 @@ def test_a_row_with_nothing_standing_has_no_clear_control(db_path: Path) -> None
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        body = client.get("/history").text
+        row = _row(client.get("/history").text, "ignored")
 
-    assert 'data-resolved-verdict="ignore"' in body
-    assert 'hx-post="/history/clear"' not in body
+    marked = [b for b in re.findall(r"<button\b[^>]*>", row) if 'aria-pressed="true"' in b]
+    assert len(marked) == 1
+    assert 'data-verdict="ignore"' in marked[0]
 
 
 def test_the_filter_narrows_the_listing(db_path: Path) -> None:
@@ -138,57 +136,38 @@ def test_posting_an_edit_swaps_the_row_back_showing_the_new_verdict(db_path: Pat
     assert harness.core.resolve_verdicts(["judged"])["judged"].verdict is Verdict.BAN
 
 
-def test_posting_a_clear_swaps_the_row_back_with_nothing_standing(db_path: Path) -> None:
-    """Its own route, because a **Clearance** is an entry rather than the absence of one — and the row
-    that comes back shows the **Ignores** stacking again."""
+def test_posting_an_ignore_overturns_the_verdict_and_swaps_the_row_back(db_path: Path) -> None:
+    """How **History** withdraws a **Verdict** since #37: the same **Ignore** unmarking a tile writes,
+    appended with no **Batch**, and the latest entry decides — so the **Favourite** stands no longer."""
     harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
-    harness.core.update_settings(batch_size=1)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.submit_batch(batch.id)
     judge(harness, judged=Verdict.FAVOURITE)
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        response = client.post("/history/clear", data={"wallpaper_id": "judged"})
+        response = client.post("/history/verdict", data={"wallpaper_id": "judged", "verdict": "ignore"})
 
     assert response.status_code == 200
     assert 'data-resolved-verdict="ignore"' in response.text
-    assert [e.entry for e in harness.core.list_history(wallpaper_id="judged")][-1] is Clearance.CLEARED
+    latest = harness.core.list_history(wallpaper_id="judged")[-1]
+    assert (latest.entry, latest.batch_id) == (Verdict.IGNORE, None)
 
 
-def test_a_hand_made_ignore_post_is_refused(db_path: Path) -> None:
-    """No control posts an **Ignore** — it is derived at submit, never chosen. This guards the post a
-    person could still make by hand, and nothing is appended when they do."""
+def test_a_blank_or_unknown_post_is_refused(db_path: Path) -> None:
+    """No control posts either. This guards the post a person could still make by hand, and nothing is
+    appended when they do."""
     harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
     judge(harness, judged=Verdict.LIKE)
     app = create_app(harness.core)
 
     with TestClient(app) as client:
-        ignored = client.post("/history/verdict", data={"wallpaper_id": "judged", "verdict": "ignore"})
         blank = client.post("/history/verdict", data={"wallpaper_id": "judged", "verdict": ""})
+        sideways = client.post("/history/verdict", data={"wallpaper_id": "judged", "verdict": "sideways"})
         unknown = client.post("/history/verdict", data={"wallpaper_id": "nope", "verdict": "like"})
 
-    assert ignored.status_code == 400
     assert blank.status_code == 400
+    assert sideways.status_code == 400
     assert unknown.status_code == 404
     assert len(harness.core.list_history()) == 1
-
-
-def test_clearing_a_row_with_nothing_standing_is_refused(db_path: Path) -> None:
-    """Two tabs: the row was cleared in one, and the other still shows the control. The second post is
-    told why nothing happened rather than being absorbed — and htmx leaves the stale row alone."""
-    harness = make_harness(db_path, catalogue=(wallpaper("judged"),))
-    judge(harness, judged=Verdict.LIKE)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        first = client.post("/history/clear", data={"wallpaper_id": "judged"})
-        second = client.post("/history/clear", data={"wallpaper_id": "judged"})
-
-    assert first.status_code == 200
-    assert second.status_code == 409
-    assert len(harness.core.list_history(wallpaper_id="judged")) == 2
 
 
 def test_the_empty_page_says_so_rather_than_rendering_nothing(db_path: Path) -> None:
@@ -247,7 +226,7 @@ def test_the_listing_is_a_striped_table_with_a_row_per_wallpaper(db_path: Path) 
 
     table = body[body.index('<table class="striped">') : body.index("</table>")]
     assert table.count('class="history-row"') == 1
-    assert body.count('hx-target="closest tr"') == 4, "three verdicts and a clear, each swapping its row"
+    assert body.count('hx-target="closest tr"') == 4, "four verdicts, each swapping its row"
     assert re.sub(r"\{#.*?#\}", "", swapped, flags=re.S).lstrip().startswith("<tr")
     assert swapped.rstrip().endswith("</tr>")
 
@@ -293,7 +272,7 @@ def test_the_row_controls_are_pico_buttons_and_not_the_tile_rail(db_path: Path) 
     assert "verdict" not in tokens
     assert "history-verdicts" in tokens
     buttons = re.findall(r"<button\b[^>]*>", row)
-    assert len(buttons) == 4, "three verdicts and a clear"
+    assert len(buttons) == 4, "four verdicts"
     for button in buttons:
         assert 'class="outline secondary"' in button or 'class="secondary"' in button
     marked = [button for button in buttons if 'aria-pressed="true"' in button]
@@ -360,3 +339,17 @@ def test_the_stylesheet_rings_a_history_thumbnail_as_it_rings_a_tile(db_path: Pa
             if f'[data-verdict="{verdict}"]::before' in block and "content:" in block
         )
         assert ".history-verdicts" in glyph
+
+
+def test_the_ignore_control_has_a_glyph_of_its_own(db_path: Path) -> None:
+    """The row's words are at `font-size: 0`, so a control with no glyph would be an empty button. The
+    tile rail has no **Ignore** to borrow one from — a tile un-marks — so **History** has its own."""
+    harness = make_harness(db_path)
+
+    with TestClient(create_app(harness.core)) as client:
+        stylesheet = client.get("/static/base.css").text
+
+    assert any(
+        '[data-verdict="ignore"]::before' in block and "content:" in block and ".history-verdicts" in block
+        for block in stylesheet.split("}")
+    )

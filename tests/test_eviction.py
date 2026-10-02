@@ -169,8 +169,9 @@ def test_the_size_cap_never_evicts_an_explicit_verdict(db_path: Path) -> None:
     assert cached(harness) == {"one", "two", "three"}
 
 
-def test_a_cleared_verdict_stops_protecting_a_thumbnail(db_path: Path) -> None:
-    """A **Clearance** withdraws the **Explicit Verdict**, and with it the protection it gave.
+def test_a_withdrawn_verdict_stops_protecting_a_thumbnail(db_path: Path) -> None:
+    """An **Ignore** from **History** overturns the **Explicit Verdict** (#37), and with it the
+    protection it gave.
 
     The **Wallpaper** still has a **History** row, and its thumbnail is fetched again the next time that
     row is rendered. That is the trade eviction makes everywhere: the cost of getting it wrong is one
@@ -186,7 +187,7 @@ def test_a_cleared_verdict_stops_protecting_a_thumbnail(db_path: Path) -> None:
     harness.core.update_settings(min_width=3000)
     assert harness.core.evict_thumbnails().evicted == (), "a Ban protects the thumbnail"
 
-    harness.core.clear_verdict("judged")
+    harness.core.edit_verdict("judged", Verdict.IGNORE)
 
     assert harness.core.evict_thumbnails().evicted == ("judged",)
     assert cached(harness) == set()

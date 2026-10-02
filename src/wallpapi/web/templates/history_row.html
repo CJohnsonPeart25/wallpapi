@@ -1,20 +1,16 @@
 {#
   One **History** row: a **Wallpaper**, what its **Decision log** entries resolve to now, when it was last
   judged, and the controls that change it. Included by history.html and rendered on its own as the htmx
-  swap for an edit or a **Clearance** — a `<tr>` either way, because anything else swapped into a
-  `<tbody>` is dropped by the parser and the edit would seem to do nothing.
+  swap for an edit — a `<tr>` either way, because anything else swapped into a `<tbody>` is dropped by the
+  parser and the edit would seem to do nothing.
 
   Each **Verdict** control posts the **Verdict** the row should *end up* with, exactly as a tile does
-  (invariant 6): a replayed or duplicated click lands on the same state. Unlike a tile, the marked control
-  does not post an empty **Verdict** to undo itself — clearing is its own route, because a **Clearance** is
-  an entry in its own right and not the absence of one.
+  (invariant 6): a replayed or duplicated click lands on the same state. **Ignore** is one of them (#37):
+  it is how **History** withdraws a **Verdict**, the same entry unmarking a tile writes, and the latest
+  entry decides, so it overturns whatever stood.
 
   `hx-sync="this:replace"` for the same reason the tiles carry it: a late response must not swap a stale
   row back in over a newer one.
-
-  The clear control is rendered only where there is an **Explicit Verdict** to withdraw. A row resolving to
-  an **Ignore**, or to nothing at all, has none — `clear_verdict` refuses one anyway, but a button whose
-  answer is always "nothing happened" should not be on the page.
 
   The controls are Pico buttons with the rail's glyphs, and deliberately not the rail's classes: the rail
   is laid over a thumbnail and hidden until hovered, which is right for a tile and wrong for a row. The
@@ -36,7 +32,7 @@
     {% if standing %}
       {{ standing }}
     {% else %}
-      {# Reachable: an Explicit Verdict given and then Cleared, with no Ignores left standing. #}
+      {# Reachable only from a database written before #37, whose latest entry is a legacy Clearance. #}
       no verdict
     {% endif %}
   </td>
@@ -45,7 +41,7 @@
   </td>
   <td>
     <div class="history-verdicts">
-      {% for choice in ["favourite", "like", "ban"] %}
+      {% for choice in ["favourite", "like", "ban", "ignore"] %}
         <button
           type="button"
           class="{{ 'secondary' if standing == choice else 'outline secondary' }}"
@@ -58,17 +54,6 @@
           hx-sync="this:replace"
         >{{ choice }}</button>
       {% endfor %}
-      {% if row.clearable %}
-        <button
-          type="button"
-          class="outline secondary"
-          hx-post="/history/clear"
-          hx-vals='{"wallpaper_id": "{{ row.wallpaper.id }}"}'
-          hx-target="closest tr"
-          hx-swap="outerHTML"
-          hx-sync="this:replace"
-        >clear</button>
-      {% endif %}
     </div>
   </td>
   <td>

@@ -83,16 +83,19 @@ def _drafted_verdict(posted: str) -> Verdict | None:
 
 
 def _chosen_verdict(posted: str) -> Verdict:
-    """The **Verdict** a **History** control posted. Required, and never an **Ignore**.
+    """The **Verdict** a **History** control posted. Required, and **Ignore** included.
 
-    The tile version has a "no mark" to post; **History** has a clear, which is its own route because a
-    **Clearance** is an entry rather than the absence of one. So an empty **Verdict** here is a malformed
-    post rather than a meaning, and it is refused with the same 400 an unknown one gets.
+    Unlike a tile, which has "no mark" to post and leaves the **Ignore** to be derived at submit, a
+    **History** edit is appended at once, so withdrawing a **Verdict** there is posting the **Ignore**
+    itself (#37). An empty **Verdict** is a malformed post rather than a meaning, and it is refused with
+    the same 400 an unknown one gets.
     """
-    chosen = _drafted_verdict(posted)
-    if chosen is None:
+    if not posted:
         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="a verdict is required")
-    return chosen
+    try:
+        return Verdict(posted)
+    except ValueError:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
 
 
 def _history_filter(posted: str) -> Verdict | None:
@@ -111,14 +114,12 @@ def _history_filter(posted: str) -> Verdict | None:
 
 _HISTORY_REFUSAL_STATUS = {
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: HTTPStatus.NOT_FOUND,
-    HistoryRefused.Reason.IGNORE_NOT_CHOOSABLE: HTTPStatus.BAD_REQUEST,
-    HistoryRefused.Reason.NOTHING_TO_CLEAR: HTTPStatus.CONFLICT,
 }
 """What each **History** refusal is over HTTP.
 
-Every one of them is a hand-made post or a second tab — the page renders no control that can produce one,
-and no clear control at all on a row with nothing to clear. So they are status codes rather than a rendered
-branch: htmx does not swap a 4xx, which is exactly right when the answer is "that row did not change".
+Every one of them is a hand-made post — the page renders no control that can produce one. So they are
+status codes rather than a rendered branch: htmx does not swap a 4xx, which is exactly right when the
+answer is "that row did not change".
 """
 
 _FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
@@ -396,7 +397,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         return templates.TemplateResponse(request, "grid.html", {"batch": live})
 
     def render_history_row(request: Request, wallpaper_id: str) -> HTMLResponse:
-        """The one row an edit or a **Clearance** changed, swapped back into the listing.
+        """The one row an edit changed, swapped back into the listing.
 
         The row and not the page, for the reason a tile is swapped rather than the grid: an edit changes
         one **Wallpaper**, and re-rendering a hundred rows would fight with anything else the user has
@@ -436,18 +437,6 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     ) -> HTMLResponse:
         """Change a **Wallpaper**'s **Verdict** from **History**, and swap its row back."""
         refused = core.edit_verdict(wallpaper_id, _chosen_verdict(verdict))
-        if refused is not None:
-            raise refuse_history(refused)
-        return render_history_row(request, wallpaper_id)
-
-    @app.post("/history/clear", response_class=HTMLResponse)
-    def history_clear(request: Request, wallpaper_id: Annotated[str, Form()]) -> HTMLResponse:
-        """Withdraw a **Wallpaper**'s **Explicit Verdict**, and swap its row back.
-
-        Its own route rather than `/history/verdict` with an empty **Verdict**: a **Clearance** is an entry
-        of its own, and posting "no verdict" to say so would be the one spelling that means two things.
-        """
-        refused = core.clear_verdict(wallpaper_id)
         if refused is not None:
             raise refuse_history(refused)
         return render_history_row(request, wallpaper_id)

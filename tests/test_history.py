@@ -51,7 +51,6 @@ def test_rows_carry_the_wallpaper_its_resolved_verdict_and_its_latest_timestamp(
     assert row.wallpaper.page_url == "https://wallhaven.cc/w/only"
     assert row.resolved.verdict is Verdict.LIKE
     assert row.latest_at == harness.clock.now()
-    assert row.clearable is True
 
 
 def test_one_row_per_wallpaper_however_many_entries_it_has(db_path: Path) -> None:
@@ -63,7 +62,7 @@ def test_one_row_per_wallpaper_however_many_entries_it_has(db_path: Path) -> Non
     harness = make_harness(db_path, catalogue=(wallpaper("only"),))
     harness.core.update_settings(batch_size=1)
     judge(harness, only=Verdict.LIKE)
-    harness.core.clear_verdict("only")
+    judge(harness, only=Verdict.IGNORE)
     judge(harness, only=Verdict.BAN)
 
     listing = harness.core.list_history_rows()
@@ -121,26 +120,18 @@ def test_ignores_can_be_filtered_for_and_filtered_out(db_path: Path) -> None:
     ignored = harness.core.list_history_rows(verdict=Verdict.IGNORE)
 
     assert {row.wallpaper.id for row in ignored.rows} == {"wp0001", "wp0002"}
-    assert all(row.clearable is False for row in ignored.rows), "an Ignore has nothing to clear"
     assert harness.core.list_history_rows(verdict=Verdict.FAVOURITE).total == 1
 
 
-def test_a_cleared_wallpaper_still_has_a_row_and_matches_no_filter(db_path: Path) -> None:
-    """An **Explicit Verdict** given and withdrawn leaves two entries and nothing standing.
-
-    The row is there — the **Wallpaper** has been judged, and the user may want to judge it again — and it
-    matches no **Verdict** filter, because there is no **Verdict** for it to match.
-    """
+def test_a_verdict_withdrawn_from_history_is_listed_under_ignore(db_path: Path) -> None:
+    """An **Explicit Verdict** withdrawn with an **Ignore** (#37) resolves to that **Ignore**, so the row
+    moves from its old filter to the **Ignore** one rather than to no filter at all."""
     harness = make_harness(db_path, catalogue=catalogue_of(1))
     judge(harness, wp0000=Verdict.FAVOURITE)
-    harness.core.clear_verdict("wp0000")
+    judge(harness, wp0000=Verdict.IGNORE)
 
-    listing = harness.core.list_history_rows()
-
-    assert [row.wallpaper.id for row in listing.rows] == ["wp0000"]
-    assert listing.rows[0].resolved.verdict is None
-    assert listing.rows[0].clearable is False
-    assert all(harness.core.list_history_rows(verdict=v).total == 0 for v in Verdict)
+    assert [r.wallpaper.id for r in harness.core.list_history_rows(verdict=Verdict.IGNORE).rows] == ["wp0000"]
+    assert harness.core.list_history_rows(verdict=Verdict.FAVOURITE).total == 0
 
 
 def test_pages_are_a_hundred_rows_newest_first(db_path: Path) -> None:

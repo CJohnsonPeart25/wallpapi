@@ -1,7 +1,7 @@
 """The domain types the Core service, storage and the web layer all share.
 
-The vocabulary is `CONTEXT.md`'s and nothing else: a **Wallpaper**, the four **Verdicts**, the
-**Clearance** that withdraws one, and the **Decision log** entries they become.
+The vocabulary is `CONTEXT.md`'s and nothing else: a **Wallpaper**, the four **Verdicts**, the legacy
+**Clearance**, and the **Decision log** entries they become.
 """
 
 from __future__ import annotations
@@ -42,11 +42,11 @@ class Verdict(StrEnum):
 
 
 class Clearance(StrEnum):
-    """The **Decision log** entry that removes a **Wallpaper**'s **Explicit Verdict**.
+    """The legacy **Decision log** entry that withdrew a **Wallpaper**'s **Explicit Verdict**.
 
-    Deliberately not a fifth **Verdict**. CONTEXT.md is explicit that "a clearance is an entry in its own
-    right, not a verdict": nothing about a **Wallpaper** is being judged, a judgement is being withdrawn,
-    and after it the **Ignores** stack again exactly as they did before one was given.
+    Read and never written since #37 (ADR 0015): **History** withdraws a **Verdict** with an **Ignore**
+    now. It stays because the log is append-only and a database from before may hold one, which resolves
+    to nothing when it is the latest entry. Deliberately not a fifth **Verdict**.
 
     A one-member `StrEnum` rather than a bare `"cleared"` constant so that `Verdict | Clearance` is a
     closed union pyright narrows — every reader of an entry has to say which of the two it is handling —
