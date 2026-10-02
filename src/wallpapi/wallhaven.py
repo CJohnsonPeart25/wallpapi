@@ -52,6 +52,22 @@ class RateLimited(Exception):
         self.retry_after = retry_after
 
 
+class ThumbnailUnavailable(Exception):
+    """The thumbnail host answered, and its answer for this one file was no — a 404, a 403, a 5xx.
+
+    Told apart from a 429 and from a connection that failed because it says nothing about the host's
+    patience or about the network: the background downloader skips this one file and goes on to the next
+    after the ordinary gap, where a `RateLimited` or a transport failure makes it back off a minute (#44).
+
+    A type of its own for `RateLimited`'s reason: reading a status code in the Core service would put the
+    transport's spelling there.
+    """
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"the thumbnail host answered {status}")
+        self.status = status
+
+
 def _retry_after_seconds(value: str | None) -> float | None:
     """The `Retry-After` header as seconds, or `None` if it is absent or given as an HTTP date."""
     if value is None:
@@ -116,7 +132,11 @@ class Wallhaven(Protocol):
         ...
 
     def fetch_thumbnail(self, url: str) -> bytes:
-        """The bytes of one thumbnail. Not an **API call** — see `WallhavenClient.fetch_thumbnail`."""
+        """The bytes of one thumbnail. Not an **API call** — see `WallhavenClient.fetch_thumbnail`.
+
+        Raises `RateLimited` on a 429 and `ThumbnailUnavailable` on any other refusal. Anything else it
+        raises is "the fetch did not happen".
+        """
         ...
 
 
@@ -261,12 +281,18 @@ class WallhavenClient:
         """The bytes behind a `thumbs.small` URL.
 
         Not an **API call**: thumbnails come from `th.wallhaven.cc`, a separate host from `wallhaven.cc/api`,
-        so these must not be counted against the documented 45-per-minute limit. Throttling them is still
-        deferred — the **Thumbnail cache** means each tile is fetched once ever, and this runs on a request
-        thread with no `stop_event` to wait on cancellably (invariant 12). See `AGENTS.md`.
+        so these must not be counted against the documented 45-per-minute limit. They are paced instead by
+        the background downloader that fetches them for the whole **Pool** (#44, ADR 0017); the tile route
+        still calls this on a cache miss, unpaced, and since the downloader got there first that is rare.
+
+        A 429 becomes `RateLimited` and every other non-2xx `ThumbnailUnavailable`, because the downloader
+        backs off a minute for the first and skips the file for the second.
         """
         response = self._client.get(url)
-        response.raise_for_status()
+        if response.status_code == TOO_MANY_REQUESTS:
+            raise RateLimited(_retry_after_seconds(response.headers.get("Retry-After")))
+        if not response.is_success:
+            raise ThumbnailUnavailable(response.status_code)
         return response.content
 
     def close(self) -> None:

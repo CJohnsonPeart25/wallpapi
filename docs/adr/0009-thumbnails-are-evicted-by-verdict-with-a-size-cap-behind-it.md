@@ -70,7 +70,9 @@ re-fetches it when it is next rendered.
 
 Invariant 11's second half still applies and is still deferred: eviction makes thumbnail re-fetches
 slightly more likely, and those fetches remain unthrottled because they happen on a request thread with no
-`stop_event` to wait on cancellably.
+`stop_event` to wait on cancellably. (Since ADR 0017 a paced background downloader fetches every **Pool**
+member's thumbnail, so the request thread's fetch is a rare cache miss. The downloader holds off while the
+cache is at this cap.)
 
 The cap is a backstop, not a budget. With the default **Pool** target of 2000 and Wallhaven thumbnails at
 tens of kilobytes, five hundred megabytes is never reached in ordinary use and eviction is decided entirely

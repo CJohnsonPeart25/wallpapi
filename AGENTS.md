@@ -102,9 +102,12 @@ Each of these is one careless line away from being silently violated.
 
    The protocol carries two more methods since #14, and both are on it rather than on the one provider
    that needs them: `catch_up`, one step of a provider's own upkeep, called only from the background
-   thread; and `notice`, one line for the page when a provider is not at full strength. On the protocol,
-   because the alternative is the Core service knowing which provider it is holding, and the whole point
-   of the seam is that it does not. A provider with nothing to do returns `NOTHING_TO_CATCH_UP`.
+   thread; and `notice(pool)`, one line for the page when a provider is not at full strength. On the
+   protocol, because the alternative is the Core service knowing which provider it is holding, and the whole
+   point of the seam is that it does not. A provider with nothing to do returns `NOTHING_TO_CATCH_UP`.
+   Since #44 `notice` takes the whole **Pool**, the shape `similarities` takes, so the embedding provider can
+   say how much of it has an **Embedding**; `metadata` and `tags` ignore it. The Core service reads the
+   **Pool** and passes it in; the page still calls `similarity_notice()` with nothing (ADR 0017).
 
    Both sides are `Sequence[Wallpaper]` and not IDs, since #9: the baseline provider reads `.colours` and
    `.category`, and one handed only IDs would have to open a second seam into storage to get them.
@@ -193,6 +196,11 @@ Each of these is one careless line away from being silently violated.
    so an over-eager eviction costs a request and a too-timid one costs disk. See
    `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`.
 
+   Since #44 the cache holds every **Pool** member too: a background downloader fetches each one that is
+   missing, so the embedding provider's work list covers the **Pool**. It holds off while the cache is at
+   or over the cap, so a cap below what the **Pool** needs stalls it rather than churning against the
+   size-cap pass. See `docs/adr/0017-a-background-downloader-fetches-every-pool-thumbnail.md`.
+
 9. **Store the absolute path of every Library file written, and never touch a path outside the Library
    folder.** The **Library** path is a setting that can change; removing a **Favourite** must delete the
    file where it was actually written, not a path recomputed from current settings. Deletion must only ever
@@ -227,7 +235,8 @@ Each of these is one careless line away from being silently violated.
     from separate hosts (`th.wallhaven.cc`, `w.wallhaven.cc`). Still throttle image fetches modestly — those
     hosts sit behind DDoS protection with no published limits, and a **Batch** of 32 is 32 thumbnails plus
     full-resolution downloads. The rate limiter is a pure "how long must I wait" function over call
-    timestamps; the caller does the waiting.
+    timestamps; the caller does the waiting. Since #44 the background thumbnail downloader is paced the
+    same way, by `ratelimit.gap_needed`: one fetch at a time, `THUMBNAIL_GAP_SECONDS` (0.25s) apart.
 
 12. **Every wait is cancellable.** Sleeps are `stop_event.wait(n)`, never `time.sleep(n)`, and the httpx2
     timeout is set below the shutdown join timeout. Otherwise shutdown hangs on a thread stuck mid-request.
@@ -280,10 +289,12 @@ Each of these is one careless line away from being silently violated.
 
 ### Wiring traps
 
-- The background threads — the **Pool** refill and the **Similarity provider** upkeep — are opt-in via the
-  `refill` flag on `create_app`, off by default so that no test starts a thread against the fakes. `build_app`
+- The `refill` flag on `create_app` starts **three** threads: the **Pool** refill (`wallpapi-refill`), the
+  **Similarity provider** upkeep (`wallpapi-similarity`) and, since #44, the thumbnail downloader
+  (`wallpapi-thumbnails`). Off by default so that no test starts a thread against the fakes. `build_app`
   in `main.py` is the only caller that turns it on, and nothing tests `build_app` because it builds real clients
-  against `~/.wallpapi`. Deleting or mistyping that one line silently stops the **Pool** filling.
+  against `~/.wallpapi`. Deleting or mistyping that one line silently stops the **Pool** filling, and stops
+  its thumbnails being fetched and embedded with it.
 
 ## Deferred decisions
 
@@ -294,7 +305,7 @@ Decided, but deliberately not built yet. Defer explicitly; do not quietly forget
 | Telling the user a **Library** write failed *at submission* | later | `reconcile_library` collects failures rather than raising — a **Favourite** is recorded whether or not its download worked — and `submit_batch` still discards the report. #14 gave the *asked-for* half a voice: `download_favourites` reports written, skipped and failed, and the settings page says all three. The submit path has no such surface yet. Because the **Library** is derived, the retry needs no UI; saying so does. |
 | Caching full-resolution images | never | #8's fullscreen preview loads `full_url` straight from Wallhaven on demand. The only full-resolution files wallpapi keeps are **Favourites** in the **Library** (#5). See `docs/adr/0003-the-preview-loads-full-resolution-from-wallhaven.md`. |
 | Restarting a refill thread that has died | later | #6 landed the thread, its clean shutdown and the indicator. There is no supervisor: `refill_step` never raises and `refill_wait` only reads locally, so the loop has nothing to die of short of SQLite being gone — and `refill_status().running` puts that on the page rather than hiding it. Build a supervisor when something is actually seen to kill it. |
-| Throttling thumbnail and full-resolution fetches | later | Invariant 11 asks for modest throttling of `th.wallhaven.cc` and `w.wallhaven.cc`, which are not the 45-per-minute hosts. Deliberately not built at #6: those fetches happen on a request thread, which has no `stop_event` to wait on cancellably (invariant 12), and the **Thumbnail cache** already means each tile is fetched once ever. It needs the fetches to move off the request path first. |
+| Throttling full-resolution fetches | later | Invariant 11 asks for modest throttling of `th.wallhaven.cc` and `w.wallhaven.cc`, which are not the 45-per-minute hosts. **Thumbnails are done** (#44, ADR 0017): the background downloader fetches every **Pool** member's thumbnail off the request path, one at a time and 0.25s apart, so the tile route's own unpaced fetch is now a rare cache miss. **Full resolution stays deferred**: the preview loads it straight from Wallhaven in the browser (ADR 0003), and **Favourite** downloads run on a request thread with no `stop_event` to wait on cancellably (invariant 12). It needs those to move off the request path first. |
 | Renaming a **Mix** | later | #12 identifies a **Mix** by its name: `save_mix` upserts, so a new name makes a second **Mix** and the old one stays. A rename would have to move the `active_mix` setting with it in the same transaction — a second write and a second thing to get wrong — for a case delete-and-add already covers in two clicks. **Explore** and **Refine** would have to refuse it outright, which is a fourth refusal reason nobody has asked for. |
 | **Decision log** backup procedure | later | Cheap because the database is a single file at a known path: `VACUUM INTO`. |
 | Evicting a thumbnail the moment a **History** edit withdraws its **Verdict** | later | #7 evicts at the tail of `submit_batch` only. A **History** edit is a single-row htmx post and a directory scan does not belong on one; the next submission picks the file up. See `docs/adr/0009-thumbnails-are-evicted-by-verdict-with-a-size-cap-behind-it.md`. |

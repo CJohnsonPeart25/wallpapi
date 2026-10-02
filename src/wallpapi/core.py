@@ -26,11 +26,11 @@ from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
 from wallpapi.model import Clearance, DecisionEntry, Mix, Verdict, Wallpaper, Zone
-from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, wait_needed
+from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, gap_needed, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
-from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
+from wallpapi.wallhaven import RateLimited, SearchPage, ThumbnailUnavailable, Wallhaven
 
 SCHEMA_VERSION = 10
 
@@ -60,6 +60,30 @@ ERROR_BACKOFF_SECONDS = 60.0
 
 A minute, which is the window the 45-per-minute budget is counted over: if Wallhaven is refusing calls, the
 cheapest correct thing to do is to stop spending the budget for one whole window.
+"""
+
+THUMBNAIL_IDLE_RECHECK_SECONDS = 30.0
+"""How long the thumbnail downloader waits before looking again once no **Pool** member is missing one.
+
+The refill's idle recheck, for the same reasons: not zero, which would spin on a directory listing, and not
+minutes, because a submission retires a **Batch**'s worth of the **Pool** and the refill admits newcomers
+straight after, each of them work for the downloader (#44).
+"""
+
+THUMBNAIL_BACKOFF_SECONDS = 60.0
+"""How long the thumbnail downloader leaves the host alone after a 429 or a connection that failed.
+
+The refill's minute, for the same reason: whatever made that fetch fail would make the next one fail too.
+A `Retry-After` asking for longer is given longer; one asking for less does not shorten it, because the
+minute is the downloader's own manners towards a host with no published limit (invariant 11).
+"""
+
+THUMBNAIL_REFUSALS_BEFORE_GIVING_UP = 2
+"""How many refusals in a row the thumbnail downloader takes before it stops asking for a file.
+
+One retry, then nothing until restart. Without a limit a thumbnail that is gone for good is requested once
+a pass, every thirty seconds for as long as wallpapi runs, and the coverage on the page never reaches the
+whole **Pool**. A 429 or a failed connection is not a refusal and never counts.
 """
 
 POOL_SOURCE_RANDOM = "random"
@@ -193,9 +217,11 @@ DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
 """The **Thumbnail cache**'s size cap, as a backstop behind verdict-aware eviction (invariant 8).
 
 Five hundred megabytes is thousands of Wallhaven thumbnails — a **Pool** of 500 plus a **History** of
-**Explicit Verdicts** does not approach it — so in normal running the cap never fires and eviction is
-decided entirely by **Verdict**. It exists for the case eviction cannot reach: a **Pool** target raised a
-long way, or a machine that has been judging **Wallpapers** for a year.
+**Explicit Verdicts** does not approach it, at about 23KiB a thumbnail (measured at #44) — so in normal
+running the cap never fires and eviction is decided entirely by **Verdict**. The thumbnail downloader
+holds off while the cache is at it, so a cap set below what the **Pool** needs stalls the downloader
+rather than churning against the size-cap pass (ADR 0017). It exists for the case eviction cannot reach:
+a **Pool** target raised a long way, or a machine that has been judging **Wallpapers** for a year.
 """
 
 BYTES_IN_A_MEGABYTE = 1024 * 1024
@@ -720,6 +746,20 @@ class CoreService:
         self._refill_last_error: str | None = None
         self._refill_last_error_at: dt.datetime | None = None
         self._refill_thread_running = False
+
+        # The thumbnail downloader's own state (#44). Touched only by its thread, which is the one caller of
+        # `thumbnail_wait` and `thumbnail_step`, so it needs no lock.
+        self._last_thumbnail_fetch: float | None = None
+        self._thumbnails_not_before: float | None = None
+        self._thumbnail_pass: deque[tuple[str, Path, str]] = deque()
+        """What is left of the current pass round the **Pool**: `(wallpaper id, destination, source URL)`."""
+        self._thumbnail_refusals: dict[str, int] = {}
+        """Consecutive `ThumbnailUnavailable` answers per **Wallpaper**. A 429 or a failed connection is
+        about the host, not the file, and neither adds to nor clears a count."""
+        self._thumbnails_given_up: set[str] = set()
+        """**Wallpapers** whose thumbnail was refused `THUMBNAIL_REFUSALS_BEFORE_GIVING_UP` times in a row.
+        Never asked for again in this process and left out of the coverage the page is told about. In
+        memory only, so a restart tries once more — the footing the embedder's unreadable set is on."""
 
         self._migrate()
 
@@ -1277,8 +1317,15 @@ class CoreService:
         the page's seam to everything (invariant 1), and #14's embedding provider has to be able to say "I
         am still fetching my model, so these **Scores** are the baseline's" without the Core service
         learning what a model is.
+
+        Handed the whole **Pool** (#44), so the embedding provider can say how much of it it has embedded —
+        less the members the thumbnail downloader has given up on, which can never be embedded, so that the
+        line clears once everything that can be embedded has been.
+        The **Pool** is read here rather than passed in: the page's seam is the Core service, and the
+        **Pool** is storage.
         """
-        return self._similarity.notice()
+        given_up = self._thumbnails_given_up
+        return self._similarity.notice([w for w in self._pool_wallpapers() if w.id not in given_up])
 
     def similarity_step(self, stop_event: threading.Event) -> float:
         """One step of the **Similarity provider**'s own upkeep; seconds to wait before the next.
@@ -1915,6 +1962,108 @@ class CoreService:
         data = self._wallhaven.fetch_thumbnail(source_url)
         write_atomically(destination, data)
         return destination
+
+    def thumbnail_wait(self) -> float:
+        """Seconds the thumbnail downloader should wait before calling `thumbnail_step` again.
+
+        The Core service decides how long and the thread waits, cancellably — the refill's split, for the
+        refill's reason (invariants 11 and 12). Two things can ask for a wait and the longer wins: the gap
+        since the last fetch (`gap_needed`), and a hold — the end of a pass, a cache at its cap, nothing
+        missing, or a back-off after a 429 or a failed connection.
+        """
+        now = self._clock.monotonic()
+        paced = gap_needed(self._last_thumbnail_fetch, now=now)
+        held = 0.0 if self._thumbnails_not_before is None else self._thumbnails_not_before - now
+        return max(paced, held, 0.0)
+
+    def thumbnail_step(self) -> None:
+        """One step of the thumbnail downloader: at most one fetch from the thumbnail host, never raising.
+
+        #44, ADR 0017. Fetches the thumbnail of every **Pool** member that has none, so the embedding
+        provider — whose work list is the **Thumbnail cache** — covers the **Wallpapers** a **Batch** is
+        drawn from and not only the ones already shown. Called from `thumbnail_loop` and nowhere else:
+        never on a request, never inside `refill_loop`, never on the similarity thread.
+
+        **A pass** is the **Pool** members missing a file, in `wallpaper_id` order, listed once and then
+        taken one per step. The cache's size is checked once, before the pass is listed: at or over
+        `thumbnail_cache_max_mb`, nothing is fetched and the next look is in
+        `THUMBNAIL_IDLE_RECHECK_SECONDS`. So is the next pass after this one ends, which is what keeps a
+        file the host keeps refusing from being asked for four times a second.
+
+        **Rechecked before each fetch**: a file that now exists — the tile route got there first — or a
+        **Wallpaper** that has since left the **Pool** is skipped. A race with the tile route is still
+        possible and harmless: both writes are atomic to the same path, so it costs one request at most.
+
+        A refusal (`ThumbnailUnavailable`) skips that file until the next pass, and a second refusal in a
+        row gives up on it until restart (`THUMBNAIL_REFUSALS_BEFORE_GIVING_UP`). A 429 or anything else
+        backs off `THUMBNAIL_BACKOFF_SECONDS` — "anything else" deliberately, as in `refill_step`, so that
+        the transport's spelling stays out of the Core service and no unexpected type can kill the thread.
+        """
+        now = self._clock.monotonic()
+        if not self._thumbnail_pass:
+            if self._thumbnail_cache_full():
+                self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
+                return
+            self._thumbnail_pass.extend(self._pool_missing_thumbnails())
+            if not self._thumbnail_pass:
+                self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
+                return
+
+        wallpaper_id, destination, source_url = self._thumbnail_pass.popleft()
+        if not self._thumbnail_pass:
+            # The end of a pass. Whatever this one failed to fetch is asked for once a pass, not as fast as
+            # the gap allows: a file the host keeps refusing must not be requested four times a second.
+            self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
+        if destination.exists() or not self._in_pool(wallpaper_id):
+            return
+
+        self._last_thumbnail_fetch = now
+        try:
+            data = self._wallhaven.fetch_thumbnail(source_url)
+        except ThumbnailUnavailable:
+            refusals = self._thumbnail_refusals.get(wallpaper_id, 0) + 1
+            self._thumbnail_refusals[wallpaper_id] = refusals
+            if refusals >= THUMBNAIL_REFUSALS_BEFORE_GIVING_UP:
+                self._thumbnails_given_up.add(wallpaper_id)
+            return
+        except RateLimited as limited:
+            self._thumbnails_not_before = now + max(limited.retry_after or 0.0, THUMBNAIL_BACKOFF_SECONDS)
+            return
+        except Exception:
+            self._thumbnails_not_before = now + THUMBNAIL_BACKOFF_SECONDS
+            return
+        self._thumbnail_refusals.pop(wallpaper_id, None)
+        try:
+            write_atomically(destination, data)
+        except OSError:
+            # The file is still missing, so the next pass asks for it again. The thread must not die of a
+            # disk that refused one write.
+            return
+
+    def _pool_missing_thumbnails(self) -> list[tuple[str, Path, str]]:
+        """Every **Pool** member with no file in the **Thumbnail cache**, in `wallpaper_id` order, less any
+        the downloader has given up on."""
+        missing: list[tuple[str, Path, str]] = []
+        for row in self._connect().execute(_SELECT_POOL_THUMBNAILS).fetchall():
+            wallpaper_id, source_url = str(row["id"]), str(row["thumbnail_url"])
+            if wallpaper_id in self._thumbnails_given_up:
+                continue
+            destination = self.thumbnail_dir / f"{wallpaper_id}{_url_suffix(source_url)}"
+            if not destination.exists():
+                missing.append((wallpaper_id, destination, source_url))
+        return missing
+
+    def _thumbnail_cache_full(self) -> bool:
+        """Whether the **Thumbnail cache** is at or over `thumbnail_cache_max_mb`. Asked once a pass."""
+        directory = self.thumbnail_dir
+        held = sum(cached.size for cached in _cached_thumbnails(directory)) if directory.is_dir() else 0
+        return held >= self.get_settings().thumbnail_cache_max_mb * BYTES_IN_A_MEGABYTE
+
+    def _in_pool(self, wallpaper_id: str) -> bool:
+        return (
+            self._connect().execute("SELECT 1 FROM pool WHERE wallpaper_id = ?", (wallpaper_id,)).fetchone()
+            is not None
+        )
 
     def evict_thumbnails(self) -> ThumbnailEviction:
         """Clear out the **Thumbnail cache**, by **Verdict** first and by size only as a backstop.
@@ -2852,6 +3001,17 @@ ORDER BY pool.rowid
 
 Ordered because the sample is drawn by the seeded random source: without an `ORDER BY`, SQLite's row order
 is an implementation detail and the same seed over the same **Pool** could produce a different **Batch**.
+"""
+
+_SELECT_POOL_THUMBNAILS = """
+SELECT w.id, w.thumbnail_url
+FROM pool
+JOIN wallpapers AS w ON w.id = pool.wallpaper_id
+ORDER BY pool.wallpaper_id
+"""
+"""Every **Pool** member's thumbnail URL, in the order the downloader fetches them (#44).
+
+By `wallpaper_id`, the primary key, so the order is deterministic and needs no index of its own.
 """
 
 _SELECT_DECIDED_WALLPAPERS = """

@@ -56,7 +56,9 @@ class SimilarityProvider(Protocol):
         page load. `thumbnails` is the **Thumbnail cache** directory, because the one image of a
         **Wallpaper** wallpapi already has is the one in there (invariant 8) — a **Wallpaper** whose
         thumbnail has not been fetched yet simply is not in it, so it gets no embedding and every pair it
-        is in falls back to the baseline until it has one.
+        is in falls back to the baseline until it has one. Since #44 a background downloader fetches a
+        thumbnail for every **Pool** member, so the work list covers the **Pool** and not only what has
+        been on screen.
 
         `stop_event` is the same one the refill waits on. Every wait inside an implementation is
         `stop_event.wait(n)` and every long piece of work checks it between chunks, so shutdown does not
@@ -65,13 +67,18 @@ class SimilarityProvider(Protocol):
         """
         ...
 
-    def notice(self) -> str | None:
+    def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         """One line for the **Batch** page when this provider is not working at full strength, or `None`.
 
         The page has a seam to exactly one thing (invariant 1), so a provider that is degraded — the
-        embedding provider before its model has downloaded, or after the download failed — has to be able
-        to say so through the Core service or not at all. Silence would be worse than a line: **Scores**
-        computed from the fallback look exactly like **Scores** computed properly.
+        embedding provider before its model has downloaded, or after the download failed, or while part of
+        the **Pool** has no **Embedding** yet — has to be able to say so through the Core service or not at
+        all. Silence would be worse than a line: **Scores** computed from the fallback look exactly like
+        **Scores** computed properly.
+
+        `pool` is the whole **Pool**, the same shape `similarities` takes (#44), so that a provider can say
+        how much of it it covers without the Core service learning which provider it holds. A provider with
+        nothing to say about coverage ignores it.
 
         A sentence for a person, not a reason code. Nothing branches on it.
         """
@@ -156,8 +163,9 @@ class MetadataSimilarityProvider:
         del thumbnails, stop_event
         return NOTHING_TO_CATCH_UP
 
-    def notice(self) -> str | None:
-        """Never degraded: it has no model to fetch and no cache to fill."""
+    def notice(self, pool: Sequence[Wallpaper]) -> str | None:
+        """Never degraded: it has no model to fetch and no cache to fill, so it covers every **Pool**."""
+        del pool
         return None
 
 

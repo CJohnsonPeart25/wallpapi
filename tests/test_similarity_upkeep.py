@@ -114,7 +114,7 @@ def test_a_provider_with_no_model_source_keeps_nothing_up() -> None:
     bare = EmbeddingSimilarityProvider(EmbeddingCache(Path("unused")))
 
     assert bare.catch_up(Path("unused"), threading.Event()) == NOTHING_TO_CATCH_UP
-    assert bare.notice() is None
+    assert bare.notice([]) is None
 
 
 def test_before_the_model_arrives_the_page_is_told(tmp_path: Path) -> None:
@@ -122,7 +122,7 @@ def test_before_the_model_arrives_the_page_is_told(tmp_path: Path) -> None:
     to be said out loud or it is invisible."""
     embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "model.onnx"))
 
-    notice = embedding.notice()
+    notice = embedding.notice([])
 
     assert notice is not None
     assert "colour and category" in notice
@@ -191,7 +191,7 @@ def test_a_provider_that_can_already_embed_says_nothing(tmp_path: Path) -> None:
     strength from the start, and a line saying otherwise would be a line that is simply untrue."""
     embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
 
-    assert embedding.notice() is None
+    assert embedding.notice([]) is None
 
 
 def test_a_model_file_that_will_not_open_says_so_rather_than_failing_silently(tmp_path: Path) -> None:
@@ -204,7 +204,7 @@ def test_a_model_file_that_will_not_open_says_so_rather_than_failing_silently(tm
 
     embedding.catch_up(thumbnails(tmp_path / "thumbs", "one"), threading.Event())
 
-    notice = embedding.notice()
+    notice = embedding.notice([])
     assert notice is not None
     assert "could not open its model" in notice
     assert cache.embedded_ids() == set()
@@ -218,7 +218,7 @@ def test_a_failed_download_says_so_and_keeps_serving_the_baseline(tmp_path: Path
 
     embedding.catch_up(thumbnails(tmp_path / "thumbs", "one"), threading.Event())
 
-    notice = embedding.notice()
+    notice = embedding.notice([])
     assert notice is not None
     assert "connection refused" in notice
     assert cache.embedded_ids() == set()
@@ -271,3 +271,88 @@ def test_an_embedded_wallpaper_stops_using_the_baseline(tmp_path: Path) -> None:
     matrix = embedding.similarities([wallpaper("a")], [wallpaper("b")])
 
     assert float(matrix[0, 0]) == pytest.approx(0.5)
+
+
+# -- coverage of the Pool (#44) ---------------------------------------------------------------------------
+
+
+def test_the_page_is_told_how_much_of_the_pool_is_embedded(tmp_path: Path) -> None:
+    """#44: until every **Pool** member has an **Embedding**, some of its pairs are the baseline's, and a
+    **Score** from the baseline looks exactly like one from the model — so the page says how much."""
+    embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
+    cache.store("a", EAST)
+    cache.store("b", NORTH)
+    cache.store("retired", EAST)
+
+    notice = embedding.notice([wallpaper("a"), wallpaper("b"), wallpaper("c")])
+
+    assert notice is not None
+    assert "2 of 3 Pool wallpapers" in notice
+
+
+def test_coverage_is_counted_in_thousands_the_way_a_person_reads_them(tmp_path: Path) -> None:
+    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
+
+    notice = embedding.notice([wallpaper(f"w{n:04d}") for n in range(1200)])
+
+    assert notice is not None
+    assert "0 of 1,200 Pool wallpapers" in notice
+
+
+def test_a_wholly_embedded_pool_adds_no_line(tmp_path: Path) -> None:
+    """Acceptance criterion: nothing extra once coverage is complete. A retired **Wallpaper** with an
+    **Embedding** does not count, and an empty **Pool** is not a **Pool** short of anything."""
+    embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
+    cache.store("a", EAST)
+    cache.store("b", NORTH)
+
+    assert embedding.notice([wallpaper("a"), wallpaper("b")]) is None
+    assert embedding.notice([]) is None
+
+
+def test_a_model_still_on_its_way_outranks_coverage(tmp_path: Path) -> None:
+    """Acceptance criterion: the pending, failed and unusable states take precedence. Coverage is about
+    how far the model has got; before the model there is nothing to have got far with."""
+    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "model.onnx"))
+
+    notice = embedding.notice([wallpaper("a")])
+
+    assert notice is not None
+    assert "still starting up" in notice
+    assert "Pool wallpapers" not in notice
+
+
+def test_a_failed_download_outranks_coverage(tmp_path: Path) -> None:
+    embedding, _ = provider(tmp_path, model=ModelThatFails("connection refused"))
+    embedding.catch_up(tmp_path / "thumbs", threading.Event())
+
+    notice = embedding.notice([wallpaper("a")])
+
+    assert notice is not None
+    assert "connection refused" in notice
+    assert "Pool wallpapers" not in notice
+
+
+def test_an_unusable_model_outranks_coverage(tmp_path: Path) -> None:
+    not_a_model = tmp_path / "m.onnx"
+    not_a_model.write_bytes(b"this is not an onnx graph")
+    embedding, _ = provider(tmp_path, model=ModelOnDisk(not_a_model))
+    embedding.catch_up(tmp_path / "thumbs", threading.Event())
+
+    notice = embedding.notice([wallpaper("a")])
+
+    assert notice is not None
+    assert "could not open its model" in notice
+
+
+def test_a_thumbnail_the_embedder_cannot_read_is_left_out_of_coverage(tmp_path: Path) -> None:
+    """Lead review of #56: it is never going to be embedded, so counting it would hold the line on the page
+    for ever. Out of the count and out of the total, so the notice clears once the rest are done."""
+    embedder = CountingEmbedder(unreadable=["broken"])
+    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
+    embedding.catch_up(thumbnails(tmp_path / "thumbs", "broken", "fine"), threading.Event())
+
+    assert embedding.notice([wallpaper("broken"), wallpaper("fine")]) is None
+    notice = embedding.notice([wallpaper("broken"), wallpaper("fine"), wallpaper("waiting")])
+    assert notice is not None
+    assert "1 of 2 Pool wallpapers" in notice
