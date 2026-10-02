@@ -170,3 +170,39 @@ def test_a_wallpaper_that_left_the_pool_mid_pass_is_not_fetched(db_path: Path) -
     _run(harness, 2)
 
     assert harness.wallhaven.thumbnail_fetches == _urls((catalogue[0], catalogue[2]))
+
+
+def _fill_cache(harness: Harness, megabytes: int) -> Path:
+    """A **Thumbnail cache** holding `megabytes` already — one file standing in for many."""
+    harness.core.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    filler = harness.core.thumbnail_dir / "zz9999.jpg"
+    filler.write_bytes(b"\0" * (megabytes * 1024 * 1024))
+    return filler
+
+
+def test_a_cache_at_its_cap_fetches_nothing_and_looks_again_later(db_path: Path) -> None:
+    """Acceptance criterion. Without it a cap below what the **Pool** needs would churn: the size-cap pass
+    at submission deletes **Pool** thumbnails and the downloader fetches them straight back."""
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    harness.core.update_settings(thumbnail_cache_max_mb=1)
+    filler = _fill_cache(harness, 1)
+
+    _run(harness, 3)
+
+    assert harness.wallhaven.thumbnail_fetches == []
+    assert harness.core.thumbnail_wait() == THUMBNAIL_IDLE_RECHECK_SECONDS
+
+    filler.unlink()
+    _run(harness, 1)
+
+    assert harness.wallhaven.thumbnail_fetches == [wallpaper("aa0001").thumbnail_url]
+
+
+def test_a_cache_under_its_cap_is_filled(db_path: Path) -> None:
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    harness.core.update_settings(thumbnail_cache_max_mb=2)
+    _fill_cache(harness, 1)
+
+    _run(harness, 3)
+
+    assert len(harness.wallhaven.thumbnail_fetches) == 3

@@ -1950,6 +1950,9 @@ class CoreService:
         """One step of the thumbnail downloader: at most one fetch from the thumbnail host, never raising."""
         now = self._clock.monotonic()
         if not self._thumbnail_pass:
+            if self._thumbnail_cache_full():
+                self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
+                return
             self._thumbnail_pass.extend(self._pool_missing_thumbnails())
             if not self._thumbnail_pass:
                 self._thumbnails_not_before = now + THUMBNAIL_IDLE_RECHECK_SECONDS
@@ -1985,6 +1988,12 @@ class CoreService:
             if not destination.exists():
                 missing.append((wallpaper_id, destination, source_url))
         return missing
+
+    def _thumbnail_cache_full(self) -> bool:
+        """Whether the **Thumbnail cache** is at or over `thumbnail_cache_max_mb`. Asked once a pass."""
+        directory = self.thumbnail_dir
+        held = sum(cached.size for cached in _cached_thumbnails(directory)) if directory.is_dir() else 0
+        return held >= self.get_settings().thumbnail_cache_max_mb * BYTES_IN_A_MEGABYTE
 
     def _in_pool(self, wallpaper_id: str) -> bool:
         return (
