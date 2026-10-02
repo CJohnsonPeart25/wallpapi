@@ -21,7 +21,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from wallpapi.allocation import ZONE_ORDER, allocate
+from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
 from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
@@ -1185,9 +1185,10 @@ class CoreService:
 
         Three steps, and each of them is somewhere a reader can check on its own. `allocate` turns the
         **Mix** and the size into slots per **Zone**. `_draw_order` puts each **Zone** into the order it
-        will give its **Wallpapers** up in — highest **Score** first for **Bangers**, weighted random for
-        **Unknown** and **Dud**. Then the slots are filled from those orders, and whatever a **Zone** could
-        not supply is refilled in `ZONE_ORDER`: **Unknown**, then **Banger**, then **Dud**.
+        will give its **Wallpapers** up in — highest **Score** first for **Bangers**, one from each
+        look-alike group first for **Unknowns**, random for **Duds**. Then the slots are filled from those
+        orders, and whatever a **Zone** could not supply is refilled in `ZONE_ORDER`: **Unknown**, then
+        **Banger**, then **Dud**.
 
         **A shortfall is not an error.** A **Decision log** with nothing in it has no **Bangers** at all,
         so **Explore**'s twenty per cent has nowhere to come from and the whole **Batch** is **Unknown** —
@@ -1203,7 +1204,7 @@ class CoreService:
         user never asked to see.
         """
         slots = allocate(self.active_mix(), size, self._random)
-        orders = {zone: self._draw_order(zone, classified) for zone in ZONE_ORDER}
+        orders = {zone: self._draw_order(zone, classified, slots[zone]) for zone in ZONE_ORDER}
         taken = dict.fromkeys(ZONE_ORDER, 0)
         chosen: list[ScoredWallpaper] = []
 
@@ -1223,7 +1224,9 @@ class CoreService:
             shortfall -= take(zone, shortfall)
         return self._random.sample(chosen, len(chosen))
 
-    def _draw_order(self, zone: Zone, classified: Sequence[ScoredWallpaper]) -> list[ScoredWallpaper]:
+    def _draw_order(
+        self, zone: Zone, classified: Sequence[ScoredWallpaper], slots: int
+    ) -> list[ScoredWallpaper]:
         """The order one **Zone** gives its **Wallpapers** up in, best first.
 
         An order rather than a sample, so that "take `k`" and "take `k` more because another **Zone** fell
@@ -1232,17 +1235,31 @@ class CoreService:
         **Bangers** are sorted by **Score**, highest first, over an already randomly ordered list — which is
         how ties are broken by the random source rather than by whatever order the **Pool** query returned,
         while staying reproducible under the seed. `sort` is stable, so the random order is what survives
-        inside a run of equal **Scores**. **Unknown** and **Dud** keep the random order they were given:
-        there is no "best" **Unknown**, and preferring the least negative **Dud** would be ranking by a
-        number the user is not being shown.
+        inside a run of equal **Scores**. **Duds** keep the random order they were given: preferring the
+        least negative **Dud** would be ranking by a number the user is not being shown.
+
+        **The Unknowns are spread one per group (#45, ADR 0018).** The best **Unknown** is the one that
+        teaches the most, and covering new ground is the proxy: `varied_order` clusters them by the
+        provider's `vectors` into as many groups as there are **Unknown** `slots` and puts one from each
+        group first, over the random order, so that a **Batch** does not spend four tiles on one idea.
+        A provider with no positions answers `None` and the random order stands, untouched — no random
+        number spent — and so does a **Pool** with fewer embedded **Unknowns** than slots. Nothing about
+        the groups is kept: they are worked out again on every mint, from this classification
+        (invariant 2).
 
         Every member is undecided (ADR 0016), so nothing here is weighted by what the user has already
-        said about it. The **Revisit weight** that once was (ADR 0012) went with #38.
+        said about it. The **Revisit weight** that once was (ADR 0012) went with #38. The favourite count
+        that weights the pick within a group is Wallhaven's, not the user's.
         """
         members = [scored for scored in classified if scored.zone is zone]
         ordered = self._random.sample(members, len(members))
         if zone is Zone.BANGER:
             ordered.sort(key=lambda scored: scored.score, reverse=True)
+        if zone is Zone.UNKNOWN:
+            vectors = self._similarity.vectors([scored.wallpaper for scored in ordered])
+            if vectors is not None:
+                favourites = [scored.wallpaper.favourites for scored in ordered]
+                ordered = [ordered[i] for i in varied_order(vectors, favourites, slots, self._random)]
         return ordered
 
     # -- scoring and zones -----------------------------------------------------------------------------
