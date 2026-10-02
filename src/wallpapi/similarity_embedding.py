@@ -121,6 +121,17 @@ _FAILED = (
 """And after the fetch failed. The failure is quoted rather than summarised, because the two causes worth
 telling apart — no network, and a checksum that did not match — read completely differently."""
 
+_COVERAGE = (
+    "Image similarity covers {embedded:,} of {pool:,} Pool wallpapers so far — the rest are compared by "
+    "colour and category until their thumbnails are embedded."
+)
+"""And once the model is working, while part of the **Pool** has no **Embedding** yet (#44).
+
+A count rather than a percentage, because the two numbers are what a person can check against the
+indicator beside it. It goes away by itself: the downloader fetches every **Pool** member's thumbnail and
+`catch_up` embeds each one it finds.
+"""
+
 _UNUSABLE = (
     "Image similarity could not open its model ({failure}) — wallpapers are being compared by colour and "
     "category instead. Deleting the file under `models/` will fetch it again."
@@ -342,15 +353,26 @@ class EmbeddingSimilarityProvider:
         self._embed(pending[: self._batch])
         return 0.0 if len(pending) > self._batch else CAUGHT_UP
 
-    def notice(self) -> str | None:
+    def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         """What the page says while this provider is not yet itself, or `None` once it is.
 
         **Scores** computed from the fallback are indistinguishable from **Scores** computed properly, so
         a provider quietly running on colours alone would be a page quietly telling the user something
         else than it appears to. One line, in the words of somebody who did not read this module.
+
+        A model that is pending, failed or unusable is the whole story, and says so. Once the model is
+        working, the line is how much of `pool` has an **Embedding** (#44), until all of it has. A
+        provider with no model to manage reports nothing, as it always has: nothing it does will move
+        the count.
         """
         with self._lock:
-            return self._state
+            state = self._state
+        if state is not None or self._model is None:
+            return state
+        embedded = len(self._vectors.vectors_for([w.id for w in pool]))
+        if embedded >= len(pool):
+            return None
+        return _COVERAGE.format(embedded=embedded, pool=len(pool))
 
     def _ready(self, stop_event: threading.Event) -> bool:
         """Fetch and open the model, once. `False` means this stays on the baseline for now."""

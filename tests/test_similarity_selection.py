@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fakes import wallpaper
 from wallpapi.main import build_similarity
 from wallpapi.similarity import NOTHING_TO_CATCH_UP, MetadataSimilarityProvider
 from wallpapi.similarity_embedding import EmbeddingSimilarityProvider
@@ -80,4 +81,17 @@ def test_the_tag_provider_is_wired_to_nothing_that_spends_api_calls(
     provider = build_similarity(tmp_path)
 
     assert provider.catch_up(tmp_path, threading.Event()) == NOTHING_TO_CATCH_UP
-    assert provider.notice() is None
+    assert provider.notice([]) is None
+
+
+@pytest.mark.parametrize("name", ["metadata", "tags"])
+def test_the_providers_that_read_no_thumbnails_say_nothing_about_the_pool(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#44 hands every provider the **Pool**. These two ignore it and return what they did before: the
+    baseline is never degraded, and the tag provider cannot fill its cache without spending the refill's
+    budget, so a count of the untagged would be a line nobody can act on."""
+    monkeypatch.setenv("WALLPAPI_SIMILARITY", name)
+    provider = build_similarity(tmp_path)
+
+    assert provider.notice([wallpaper("a"), wallpaper("b")]) is None

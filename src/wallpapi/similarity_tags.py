@@ -232,14 +232,14 @@ class TagSimilarityProvider:
         del thumbnails, stop_event
         return NOTHING_TO_CATCH_UP
 
-    def notice(self) -> str | None:
+    def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         """Nothing. An untagged **Wallpaper** falls back to the baseline and the page is still right.
 
-        It would be reasonable to say "n of the **Pool** is untagged" here, but this provider cannot know
-        how big the **Pool** is — it is handed the **Wallpapers** of one matrix and nothing else — and
-        guessing from the size of its own cache would be a number that means something different every
-        time it is read.
+        Since #44 it is handed the **Pool** and could say "n of the **Pool** is untagged", but the only fill
+        for its cache is a step somebody runs by hand at one **API call** a **Wallpaper**. A count nothing
+        in the app will ever move is a line nobody can act on, so the argument is ignored.
         """
+        del pool
         return None
 
 

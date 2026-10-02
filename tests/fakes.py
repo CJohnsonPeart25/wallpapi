@@ -239,6 +239,8 @@ class FakeSimilarityProvider:
         self.notice_text = notice
         """What `notice()` answers. `None` — a provider working at full strength — unless a test says
         otherwise, because every test that is not about the notice wants no extra line on the page."""
+        self.notice_pools: list[tuple[str, ...]] = []
+        """The **Pool** each `notice` was asked about, as IDs."""
         self.catch_up_calls: list[Path] = []
         self.catch_up_started = threading.Event()
         """Set by the first `catch_up`. The thread test waits on this rather than guessing how long the
@@ -262,7 +264,8 @@ class FakeSimilarityProvider:
         self.catch_up_started.set()
         return self._catch_up_waits.pop(0) if self._catch_up_waits else NOTHING_TO_CATCH_UP
 
-    def notice(self) -> str | None:
+    def notice(self, pool: Sequence[Wallpaper]) -> str | None:
+        self.notice_pools.append(tuple(w.id for w in pool))
         return self.notice_text
 
     def _between(self, pool_id: str, decided_id: str) -> float:

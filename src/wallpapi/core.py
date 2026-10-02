@@ -1300,8 +1300,12 @@ class CoreService:
         the page's seam to everything (invariant 1), and #14's embedding provider has to be able to say "I
         am still fetching my model, so these **Scores** are the baseline's" without the Core service
         learning what a model is.
+
+        Handed the whole **Pool** (#44), so the embedding provider can say how much of it it has embedded.
+        The **Pool** is read here rather than passed in: the page's seam is the Core service, and the
+        **Pool** is storage.
         """
-        return self._similarity.notice()
+        return self._similarity.notice(self._pool_wallpapers())
 
     def similarity_step(self, stop_event: threading.Event) -> float:
         """One step of the **Similarity provider**'s own upkeep; seconds to wait before the next.
