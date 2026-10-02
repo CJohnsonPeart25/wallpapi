@@ -57,7 +57,10 @@ cached file that has no vector, and it still knows nothing about the **Pool**.
   30s after this one ends.** Without that, a file the host refuses every time would be asked for four
   times a second whenever it was the only one missing.
 - **Failures.** A refusal (`ThumbnailUnavailable`, any non-2xx other than 429) skips that file until the
-  next pass, and the next member follows after the ordinary gap. A 429 or a connection error backs off
+  next pass, and the next member follows after the ordinary gap. A second refusal in a row gives up on that
+  file until restart, in memory only like the embedder's unreadable set, and both the given-up and the
+  unreadable are left out of the coverage count and its total, so the notice clears once everything that
+  can be embedded has been. A 429 or a connection error never counts as a refusal. It backs off
   60s (`THUMBNAIL_BACKOFF_SECONDS`). A `Retry-After` longer than that is honoured, and a shorter one does
   not shorten it. Anything else the client raises is treated like a connection error, as `refill_step`
   does, so the transport's spelling stays out of the Core service. A write the disk refuses costs that one

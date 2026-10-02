@@ -78,6 +78,14 @@ A `Retry-After` asking for longer is given longer; one asking for less does not 
 minute is the downloader's own manners towards a host with no published limit (invariant 11).
 """
 
+THUMBNAIL_REFUSALS_BEFORE_GIVING_UP = 2
+"""How many refusals in a row the thumbnail downloader takes before it stops asking for a file.
+
+One retry, then nothing until restart. Without a limit a thumbnail that is gone for good is requested once
+a pass, every thirty seconds for as long as wallpapi runs, and the coverage on the page never reaches the
+whole **Pool**. A 429 or a failed connection is not a refusal and never counts.
+"""
+
 POOL_SOURCE_RANDOM = "random"
 POOL_SOURCE_LIKE = "like"
 """How a **Pool** member got there: a random walk, or a like: search on a **Favourite** (#13)."""
@@ -745,6 +753,13 @@ class CoreService:
         self._thumbnails_not_before: float | None = None
         self._thumbnail_pass: deque[tuple[str, Path, str]] = deque()
         """What is left of the current pass round the **Pool**: `(wallpaper id, destination, source URL)`."""
+        self._thumbnail_refusals: dict[str, int] = {}
+        """Consecutive `ThumbnailUnavailable` answers per **Wallpaper**. A 429 or a failed connection is
+        about the host, not the file, and neither adds to nor clears a count."""
+        self._thumbnails_given_up: set[str] = set()
+        """**Wallpapers** whose thumbnail was refused `THUMBNAIL_REFUSALS_BEFORE_GIVING_UP` times in a row.
+        Never asked for again in this process and left out of the coverage the page is told about. In
+        memory only, so a restart tries once more — the footing the embedder's unreadable set is on."""
 
         self._migrate()
 
@@ -1303,11 +1318,14 @@ class CoreService:
         am still fetching my model, so these **Scores** are the baseline's" without the Core service
         learning what a model is.
 
-        Handed the whole **Pool** (#44), so the embedding provider can say how much of it it has embedded.
+        Handed the whole **Pool** (#44), so the embedding provider can say how much of it it has embedded —
+        less the members the thumbnail downloader has given up on, which can never be embedded, so that the
+        line clears once everything that can be embedded has been.
         The **Pool** is read here rather than passed in: the page's seam is the Core service, and the
         **Pool** is storage.
         """
-        return self._similarity.notice(self._pool_wallpapers())
+        given_up = self._thumbnails_given_up
+        return self._similarity.notice([w for w in self._pool_wallpapers() if w.id not in given_up])
 
     def similarity_step(self, stop_event: threading.Event) -> float:
         """One step of the **Similarity provider**'s own upkeep; seconds to wait before the next.
@@ -1976,7 +1994,8 @@ class CoreService:
         **Wallpaper** that has since left the **Pool** is skipped. A race with the tile route is still
         possible and harmless: both writes are atomic to the same path, so it costs one request at most.
 
-        A refusal (`ThumbnailUnavailable`) skips that file until the next pass. A 429 or anything else
+        A refusal (`ThumbnailUnavailable`) skips that file until the next pass, and a second refusal in a
+        row gives up on it until restart (`THUMBNAIL_REFUSALS_BEFORE_GIVING_UP`). A 429 or anything else
         backs off `THUMBNAIL_BACKOFF_SECONDS` — "anything else" deliberately, as in `refill_step`, so that
         the transport's spelling stays out of the Core service and no unexpected type can kill the thread.
         """
@@ -2002,6 +2021,10 @@ class CoreService:
         try:
             data = self._wallhaven.fetch_thumbnail(source_url)
         except ThumbnailUnavailable:
+            refusals = self._thumbnail_refusals.get(wallpaper_id, 0) + 1
+            self._thumbnail_refusals[wallpaper_id] = refusals
+            if refusals >= THUMBNAIL_REFUSALS_BEFORE_GIVING_UP:
+                self._thumbnails_given_up.add(wallpaper_id)
             return
         except RateLimited as limited:
             self._thumbnails_not_before = now + max(limited.retry_after or 0.0, THUMBNAIL_BACKOFF_SECONDS)
@@ -2009,6 +2032,7 @@ class CoreService:
         except Exception:
             self._thumbnails_not_before = now + THUMBNAIL_BACKOFF_SECONDS
             return
+        self._thumbnail_refusals.pop(wallpaper_id, None)
         try:
             write_atomically(destination, data)
         except OSError:
@@ -2017,10 +2041,13 @@ class CoreService:
             return
 
     def _pool_missing_thumbnails(self) -> list[tuple[str, Path, str]]:
-        """Every **Pool** member with no file in the **Thumbnail cache**, in `wallpaper_id` order."""
+        """Every **Pool** member with no file in the **Thumbnail cache**, in `wallpaper_id` order, less any
+        the downloader has given up on."""
         missing: list[tuple[str, Path, str]] = []
         for row in self._connect().execute(_SELECT_POOL_THUMBNAILS).fetchall():
             wallpaper_id, source_url = str(row["id"]), str(row["thumbnail_url"])
+            if wallpaper_id in self._thumbnails_given_up:
+                continue
             destination = self.thumbnail_dir / f"{wallpaper_id}{_url_suffix(source_url)}"
             if not destination.exists():
                 missing.append((wallpaper_id, destination, source_url))

@@ -343,3 +343,16 @@ def test_an_unusable_model_outranks_coverage(tmp_path: Path) -> None:
 
     assert notice is not None
     assert "could not open its model" in notice
+
+
+def test_a_thumbnail_the_embedder_cannot_read_is_left_out_of_coverage(tmp_path: Path) -> None:
+    """Lead review of #56: it is never going to be embedded, so counting it would hold the line on the page
+    for ever. Out of the count and out of the total, so the notice clears once the rest are done."""
+    embedder = CountingEmbedder(unreadable=["broken"])
+    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
+    embedding.catch_up(thumbnails(tmp_path / "thumbs", "broken", "fine"), threading.Event())
+
+    assert embedding.notice([wallpaper("broken"), wallpaper("fine")]) is None
+    notice = embedding.notice([wallpaper("broken"), wallpaper("fine"), wallpaper("waiting")])
+    assert notice is not None
+    assert "1 of 2 Pool wallpapers" in notice

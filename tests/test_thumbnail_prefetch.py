@@ -218,3 +218,77 @@ def test_a_thumbnail_that_cannot_be_written_does_not_stop_the_downloader(db_path
     _run(harness, 3)
 
     assert len(harness.wallhaven.thumbnail_fetches) == 3
+
+
+# -- a thumbnail that never arrives (lead review of #56) ---------------------------------------------------
+
+DEAD = wallpaper("aa0001")
+"""The first **Pool** member in `wallpaper_id` order. Once the first pass has fetched the other two, it is
+the only one missing, so each later pass is one step that asks for it."""
+
+
+def _first_pass(harness: Harness) -> None:
+    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = ThumbnailUnavailable(404)
+    _run(harness, len(OUT_OF_ORDER))
+
+
+def test_one_refusal_is_retried_on_the_next_pass(db_path: Path) -> None:
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    _first_pass(harness)
+
+    _run(harness, 1)
+
+    assert harness.wallhaven.thumbnail_fetches.count(DEAD.thumbnail_url) == 2
+
+
+def test_two_refusals_in_a_row_are_never_asked_for_again_in_this_process(db_path: Path) -> None:
+    """Otherwise a dead file is requested every thirty seconds for as long as wallpapi runs. Given up in
+    memory only: a restart asks once more, as the embedder does with a file it could not read."""
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    _first_pass(harness)
+    _run(harness, 1)
+
+    _run(harness, 10)
+
+    assert harness.wallhaven.thumbnail_fetches.count(DEAD.thumbnail_url) == 2
+    assert harness.core.thumbnail_wait() == THUMBNAIL_IDLE_RECHECK_SECONDS
+
+
+def test_a_429_between_two_refusals_does_not_count_as_one(db_path: Path) -> None:
+    """A 429 says the host is busy, not that the file is gone. Between two refusals it neither counts
+    towards giving up nor wipes the first refusal out: it is asked for again, then given up on."""
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    _first_pass(harness)
+    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = RateLimited(None)
+    _run(harness, 1)
+    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = ThumbnailUnavailable(404)
+
+    _run(harness, 10)
+
+    assert harness.wallhaven.thumbnail_fetches.count(DEAD.thumbnail_url) == 3
+
+
+def test_429s_and_failed_connections_never_add_up_to_giving_up(db_path: Path) -> None:
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = RateLimited(None)
+    _run(harness, len(OUT_OF_ORDER))
+    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = WallhavenUnreachable("connection refused")
+    _run(harness, 1)
+    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = ThumbnailUnavailable(404)
+    _run(harness, 1)
+
+    _run(harness, 1)
+
+    assert harness.wallhaven.thumbnail_fetches.count(DEAD.thumbnail_url) == 4
+
+
+def test_the_notice_leaves_out_what_the_downloader_gave_up_on(db_path: Path) -> None:
+    """Coverage is of what can be embedded. A **Pool** member whose thumbnail never arrives would hold it at
+    499 of 500 for ever, and the line would never clear."""
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    _first_pass(harness)
+    _run(harness, 1)
+
+    harness.core.similarity_notice()
+
+    assert harness.similarity.notice_pools == [("cc0003", "bb0002")]

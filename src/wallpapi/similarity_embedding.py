@@ -367,12 +367,16 @@ class EmbeddingSimilarityProvider:
         """
         with self._lock:
             state = self._state
+            unreadable = set(self._unreadable)
         if state is not None or self._model is None:
             return state
-        embedded = len(self._vectors.vectors_for([w.id for w in pool]))
-        if embedded >= len(pool):
+        # A thumbnail this provider could not read is never going to be embedded, so it is out of the
+        # count and the total alike — otherwise the line would never clear.
+        embeddable = [w.id for w in pool if w.id not in unreadable]
+        embedded = len(self._vectors.vectors_for(embeddable))
+        if embedded >= len(embeddable):
             return None
-        return _COVERAGE.format(embedded=embedded, pool=len(pool))
+        return _COVERAGE.format(embedded=embedded, pool=len(embeddable))
 
     def _ready(self, stop_event: threading.Event) -> bool:
         """Fetch and open the model, once. `False` means this stays on the baseline for now."""
@@ -446,8 +450,9 @@ class EmbeddingSimilarityProvider:
         except Exception:  # a thumbnail Pillow cannot read is skipped, not fatal
             # Remembered so the pass that follows does not pick it up again and spin. In memory only: a
             # restart retries it, which is the right answer for a file that was being written as it was
-            # read.
-            self._unreadable.add(path.stem)
+            # read. Under the lock because `notice` reads the set from a request thread.
+            with self._lock:
+                self._unreadable.add(path.stem)
             return
         if len(vectors):
             self._cache.store(path.stem, vectors[0])
