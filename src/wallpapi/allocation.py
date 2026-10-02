@@ -1,10 +1,10 @@
-"""**Allocation**: turning a **Mix** into **Batch** slots, and the order a **Zone** gives its
-**Wallpapers** up in.
+"""**Allocation**: turning a **Mix** into **Batch** slots.
 
-Two pure functions and nothing else. Neither knows what a **Pool** is, what a **Score** is or where a
-**Mix** was stored — `allocate` is arithmetic over three percentages, and `weighted_order` is a shuffle
-with a thumb on the scale. That is what lets the Core service's draw be read as three plain steps
-(allocate, order, fill) and lets every one of them be pinned under a seed.
+Pure functions and nothing else. Nothing here knows what a **Pool** is, what a **Score** is or where a
+**Mix** was stored — `allocate` is arithmetic over three percentages. That is what lets the Core service's
+draw be read as three plain steps (allocate, order, fill) and lets every one of them be pinned under a
+seed. The order is the Core service's: a shuffle, and for **Bangers** a sort by **Score** over it.
+`weighted_order`, the shuffle with a thumb on the scale the **Revisit weight** pressed, went with #38.
 
 **The rule.** A **Zone**'s whole-number slots are guaranteed: `floor(percentage * size / 100)`. Those
 never add up to the whole **Batch** unless every product divides by 100, so the slots left over are rolled
@@ -20,8 +20,6 @@ depend on than not dividing at all.
 """
 
 from __future__ import annotations
-
-from collections.abc import Sequence
 
 from wallpapi.model import Mix, Zone
 from wallpapi.rng import SeededRandom
@@ -102,39 +100,3 @@ def _rolled(remainders: dict[Zone, int], random: SeededRandom) -> Zone:
     # Unreachable while `threshold < total`, which `fraction()` guarantees; the rounding of the multiply
     # is the only way out and the last **Zone** is where it lands.
     return ZONE_ORDER[-1]
-
-
-def weighted_order[T](items: Sequence[T], weights: Sequence[float], random: SeededRandom) -> list[T]:
-    """A random permutation of `items` in which a heavier item tends to come sooner.
-
-    This is the whole of "**Dud** and **Unknown** slots are sampled at random": the **Zone** is put into a
-    random order once, and taking its first `k` *is* the sample. Ordering rather than sampling is what
-    makes the shortfall rule cheap — a **Zone** asked for more than it was allocated simply gives up the
-    next ones in the order it already has, and no **Wallpaper** can come out twice.
-
-    **The weight is the Revisit weight (#11).** It is the setting for a **Wallpaper** carrying an
-    **Explicit Verdict** and 1.0 for every other, and at 1.0 the key below is just the uniform itself, so
-    an undecided **Zone** is exactly a shuffle. Nothing here knows that: which **Wallpaper** is worth how
-    much is the Core service's question, because it is the only thing holding the **Decision log**.
-
-    Efraimidis and Spirakis' key, `u ** (1 / weight)` sorted descending: the resulting order is a weighted
-    sample without replacement at every prefix, which is the property that makes "take the first `k`"
-    correct for every `k` at once. A weight of zero or less is not a division — the limit as the weight
-    falls to zero is a key of zero, which puts the item last, and that is what "never show this again"
-    should mean.
-    """
-    keyed = [
-        (_key(random.fraction(), weight), index, item)
-        for index, (item, weight) in enumerate(zip(items, weights, strict=True))
-    ]
-    # `index` breaks a tie between two equal keys, which only two equal uniforms or two zero weights can
-    # produce. Without it `sorted` would fall through to comparing the items themselves, and a
-    # `ScoredWallpaper` is not orderable.
-    keyed.sort(key=lambda entry: (-entry[0], entry[1]))
-    return [item for _, _, item in keyed]
-
-
-def _key(uniform: float, weight: float) -> float:
-    if weight <= 0.0:
-        return 0.0
-    return uniform ** (1.0 / weight)

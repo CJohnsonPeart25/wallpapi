@@ -381,7 +381,7 @@ def test_every_group_of_settings_is_an_article(db_path: Path) -> None:
         main = _main(client.get("/settings").text)
 
     headings = [match.start() for match in re.finditer(r"<h2>", main)]
-    assert len(headings) == 7, "filters, pool, scoring, repeats, thumbnails, favourites, mixes"
+    assert len(headings) == 6, "filters, pool, scoring, thumbnails, favourites, mixes"
     for heading in headings:
         assert _inside_an_article(main, heading), main[heading : heading + 40]
     assert _inside_an_article(main, main.index('name="batch_size"'))
@@ -484,3 +484,15 @@ def test_the_stylesheet_turns_delete_the_ban_colour_on_hover(db_path: Path) -> N
     rule = next(block for block in stylesheet.split("}") if "[data-mix-delete]" in block)
     assert ":hover" in rule
     assert "var(--ban)" in rule
+
+
+def test_the_page_has_no_revisit_weight(db_path: Path) -> None:
+    """Gone with #38 (ADR 0016). A decided **Wallpaper** never returns to the **Pool**, so the weight had
+    nothing left to act on, and a field that changes nothing is a lie on the settings page."""
+    harness = make_harness(db_path)
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        response = client.get("/settings")
+
+    assert "revisit" not in response.text.lower()

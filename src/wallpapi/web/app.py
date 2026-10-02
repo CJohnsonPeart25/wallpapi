@@ -181,7 +181,6 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
         "similarity_radius": str(current.similarity_radius),
         "similarity_decay": str(current.similarity_decay),
         "thumbnail_cache_max_mb": str(current.thumbnail_cache_max_mb),
-        "revisit_weight": str(current.revisit_weight),
     }
 
 
@@ -543,7 +542,6 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         min_favourites: Annotated[str | None, Form()] = None,
         similarity_radius: Annotated[str | None, Form()] = None,
         similarity_decay: Annotated[str | None, Form()] = None,
-        revisit_weight: Annotated[str | None, Form()] = None,
     ) -> Response:
         """Save the settings, or come back with the reason they were refused.
 
@@ -571,7 +569,6 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 ("similarity_radius", similarity_radius),
                 ("similarity_decay", similarity_decay),
                 ("thumbnail_cache_max_mb", thumbnail_cache_max_mb),
-                ("revisit_weight", revisit_weight),
             )
             if value is not None
         }

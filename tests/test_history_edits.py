@@ -36,8 +36,7 @@ def test_an_ignore_from_history_overturns_the_verdict(db_path: Path) -> None:
     """The **History** half of #37: withdrawing a **Like** there is an **Ignore**, worth -10, with no
     **Batch** on the entry — not a return to never having been seen."""
     harness = make_harness(db_path, catalogue=catalogue_of(8))
-    first = submit_with(harness, {})
-    subject = first.wallpapers[0].id
+    subject = "wp0000"
     submit_with(harness, {subject: Verdict.LIKE})
 
     assert harness.core.edit_verdict(subject, Verdict.IGNORE) is None
@@ -84,15 +83,18 @@ def test_two_history_edits_sharing_a_timestamp_resolve_by_sequence(db_path: Path
 def test_ignoring_a_ban_from_history_makes_the_wallpaper_eligible_again(db_path: Path) -> None:
     """Un-**Banning** falls out of the rule rather than being built. **Batch** building excludes by
     *resolved* **Verdict**, and a **Ban** overturned by an **Ignore** is no longer one. With a catalogue
-    of one, "eligible again" is the difference between a **Batch unavailable** page and a **Batch**."""
+    of one, "eligible again" is the difference between a **Batch unavailable** page and a **Batch**.
+
+    Banned from **History** before any **Batch** showed it, because since #38 a **Wallpaper** a **Batch**
+    has shown has left the **Pool** for good (ADR 0016) and no edit brings it back — so this is the one
+    place left where an overturned **Ban** can still be drawn.
+    """
     harness = make_harness(db_path, catalogue=catalogue_of(1))
     harness.core.update_settings(batch_size=1)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    banned = batch.wallpapers[0].id
-    harness.core.set_draft_verdict(batch.id, banned, Verdict.BAN)
+    banned = "wp0000"
+    assert harness.core.edit_verdict(banned, Verdict.BAN) is None
+    assert isinstance(harness.core.get_next_batch(), BatchUnavailable), "the Ban must exclude it"
 
-    assert isinstance(harness.core.submit_batch(batch.id), BatchUnavailable), "the Ban must exclude it"
     assert harness.core.edit_verdict(banned, Verdict.IGNORE) is None
 
     reoffered = harness.core.get_next_batch()
@@ -118,11 +120,13 @@ def test_a_history_edit_does_not_reach_the_batch_already_open(db_path: Path) -> 
     overturns the edit. The tile shows what it will record; the user changes it there."""
     harness = make_harness(db_path, catalogue=catalogue_of(1))
     harness.core.update_settings(batch_size=1)
-    open_batch = submit_with(harness, {})
-    assert harness.core.get_next_batch() != open_batch, "submitting minted the next Batch"
+    open_batch = harness.core.get_next_batch()
+    assert isinstance(open_batch, Batch)
 
     assert harness.core.edit_verdict("wp0000", Verdict.LIKE) is None
-    submit_with(harness, {})
+    submitted = submit_with(harness, {})
+
+    assert submitted == open_batch, "the edit neither rerolled nor re-marked the open Batch"
 
     assert harness.core.resolve_verdicts(["wp0000"])["wp0000"].verdict is Verdict.IGNORE
 
@@ -213,13 +217,16 @@ def test_ignoring_a_favourite_from_history_removes_its_library_file(db_path: Pat
 
 
 def test_unmarking_a_pre_filled_favourite_removes_its_library_file(db_path: Path, tmp_path: Path) -> None:
-    """The **Batch** half of the same rule (ADR 0015): a **Favourite** reshown pre-marked and unmarked
-    resolves to an **Ignore** at submission, and the **Library** follows the log."""
+    """The **Batch** half of the same rule (ADR 0015): a **Favourite** shown pre-marked and unmarked
+    resolves to an **Ignore** at submission, and the **Library** follows the log.
+
+    Favourited from **History** before any **Batch** showed it, which is the one way a decided
+    **Wallpaper** is still drawn since #38 (ADR 0016); pre-marking is otherwise dormant until #52.
+    """
     harness = make_harness(db_path, catalogue=catalogue_of(1))
     harness.core.update_settings(batch_size=1, library_path=tmp_path / "Library")
-    first = submit_with(harness, {})
-    subject = first.wallpapers[0].id
-    submit_with(harness, {subject: Verdict.FAVOURITE})
+    subject = "wp0000"
+    assert harness.core.edit_verdict(subject, Verdict.FAVOURITE) is None
     written = harness.library.written[0].destination
     reshown = harness.core.get_next_batch()
     assert isinstance(reshown, Batch)

@@ -222,7 +222,7 @@ class TagSimilarityProvider:
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Deliberately nothing, even though this is the provider whose cache most needs filling.
 
-        Filling it is one **API call** per **Wallpaper** out of Wallhaven's 45 a minute — about 2,000 of
+        Filling it is one **API call** per **Wallpaper** out of Wallhaven's 45 a minute — about 500 of
         them for a **Pool** at its default target size — and that is the same budget the refill spends
         keeping the **Pool** stocked. Quietly taking half of it is not a decision a **Similarity
         provider** gets to make on the user's behalf. So tagging stays an explicit step somebody runs

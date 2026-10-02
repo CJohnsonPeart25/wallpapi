@@ -4,7 +4,8 @@ Date: 2026-09-27
 
 ## Status
 
-Accepted
+Superseded by ADR 0016. A submission now retires every **Wallpaper** it showed from the **Pool**, so
+nothing decided is left for the weight to act on, and the setting is removed.
 
 ## Context
 

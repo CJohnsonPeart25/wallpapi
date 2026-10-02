@@ -309,10 +309,7 @@ def test_a_recorded_file_already_gone_is_dropped_without_being_looked_for(tmp_pa
     core.submit_batch(batch.id)
     (library_path / f"{shown}.jpg").unlink()
 
-    second = core.get_next_batch()
-    assert isinstance(second, Batch)
-    core.set_draft_verdict(second.id, shown, Verdict.LIKE)
-    core.submit_batch(second.id)
+    assert core.edit_verdict(shown, Verdict.LIKE) is None
 
     assert list(library_path.iterdir()) == []
     assert len(seen) == 1

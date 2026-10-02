@@ -43,7 +43,7 @@ def test_a_fresh_database_reads_the_filter_defaults(harness: Harness) -> None:
     assert settings.min_height == DEFAULT_MIN_HEIGHT == 1440
     assert settings.allowed_ratios == DEFAULT_ALLOWED_RATIOS == ("16x9", "16x10", "21x9")
     assert settings.min_favourites == DEFAULT_MIN_FAVOURITES == 10
-    assert settings.pool_target_size == DEFAULT_POOL_TARGET_SIZE == 2000
+    assert settings.pool_target_size == DEFAULT_POOL_TARGET_SIZE == 500
 
 
 def test_the_filters_are_configurable_and_persist_across_a_restart(db_path: Path) -> None:
