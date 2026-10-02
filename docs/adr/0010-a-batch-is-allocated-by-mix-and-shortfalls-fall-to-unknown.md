@@ -4,7 +4,10 @@ Date: 2026-09-27
 
 ## Status
 
-Accepted
+Accepted. **Partly superseded by ADR 0018**: "there is no best **Unknown**" becomes "the **Unknowns** are
+spread one per group". The **Unknown** draw order is no longer only the random order; the allocation, the
+**Banger** and **Dud** orders, the **Shortfall** rule and the shuffle before the **Batch** is written all
+stand.
 
 ## Context
 
