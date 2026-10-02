@@ -5,7 +5,9 @@ Date: 2026-09-27
 ## Status
 
 Accepted. Supersedes ADR 0007's choice of provider and its **Similarity radius**; the rest of 0007 — the
-matrix interface, the **Score** formula, the **Zone** rule — stands unchanged.
+matrix interface, the **Score** formula, the **Zone** rule — stands unchanged. Amended by ADR 0017: a
+background downloader now fetches every **Pool** member's thumbnail, so the work list below covers the
+**Pool** rather than only what has been shown, and `notice` takes the **Pool**.
 
 ## Context
 

@@ -179,7 +179,7 @@ Making the library agree with the decision log: every favourite with no file get
 _Avoid_: sync, download queue, flush, refresh
 
 **Thumbnail cache**:
-The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails for any wallpaper that has been shown or decided, not full-resolution favourites. A thumbnail is kept for as long as any page might show it — for ever, once the wallpaper has an explicit verdict, because history renders one.
+The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails, not full-resolution favourites — one for every pool member, fetched in the background before it is ever shown, as well as for anything shown or decided. It is also what the CLIP image encoder embeds, so the whole pool has embeddings and not only what has been on screen. A thumbnail is kept for as long as any page might show it — for ever, once the wallpaper has an explicit verdict, because history renders one. The background fetching holds off while the cache is at its size cap.
 _Avoid_: image cache, thumbs, local store, static files
 
 **Core service**:
