@@ -109,7 +109,7 @@ def build_core(home: Path | None = None) -> CoreService:
 
 
 def build_app() -> FastAPI:
-    """The real app, with the background **Pool** refill running behind it.
+    """The real app, with the refill, the similarity upkeep and the thumbnail downloader behind it.
 
     `refill=True` appears here and nowhere else. `create_app` leaves it off by default so that no test can
     start a thread that talks to Wallhaven, which makes this the one line that has to be right for the

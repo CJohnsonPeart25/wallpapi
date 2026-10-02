@@ -80,6 +80,9 @@ class FakeWallhavenClient:
     `fail_from_call` makes every call from the Nth onwards a transport failure. Together they cover both
     halves of the refill's error handling.
 
+    `hold_thumbnails` keeps every thumbnail fetch in flight until a test releases it, which is how a
+    shutdown mid-fetch is arranged without a socket or a sleep.
+
     `failing_thumbnails` maps a thumbnail URL to what fetching it raises — a `ThumbnailUnavailable` for a
     host that refused that one file, a `RateLimited` for a 429, a `WallhavenUnreachable` for a connection
     that failed. Mutable, so a test can make a fetch fail, then remove the entry and watch it be retried.
@@ -114,6 +117,12 @@ class FakeWallhavenClient:
         self.searches: list[dict[str, object]] = []
         self.thumbnail_fetches: list[str] = []
         self.failing_thumbnails: dict[str, Exception] = {}
+        self.thumbnail_threads: list[str] = []
+        """The name of the thread each thumbnail fetch was made on, so a test can pin which one it was."""
+        self.thumbnail_fetched = threading.Event()
+        """Set by every thumbnail fetch as it starts: `searched`'s counterpart for the downloader."""
+        self.hold_thumbnails: threading.Event | None = None
+        """When set to an event, every thumbnail fetch waits for it: a fetch held in flight."""
         self.searched = threading.Event()
         """Set by every search. The one thread test waits on this rather than guessing how long the
         refill thread needs, so it is deterministic without sleeping."""
@@ -165,6 +174,10 @@ class FakeWallhavenClient:
 
     def fetch_thumbnail(self, url: str) -> bytes:
         self.thumbnail_fetches.append(url)
+        self.thumbnail_threads.append(threading.current_thread().name)
+        self.thumbnail_fetched.set()
+        if self.hold_thumbnails is not None:
+            self.hold_thumbnails.wait()
         failure = self.failing_thumbnails.get(url)
         if failure is not None:
             raise failure

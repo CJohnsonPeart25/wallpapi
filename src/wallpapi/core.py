@@ -1981,7 +1981,12 @@ class CoreService:
         except Exception:
             self._thumbnails_not_before = now + THUMBNAIL_BACKOFF_SECONDS
             return
-        write_atomically(destination, data)
+        try:
+            write_atomically(destination, data)
+        except OSError:
+            # The file is still missing, so the next pass asks for it again. The thread must not die of a
+            # disk that refused one write.
+            return
 
     def _pool_missing_thumbnails(self) -> list[tuple[str, Path, str]]:
         """Every **Pool** member with no file in the **Thumbnail cache**, in `wallpaper_id` order."""

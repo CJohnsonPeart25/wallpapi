@@ -206,3 +206,15 @@ def test_a_cache_under_its_cap_is_filled(db_path: Path) -> None:
     _run(harness, 3)
 
     assert len(harness.wallhaven.thumbnail_fetches) == 3
+
+
+def test_a_thumbnail_that_cannot_be_written_does_not_stop_the_downloader(db_path: Path) -> None:
+    """`thumbnail_step` never raises, for `refill_step`'s reason: the thread has nothing to catch, and a
+    dead downloader would leave the **Pool** unembedded with nothing saying why. A disk that refuses the
+    write costs that one file, and it is asked for again on the next pass."""
+    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
+    harness.core.thumbnail_dir.write_bytes(b"a file where the cache directory should be")
+
+    _run(harness, 3)
+
+    assert len(harness.wallhaven.thumbnail_fetches) == 3
