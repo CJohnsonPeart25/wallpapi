@@ -246,8 +246,12 @@ class FakeSimilarityProvider:
         *,
         notice: str | None = None,
         catch_up_waits: Sequence[float] = (),
+        vectors: Mapping[str, NDArray[np.float32]] | None = None,
     ) -> None:
         self.similarity_by_pair = similarities or {}
+        self.vector_by_id = None if vectors is None else dict(vectors)
+        """What `vectors()` answers from, keyed by ID. `None` — a provider with no positions, as the
+        baseline is — unless a test arranges some (#45); a **Wallpaper** not named has no **Embedding**."""
         self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         self.notice_text = notice
         """What `notice()` answers. `None` — a provider working at full strength — unless a test says
@@ -280,6 +284,17 @@ class FakeSimilarityProvider:
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         self.notice_pools.append(tuple(w.id for w in pool))
         return self.notice_text
+
+    def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
+        if self.vector_by_id is None:
+            return None
+        width = next((v.size for v in self.vector_by_id.values()), 0)
+        rows = np.zeros((len(pool), width), dtype=np.float32)
+        for index, w in enumerate(pool):
+            vector = self.vector_by_id.get(w.id)
+            if vector is not None:
+                rows[index] = vector
+        return rows
 
     def _between(self, pool_id: str, decided_id: str) -> float:
         named = self.similarity_by_pair.get((pool_id, decided_id))

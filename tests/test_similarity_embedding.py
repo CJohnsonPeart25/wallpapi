@@ -139,6 +139,26 @@ def test_a_vector_of_the_wrong_width_is_treated_as_absent() -> None:
     assert float(matrix[1, 0]) == pytest.approx(1.0)
 
 
+def test_the_vectors_are_its_rows_in_pool_order_with_zeros_for_no_embedding() -> None:
+    """What the varied **Unknown** draw clusters on (#45): `len(pool)` x d, never **Pool** x **Pool**, and a
+    row of zeros where there is no **Embedding** — none cached, or one of a width this cache does not use."""
+    pool = [wallpaper("b"), wallpaper("unembedded"), wallpaper("a"), wallpaper("three_dimensional")]
+
+    rows = provider({"a": EAST, "b": NORTH, "three_dimensional": vector(1.0, 0.0, 0.0)}).vectors(pool)
+
+    assert rows is not None
+    assert rows.shape == (4, 2)
+    assert rows.tolist() == [NORTH.tolist(), [0.0, 0.0], EAST.tolist(), [0.0, 0.0]]
+
+
+def test_nothing_embedded_is_every_row_without_an_embedding() -> None:
+    rows = provider({}).vectors([wallpaper("a"), wallpaper("b")])
+
+    assert rows is not None
+    assert len(rows) == 2
+    assert not np.any(rows)
+
+
 # -- the cache -----------------------------------------------------------------------------------------
 
 

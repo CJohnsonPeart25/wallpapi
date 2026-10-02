@@ -84,6 +84,18 @@ class SimilarityProvider(Protocol):
         """
         ...
 
+    def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
+        """Where each of `pool` sits, as a `len(pool)` x d array, or `None` if this provider has no positions.
+
+        A row of zeros means that **Wallpaper** has no **Embedding**. Read by the varied **Unknown** draw
+        (#45, ADR 0018), which groups the **Unknowns** by look-alikeness and takes one from each group.
+        **Pool** x d, never **Pool** x **Pool**: 1MB at 500 members and 512 dimensions.
+
+        On the protocol for `catch_up`'s reason: the Core service must not know which provider it holds. A
+        provider with nothing to place **Wallpapers** by answers `None`, and the draw is today's.
+        """
+        ...
+
 
 HUE_BINS = 12
 """Chromatic colours are binned by hue, 30 degrees to a bin."""
@@ -165,6 +177,11 @@ class MetadataSimilarityProvider:
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         """Never degraded: it has no model to fetch and no cache to fill, so it covers every **Pool**."""
+        del pool
+        return None
+
+    def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
+        """None. A colour histogram is a position of a kind, but not one the varied draw was designed on."""
         del pool
         return None
 
