@@ -43,7 +43,7 @@ cache fills, with a line on the page while that is happening.
 
 The other two stay selectable because the maintainer has not yet seen all three against a real **Decision
 log**, only against the spike's synthetic one. `metadata` is the baseline and costs nothing. `tags` needs
-its cache filled by hand — about 2,000 **API calls** for a **Pool** at its default target size, out of
+its cache filled by hand — about 500 **API calls** for a **Pool** at its default target size, out of
 Wallhaven's 45 a minute — and until it is filled it behaves as the baseline.
 """
 

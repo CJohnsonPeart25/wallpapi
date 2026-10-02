@@ -3,6 +3,9 @@
 The **Library** is derived from the **Decision log**, not written as a side effect of a click: a
 **Favourite** with no file gets one, and a file whose **Wallpaper** is no longer a **Favourite** loses it.
 That makes `reconcile_library()` idempotent, which is what lets a failed download simply be retried.
+
+Since #38 a submitted **Wallpaper** is never shown again (ADR 0016), so a **Favourite** changing its mind
+is a **History** edit here, never a second **Batch**.
 """
 
 from __future__ import annotations
@@ -73,7 +76,7 @@ def test_replacing_a_favourite_removes_the_file_wallpapi_wrote(db_path: Path, tm
     first = favourite_the_whole_batch(harness)
     written = harness.library.written[0].destination
 
-    favourite_the_whole_batch(harness, Verdict.LIKE)
+    assert harness.core.edit_verdict(first.wallpapers[0].id, Verdict.LIKE) is None
 
     assert harness.library.removed == [written]
     assert len(harness.library.written) == 1
@@ -94,10 +97,7 @@ def test_a_ban_removes_the_file_too_and_nothing_else_is_removed(db_path: Path, t
     kept, banned = (w.id for w in first.wallpapers)
     written = {w.wallpaper_id: w.destination for w in harness.library.written}
 
-    second = harness.core.get_next_batch()
-    assert isinstance(second, Batch)
-    harness.core.set_draft_verdict(second.id, banned, Verdict.BAN)
-    harness.core.submit_batch(second.id)
+    assert harness.core.edit_verdict(banned, Verdict.BAN) is None
 
     assert harness.library.removed == [written[banned]]
     assert sorted(w.wallpaper_id for w in harness.library.written) == sorted([kept, banned])
@@ -171,10 +171,7 @@ def test_deletion_targets_the_recorded_path_and_not_a_recomputed_one(db_path: Pa
     kept, replaced = (w.id for w in first.wallpapers)
     recorded = {w.wallpaper_id: w.destination for w in harness.library.written}
 
-    second = harness.core.get_next_batch()
-    assert isinstance(second, Batch)
-    harness.core.set_draft_verdict(second.id, replaced, Verdict.LIKE)
-    harness.core.submit_batch(second.id)
+    assert harness.core.edit_verdict(replaced, Verdict.LIKE) is None
 
     assert harness.library.removed == [recorded[replaced]]
     assert recorded[replaced] != recorded[kept]
@@ -185,11 +182,11 @@ def test_a_restarted_core_service_still_knows_the_recorded_path(db_path: Path, t
     library_path = tmp_path / "Library"
     first_run = make_harness(db_path, catalogue=catalogue_of(1))
     first_run.core.update_settings(batch_size=1, library_path=library_path)
-    favourite_the_whole_batch(first_run)
+    favourited = favourite_the_whole_batch(first_run).wallpapers[0].id
     written = first_run.library.written[0].destination
 
     second_run = make_harness(db_path, catalogue=catalogue_of(1))
-    favourite_the_whole_batch(second_run, Verdict.LIKE)
+    assert second_run.core.edit_verdict(favourited, Verdict.LIKE) is None
 
     assert second_run.library.written == []
     assert second_run.library.removed == [written]
@@ -205,9 +202,9 @@ def test_favouriting_again_after_a_removal_writes_the_file_afresh(db_path: Path,
     harness.core.update_settings(batch_size=1, library_path=tmp_path / "Library")
     first = favourite_the_whole_batch(harness)
     shown = first.wallpapers[0].id
-    favourite_the_whole_batch(harness, Verdict.LIKE)
+    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
 
-    favourite_the_whole_batch(harness)
+    assert harness.core.edit_verdict(shown, Verdict.FAVOURITE) is None
 
     assert [w.wallpaper_id for w in harness.library.written] == [shown, shown]
     assert harness.library.removed == [harness.library.written[0].destination]
@@ -266,17 +263,14 @@ def test_downloading_favourites_writes_nothing_for_anything_that_is_not_one(
 def test_downloading_favourites_never_deletes_anything(db_path: Path, tmp_path: Path) -> None:
     """One way only. This operation is the one place wallpapi looks at the folder, and it only ever adds.
 
-    The **Wallpaper** whose **Favourite** was replaced lost its file when the **Batch** was submitted; the
+    The **Wallpaper** whose **Favourite** was replaced lost its file when the edit was made; the
     download does not touch it again, and nothing else is removed on the way past either.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(2))
     harness.core.update_settings(batch_size=2, library_path=tmp_path / "Library")
     first = favourite_the_whole_batch(harness)
     kept, replaced = (w.id for w in first.wallpapers)
-    second = harness.core.get_next_batch()
-    assert isinstance(second, Batch)
-    harness.core.set_draft_verdict(second.id, replaced, Verdict.LIKE)
-    harness.core.submit_batch(second.id)
+    assert harness.core.edit_verdict(replaced, Verdict.LIKE) is None
     removed_by_the_submission = list(harness.library.removed)
 
     pulled = harness.core.download_favourites()

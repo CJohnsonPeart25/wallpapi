@@ -170,23 +170,6 @@ def test_an_empty_pool_with_no_refill_yet_says_so(db_path: Path) -> None:
     assert result.error is None
 
 
-def test_a_decided_wallpaper_can_be_drawn_again(db_path: Path) -> None:
-    """Only a **Ban** takes a **Wallpaper** out of the draw. An **Ignore** does not.
-
-    The **Pool** is ten and the **Batch** is eight, so the second **Batch** has to reuse some of the first.
-    The revisit weight at #11 is what makes that rarer; here it must simply be possible, because a
-    **Wallpaper** that vanished for ever after one **Ignore** would be an undocumented second **Ban**.
-    """
-    harness = make_harness(db_path, catalogue=catalogue_of(10))
-    first = harness.core.get_next_batch()
-    assert isinstance(first, Batch)
-
-    following = harness.core.submit_batch(first.id)
-
-    assert isinstance(following, Batch)
-    assert {w.id for w in following.wallpapers} & {w.id for w in first.wallpapers}
-
-
 def test_changing_the_filters_prunes_undecided_pool_wallpapers_that_no_longer_pass(
     db_path: Path,
 ) -> None:
@@ -211,31 +194,26 @@ def test_pruning_drops_decided_wallpapers_too_and_keeps_their_log_entries(db_pat
     """A **Filter** governs what may be shown, and a **Verdict** does not exempt a **Wallpaper** from it.
 
     A **Liked** 1080p **Wallpaper** must stop appearing once the minimum is raised to 1440p exactly as an
-    undecided one does, and an **Ignored** one certainly must. Nothing is lost by it: only the **Pool**
-    membership row goes, so the **Decision log** is untouched, **Verdict resolution** is unchanged, and
-    **History** at #7 still renders it — a **Clearance** there works on the log rather than on **Pool**
-    membership.
+    undecided one does. Nothing is lost by it: only the **Pool** membership row goes, so the **Decision
+    log** is untouched, **Verdict resolution** is unchanged, and **History** at #7 still renders it.
+
+    Since #38 a submission retires what it showed (ADR 0016), so the decided **Pool** member here is one
+    **Liked** from **History** before any **Batch** drew it — the one way left to have one.
     """
     harness = make_harness(
         db_path,
         catalogue=(wallpaper("judged", width=2560, height=1440), wallpaper("huge", width=3840, height=2160)),
     )
-    first = harness.core.get_next_batch()
-    assert isinstance(first, Batch)
-    harness.core.set_draft_verdict(first.id, "judged", Verdict.LIKE)
-    live = harness.core.submit_batch(first.id)
-    assert isinstance(live, Batch)
+    assert harness.core.edit_verdict("judged", Verdict.LIKE) is None
     entries_before = harness.core.list_history()
 
     harness.core.update_settings(min_width=3840, min_height=2160)
 
     assert harness.core.list_history() == entries_before, "the Decision log is append-only"
     assert harness.core.resolve_verdicts(["judged"])["judged"].verdict is Verdict.LIKE
-    # The **Batch** already on screen keeps what it was built with, so the next one minted is where a
-    # prune shows. Submitting the live one is the only way past it (ADR 0002 — there is no skip).
-    following = harness.core.submit_batch(live.id)
-    assert isinstance(following, Batch)
-    assert [w.id for w in following.wallpapers] == ["huge"]
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    assert [w.id for w in batch.wallpapers] == ["huge"]
 
 
 def test_pruning_leaves_the_live_batch_alone(db_path: Path) -> None:

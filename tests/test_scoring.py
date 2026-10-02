@@ -88,12 +88,13 @@ def test_a_decided_wallpaper_still_in_the_pool_is_classified_from_its_own_value(
     It is at distance 0 from itself, so `exp(-decay * 0)` is exactly 1 and its **Score** is exactly the
     value **Verdict resolution** gave it. Asserted as the exact number rather than as a sign, because it is
     the one **Score** in the system that has an exact right answer.
+
+    Since #38 a submitted **Wallpaper** leaves the **Pool** (ADR 0016), so the one way left to have a
+    decided **Wallpaper** in it is a **History** edit on a member no **Batch** has shown yet.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, _, _ = _decide_two(harness)
-    batch_id = _live_batch_id(harness)
-    harness.core.set_draft_verdict(batch_id, loved, Verdict.FAVOURITE)
-    harness.core.submit_batch(batch_id)
+    loved = "wp0000"
+    assert harness.core.edit_verdict(loved, Verdict.FAVOURITE) is None
 
     assert _scores(harness)[loved] == 100.0
     assert _zones(harness)[loved] is Zone.BANGER
@@ -174,7 +175,7 @@ def test_an_ignore_spreads_as_a_mild_negative(db_path: Path) -> None:
 
 
 def test_the_next_classification_follows_the_decision_log_with_no_restart(db_path: Path) -> None:
-    """**Scores** are derived on every read, so a second **Batch**'s **Verdicts** land immediately.
+    """**Scores** are derived on every read, so each new **Decision log** entry lands immediately.
 
     The closest thing to an observable for "**Scores** are never stored" that the seam offers: the same
     **Wallpaper** is **Unknown**, then a **Banger**, then a **Dud**, with nothing invalidated and nothing
@@ -189,18 +190,12 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
 
     first = _live_batch_id(harness)
     harness.core.set_draft_verdict(first, loved, Verdict.FAVOURITE)
-    # The next **Batch** has to show the whole **Pool**, because the **Ban** below is on a **Wallpaper**
-    # the **Mix** would be unlikely to draw otherwise: the **Ignore** it picked up above makes it a
-    # **Dud**, and a **Dud** is five per cent of an **Explore** **Batch** (#10). Asking for as many as the
-    # **Pool** holds draws all of them whatever the **Mix** says, because a **Zone** that runs out is
-    # filled from the others. The test below arranges itself the same way, for its own reasons.
-    harness.core.update_settings(batch_size=POOL_SIZE)
     harness.core.submit_batch(first)
     assert _zones(harness)[swayed] is Zone.BANGER
 
-    second = _live_batch_id(harness)
-    harness.core.set_draft_verdict(second, hated, Verdict.BAN)
-    harness.core.submit_batch(second)
+    # From **History**: the submission retired `hated` from the **Pool** (#38), and **History** is where a
+    # decided **Wallpaper** is changed.
+    assert harness.core.edit_verdict(hated, Verdict.BAN) is None
 
     assert _zones(harness)[swayed] is Zone.DUD
 
@@ -297,7 +292,9 @@ def test_the_similarity_provider_is_asked_for_one_matrix_of_the_whole_pool(db_pa
 
     The decided side is both **Wallpapers** the **Batch** showed, not only the one that was marked: the
     other picked up the derived **Ignore** that absence means, and an **Ignore** is a **Verdict** with a
-    non-zero value like any other.
+    non-zero value like any other. Both have left the **Pool** with that submission (#38) and are on the
+    decided side all the same: the decided set is independent of **Pool** membership (ADR 0007), so a
+    retired **Wallpaper** goes on shaping every **Score**.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     loved, ignored, _ = _decide_two(harness)
@@ -310,8 +307,9 @@ def test_the_similarity_provider_is_asked_for_one_matrix_of_the_whole_pool(db_pa
 
     assert len(harness.similarity.calls) == 1
     pool_side, decided_side = harness.similarity.calls[0]
-    assert len(pool_side) == POOL_SIZE
+    assert len(pool_side) == POOL_SIZE - 2
     assert set(decided_side) == {loved, ignored}
+    assert not set(pool_side) & set(decided_side), "a retired Wallpaper is a column, never a row"
 
 
 def test_a_score_is_a_plain_float_and_a_zone_a_glossary_term(db_path: Path) -> None:

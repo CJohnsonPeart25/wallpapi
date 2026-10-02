@@ -42,14 +42,6 @@ def favourite(harness: Harness, *wallpaper_ids: str) -> None:
     harness.core.submit_batch(batch.id)
 
 
-def judge(harness: Harness, wallpaper_id: str, verdict: Verdict) -> None:
-    """Record any other **Verdict** the same way, so a **Favourite** can be replaced."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
-    harness.core.submit_batch(batch.id)
-
-
 def queries(harness: Harness) -> list[object]:
     """The `q` of every search made so far — `None` for a random one."""
     return [search["query"] for search in harness.wallhaven.searches]
@@ -143,12 +135,12 @@ def test_like_results_enter_the_pool_tagged_like_and_failing_ones_stay_out(db_pa
 
     harness.fill_pool(1)
 
-    assert harness.core.pool_sources() == {POOL_SOURCE_RANDOM: 2, POOL_SOURCE_LIKE: 1}
+    # The **Batch** that recorded the **Favourite** retired both random arrivals (#38), so what the
+    # **Pool** holds now is the like: walk's alone.
+    assert harness.core.pool_sources() == {POOL_SOURCE_LIKE: 1}
     live = harness.core.get_next_batch()
     assert isinstance(live, Batch)
-    following = harness.core.submit_batch(live.id)
-    assert isinstance(following, Batch)
-    assert {w.id for w in following.wallpapers} == {"wp0000", "wp0001", "likeable"}
+    assert {w.id for w in live.wallpapers} == {"likeable"}
 
 
 def test_a_wallpaper_already_in_the_pool_keeps_the_source_it_arrived_with(db_path: Path) -> None:
@@ -156,6 +148,10 @@ def test_a_wallpaper_already_in_the_pool_keeps_the_source_it_arrived_with(db_pat
 
     **Pool** membership is a row that says when a **Wallpaper** arrived and how; meeting it a second time
     is not a second arrival. `wp0001` is in both the catalogue and the like: results here.
+
+    The **Favourite** is given from **History** rather than a **Batch**, because a **Batch** would retire
+    `wp0001` along with it (#38) and the like: walk would then be refused it for having been decided —
+    a different rule, pinned in `test_decide_once.py`.
     """
     harness = make_harness(
         db_path,
@@ -164,7 +160,7 @@ def test_a_wallpaper_already_in_the_pool_keeps_the_source_it_arrived_with(db_pat
         fill_pool=1,
     )
     harness.core.update_settings(pool_target_size=1000)
-    favourite(harness, "wp0000")
+    assert harness.core.edit_verdict("wp0000", Verdict.FAVOURITE) is None
 
     harness.fill_pool(1)
 
@@ -329,7 +325,9 @@ def test_a_favourite_that_is_replaced_drops_out_of_the_rotation(db_path: Path) -
     walking = like_searches(harness)[0][0]
     demoted = str(walking).removeprefix("like:")
 
-    judge(harness, demoted, Verdict.LIKE)
+    # From **History**: the **Batch** that made it a **Favourite** retired it from the **Pool** (#38), so
+    # **History** is the only place it can be changed.
+    assert harness.core.edit_verdict(demoted, Verdict.LIKE) is None
     harness.fill_pool(6)
 
     assert walking not in queries(harness)[-6:]

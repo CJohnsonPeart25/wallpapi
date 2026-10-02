@@ -41,32 +41,36 @@ def fill_cache(harness: Harness, *wallpaper_ids: str) -> None:
 def test_an_undecided_wallpaper_that_left_the_pool_loses_its_thumbnail(db_path: Path) -> None:
     """The case eviction exists for, and with it the acceptance that **Verdicts** are what protect a file.
 
-    Three **Wallpapers** are shown and judged: one **Banned**, one **Liked**, one left alone. A **Filter**
-    change then prunes the undecided one out of the **Pool**, so nothing will ever show it again — and its
-    thumbnail goes, while the two with **Explicit Verdicts** keep theirs because **History** renders them.
+    Three **Wallpapers** are shown and judged: one **Banned**, one **Liked**, one left alone. The submission
+    retires all three from the **Pool** (#38), so the one left alone — an **Ignore**, no **Explicit
+    Verdict** — loses its thumbnail at that same submission, while the two with **Explicit Verdicts** keep
+    theirs because **History** renders them. Intended (ADR 0016): **History** fetches it again on demand.
+
+    Then a fourth arrives, is never shown, and is pruned by a **Filter** change: nothing will ever show it,
+    so its thumbnail goes at the next eviction too. Pages of three, so it arrives only on the second step.
     """
     catalogue = (
         wallpaper("banned", width=3840, height=2160),
         wallpaper("liked", width=3840, height=2160),
+        wallpaper("ignored", width=3840, height=2160),
         wallpaper("dropped", width=2560, height=1440),
     )
-    harness = make_harness(db_path, catalogue=catalogue)
+    harness = make_harness(db_path, catalogue=catalogue, page_size=3)
     harness.core.update_settings(batch_size=3)
     first = harness.core.get_next_batch()
     assert isinstance(first, Batch)
-    fill_cache(harness, "banned", "liked", "dropped")
+    fill_cache(harness, "banned", "liked", "ignored")
     harness.core.set_draft_verdict(first.id, "banned", Verdict.BAN)
     harness.core.set_draft_verdict(first.id, "liked", Verdict.LIKE)
     harness.core.submit_batch(first.id)
-    assert cached(harness) == {"banned", "liked", "dropped"}, "a Pool member keeps its thumbnail"
+    assert cached(harness) == {"banned", "liked"}, "a retired Ignore keeps nothing"
 
-    # Raises the minimum width past the undecided one, which drops it out of the **Pool**. The live
-    # **Batch** still holds it, so it is not evictable until that **Batch** has been submitted.
+    harness.fill_pool(1)
+    fill_cache(harness, "dropped")
+    assert harness.core.evict_thumbnails().evicted == (), "a Pool member keeps its thumbnail"
     harness.core.update_settings(min_width=3000)
-    live = harness.core.get_next_batch()
-    assert isinstance(live, Batch)
-    harness.core.submit_batch(live.id)
 
+    assert harness.core.evict_thumbnails().evicted == ("dropped",)
     assert cached(harness) == {"banned", "liked"}
 
 
@@ -79,13 +83,10 @@ def test_a_wallpaper_in_the_live_batch_keeps_its_thumbnail(db_path: Path) -> Non
     catalogue = (wallpaper("kept", width=3840, height=2160), wallpaper("shown", width=2560, height=1440))
     harness = make_harness(db_path, catalogue=catalogue)
     harness.core.update_settings(batch_size=2)
-    first = harness.core.get_next_batch()
-    assert isinstance(first, Batch)
-    fill_cache(harness, "kept", "shown")
-    harness.core.submit_batch(first.id)
-    harness.core.update_settings(min_width=3000)
     live = harness.core.get_next_batch()
     assert isinstance(live, Batch)
+    fill_cache(harness, "kept", "shown")
+    harness.core.update_settings(min_width=3000)
     assert "shown" in {w.id for w in live.wallpapers}, "the pruned Wallpaper must still be on screen"
 
     assert harness.core.evict_thumbnails().evicted == ()

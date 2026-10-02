@@ -268,7 +268,7 @@ def test_a_recorded_path_outside_the_library_is_dropped_rather_than_deleted(
     assert recorded_destination(harness, shown).parent == original.resolve()
 
     harness.core.update_settings(library_path=tmp_path / "Moved")
-    favourite_the_whole_batch(harness, Verdict.LIKE)
+    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
 
     assert harness.library.removed == []
 
@@ -286,9 +286,9 @@ def test_the_row_of_a_refused_deletion_is_dropped(db_path: Path, tmp_path: Path)
     shown = first.wallpapers[0].id
     moved = tmp_path / "Moved"
     harness.core.update_settings(library_path=moved)
-    favourite_the_whole_batch(harness, Verdict.LIKE)
+    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
 
-    favourite_the_whole_batch(harness)
+    assert harness.core.edit_verdict(shown, Verdict.FAVOURITE) is None
 
     assert [w.wallpaper_id for w in harness.library.written] == [shown, shown]
     assert recorded_destination(harness, shown).parent == (tmp_path / "Original").resolve()
@@ -300,9 +300,9 @@ def test_a_refused_deletion_settles_rather_than_repeating(db_path: Path, tmp_pat
     """Reconciling again finds nothing to refuse, because there is no row left to refuse against."""
     harness = make_harness(db_path, catalogue=catalogue_of(1))
     harness.core.update_settings(batch_size=1, library_path=tmp_path / "Original")
-    favourite_the_whole_batch(harness)
+    shown = favourite_the_whole_batch(harness).wallpapers[0].id
     harness.core.update_settings(library_path=tmp_path / "Moved")
-    favourite_the_whole_batch(harness, Verdict.LIKE)
+    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
 
     first = harness.core.reconcile_library()
     second = harness.core.reconcile_library()

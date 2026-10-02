@@ -73,7 +73,7 @@ def test_the_batch_page_shows_the_refill_indicator(db_path: Path) -> None:
     with TestClient(app) as client:
         response = client.get("/batch")
 
-    assert "Pool 24 of 2000" in response.text
+    assert "Pool 24 of 500" in response.text
     assert "Refill not running" in response.text, "nothing started the thread in this app"
 
 
@@ -85,7 +85,7 @@ def test_the_indicator_is_on_the_unavailable_page_too(db_path: Path) -> None:
     with TestClient(app) as client:
         response = client.get("/batch")
 
-    assert "Pool 0 of 2000" in response.text
+    assert "Pool 0 of 500" in response.text
     assert "Refill not running" in response.text
 
 

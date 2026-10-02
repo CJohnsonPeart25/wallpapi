@@ -303,7 +303,7 @@ def test_the_refill_status_reports_the_pool_against_its_target(harness: Harness)
     status = harness.core.refill_status()
 
     assert status.pool_size == 24
-    assert status.target_size == 2000
+    assert status.target_size == 500
     assert not status.at_target
     assert status.last_run_at == harness.clock.now()
     assert status.running is False, "nothing started a thread here"

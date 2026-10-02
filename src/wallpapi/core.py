@@ -32,7 +32,7 @@ from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, Wallhaven
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask, most significant bit first: SFW on, sketchy and NSFW off.
@@ -98,7 +98,7 @@ because the spec asks for "a big blitz of 16 or 32" and nothing larger.
 
 The upper bound used to be justified by what one page load could fetch — 24 results a page and four capped
 **API calls**. That reasoning went with the walk at #6: a **Batch** is now sampled from a **Pool** of
-`pool_target_size`, which is 2000 by default, so what a **Batch** can be filled from is no longer the
+`pool_target_size`, which is 500 by default, so what a **Batch** can be filled from is no longer the
 binding constraint. Sixty-four stays because it is as many **Wallpapers** as anyone can judge at once.
 """
 
@@ -115,9 +115,20 @@ linear in it. Without a ceiling the refill grows the **Pool** for ever and the s
 without ever saying why.
 """
 
-DEFAULT_POOL_TARGET_SIZE = 2000
-"""Large on purpose: the refill spends the full 45-calls-per-minute budget until the **Pool** reaches this,
-so a big target is what "always a backlog to process" looks like without unbounded growth. See ADR 0005."""
+DEFAULT_POOL_TARGET_SIZE = 500
+"""Enough to draw from, not a backlog to work through (#38, ADR 0016).
+
+Every submission retires what it showed, so the **Pool** is a stream: the refill tops it up as **Batches**
+are submitted, a **Batch** of 32 costing about two search pages. It no longer has to be big for there to be
+something new to show, and every whole-**Pool** operation — the **Similarity provider**'s matrix, **Scoring**,
+the **Filter** prune — is linear in it, so smaller is cheaper on every **Batch** minted. Five hundred leaves
+every **Zone** of a **Mix** something to draw from at the largest batch size."""
+
+SUPERSEDED_POOL_TARGET_SIZE = 2000
+"""The target ADR 0005 seeded, kept because migration 10 has to recognise it, and used for nothing else.
+
+Large on purpose when it was chosen: nothing left the **Pool**, so the target was the backlog. Once a
+submission retires what it showed (ADR 0016), a standing 2000 is only a slower classification."""
 
 MAX_FILTER_PIXELS = 30_000
 """The largest minimum resolution worth accepting, per axis.
@@ -181,7 +192,7 @@ so anything above it is a **Pool** of **Unknowns** with nothing on the page to e
 DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
 """The **Thumbnail cache**'s size cap, as a backstop behind verdict-aware eviction (invariant 8).
 
-Five hundred megabytes is thousands of Wallhaven thumbnails — a **Pool** of 2000 plus a **History** of
+Five hundred megabytes is thousands of Wallhaven thumbnails — a **Pool** of 500 plus a **History** of
 **Explicit Verdicts** does not approach it — so in normal running the cap never fires and eviction is
 decided entirely by **Verdict**. It exists for the case eviction cannot reach: a **Pool** target raised a
 long way, or a machine that has been judging **Wallpapers** for a year.
@@ -778,6 +789,9 @@ class CoreService:
             if applied < 9:
                 for statement, parameters in _migration_9():
                     write.execute(statement, parameters)
+            if applied < 10:
+                for statement, parameters in _migration_10():
+                    write.execute(statement, parameters)
             write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
@@ -1069,7 +1083,9 @@ class CoreService:
         **Wallpaper** whose resolved **Verdict** is an **Explicit Verdict** gets a **Draft Batch** row in the
         same transaction, so leaving its tile alone records that **Verdict** again and unmarking it records
         an **Ignore** that means what it says. Rows rather than a fallback in the template, so absence keeps
-        meaning **Ignore** (invariant 6) and `submit_batch` does not need to know.
+        meaning **Ignore** (invariant 6) and `submit_batch` does not need to know. Dormant since #38: a
+        submission retires what it showed (ADR 0016), so nothing reshows a decided **Wallpaper** today. It
+        stays for when re-evaluation does (#52).
         """
         live = self._live_batch()
         if live is not None:
@@ -1200,8 +1216,9 @@ class CoreService:
         at #7 — changes the next classification with nothing to invalidate and no restart.
 
         The decided set is every **Wallpaper** the **Decision log** mentions whose resolved value is
-        non-zero, whether or not it is still in the **Pool**: a **Favourite** that a **Filter** change
-        pruned still says something about what the user likes. **Ignores** are in it — they are mild
+        non-zero, whether or not it is still in the **Pool**: a **Favourite** that its own submission
+        retired (ADR 0016), or that a **Filter** change pruned, still says something about what the user
+        likes. **Ignores** are in it — they are mild
         negatives, and they spread like anything else. A **Wallpaper** whose **Ignores** were wiped out by
         a later **Explicit Verdict**, or whose resolution came to zero, is not: it would contribute a
         weighted nothing to every **Score** and only widen the matrix.
@@ -1536,6 +1553,11 @@ class CoreService:
         `source` is the strategy that found it. A **Wallpaper** the other strategy already put in the
         **Pool** keeps the `source` and the `fetched_at` it arrived with — meeting it again is not a second
         arrival — which is what `_ADMIT_TO_POOL`'s `DO NOTHING` is for.
+
+        **A Wallpaper the Decision log mentions is refused (#38, ADR 0016).** Decided once: a walk that
+        rediscovers one does not put it back, and a refused **Wallpaper** does not count towards the
+        **Pool**, so the refill goes on until it has found ones nobody has seen. Its `wallpapers` row is
+        still refreshed, which is harmless — it is the same image, and **History** renders from it.
         """
         passing = [w for w in _distinct(wallpapers) if _passes_filters(w, settings)]
         if not passing:
@@ -1543,7 +1565,10 @@ class CoreService:
         fetched_at = self._clock.now().isoformat()
         with self._write() as write:
             write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in passing])
-            write.executemany(_ADMIT_TO_POOL, [(w.id, fetched_at, source.value) for w in passing])
+            write.executemany(
+                _ADMIT_TO_POOL,
+                [{"id": w.id, "fetched_at": fetched_at, "source": source.value} for w in passing],
+            )
 
     def _prune_pool(self, write: sqlite3.Connection, settings: Settings) -> None:
         """Drop every **Pool** member that no longer passes the **Filters**.
@@ -1653,6 +1678,10 @@ class CoreService:
 
         One transaction, and the **Batch** is claimed inside it: the check and the append cannot be split
         by a second browser tab, because `BEGIN IMMEDIATE` takes the write lock before the read.
+
+        **Everything shown leaves the Pool in that same transaction (#38, ADR 0016)**, **Ignores** included:
+        a decision is made once, and **History** is the only way to revisit it. That is what makes room for
+        the refill — before it, a **Pool** at target stayed there for good and the refill never ran again.
         """
         recorded_at = self._clock.now().isoformat()
         with self._write() as write:
@@ -1678,6 +1707,12 @@ class CoreService:
                     )
                     for row in shown
                 ],
+            )
+            # Decided once (#38, ADR 0016): everything shown is now in the **Decision log**, so it leaves
+            # the **Pool** in the same transaction that put it there. That is what makes room for the
+            # refill, and it stays a decided column of every **Score** (ADR 0007).
+            write.executemany(
+                "DELETE FROM pool WHERE wallpaper_id = ?", [(row["wallpaper_id"],) for row in shown]
             )
             # Discarded with the submission that consumed it. Left behind, these rows would accumulate
             # against **Batches** that can never be drafted against again (invariant 6).
@@ -2794,11 +2829,18 @@ def _wallpaper_row(wallpaper: Wallpaper) -> tuple[str | int, ...]:
 
 
 _ADMIT_TO_POOL = """
-INSERT INTO pool (wallpaper_id, fetched_at, source) VALUES (?, ?, ?)
+INSERT INTO pool (wallpaper_id, fetched_at, source)
+SELECT :id, :fetched_at, :source
+WHERE NOT EXISTS (SELECT 1 FROM decision_log WHERE wallpaper_id = :id)
 ON CONFLICT (wallpaper_id) DO NOTHING
 """
 """`DO NOTHING` rather than an upsert: a **Wallpaper** the refill meets again is already in the **Pool**,
-and `fetched_at` should stay the moment it first arrived."""
+and `fetched_at` should stay the moment it first arrived.
+
+**Nothing the Decision log mentions is admitted (#38, ADR 0016).** Any entry at all, a legacy `cleared`
+one included: it was decided, whatever it resolves to. Asked of the log itself rather than of resolution,
+because the question is "has it ever been decided", which no resolved value answers — a **Clearance**
+resolves to the same nothing a **Wallpaper** never seen does."""
 
 _SELECT_POOL_WALLPAPERS = """
 SELECT w.*
@@ -3091,6 +3133,9 @@ def _migration_8() -> tuple[tuple[str, tuple[str, ...]], ...]:
     on databases that already hold settings chosen by hand and a migration must not undo one.
 
     A step of its own rather than an edit to any of those: they are already applied to live databases.
+
+    Since #38 the setting is gone and `_defaults()` no longer names it, so on a fresh database this seeds
+    nothing new, and migration 10 deletes the row from a database that already had it (ADR 0016).
     """
     return tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
 
@@ -3120,5 +3165,38 @@ def _migration_9() -> tuple[tuple[str, tuple[str, ...]], ...]:
     radius = _defaults()[_SIMILARITY_RADIUS]
     return (
         (_RETUNE_SETTING, (radius, _SIMILARITY_RADIUS, str(SUPERSEDED_SIMILARITY_RADIUS))),
+        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
+    )
+
+
+_REVISIT_WEIGHT_KEY = "revisit_weight"
+"""The `settings` key migration 8 seeded, kept only so migration 10 can delete the row (ADR 0016)."""
+
+
+def _migration_10() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Migration 10: decide once (#38, ADR 0016).
+
+    Three things, each the migration half of something the code now does on its own.
+
+    **The Pool gives up everything the Decision log mentions.** The third enforcement point of the standing
+    rule, beside `submit_batch` and `_admit_to_pool`: a database from before #38 still holds every
+    **Wallpaper** an earlier **Batch** showed. Any entry counts, a legacy `cleared` one included. Only the
+    membership row goes — the `wallpapers` row, the log and any **Embedding** stay, and each stays a decided
+    column of every **Score** (ADR 0007).
+
+    **The Revisit weight's row is deleted**, because the setting is gone and a row nothing reads is a
+    setting that looks configured and is not.
+
+    **The Pool target moves from 2000 to 500, only where it still says 2000**, on migration 9's precedent:
+    a database whose owner chose a number keeps it, and a fresh one gets 500 from the seed. Nothing here
+    trims a **Pool** above its new target. It drains — each submission retires what it showed and the
+    refill idles until the **Pool** is below target — because trimming would throw away **Wallpapers**
+    already fetched, filtered and thumbnailed for the chance of finding them again.
+    """
+    target = _defaults()[_POOL_TARGET_SIZE]
+    return (
+        ("DELETE FROM pool WHERE wallpaper_id IN (SELECT wallpaper_id FROM decision_log)", ()),
+        ("DELETE FROM settings WHERE key = ?", (_REVISIT_WEIGHT_KEY,)),
+        (_RETUNE_SETTING, (target, _POOL_TARGET_SIZE, str(SUPERSEDED_POOL_TARGET_SIZE))),
         *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
     )

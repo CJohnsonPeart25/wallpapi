@@ -58,17 +58,17 @@ def test_submitting_returns_a_fresh_batch(harness: Harness) -> None:
 def test_a_second_ignore_is_appended_not_folded_into_the_first(db_path: Path) -> None:
     """The Decision log is append-only: a second Ignore is appended, not folded into the first.
 
-    The catalogue holds exactly 8, so both Batches contain all 8 and every Wallpaper is Ignored twice.
-    Verdict resolution itself is #3; all that is asserted here is that both entries survive.
+    Every Wallpaper is Ignored by the Batch and once more from History — the only way a submitted
+    Wallpaper is decided again since #38, because the submission retired it from the Pool. Verdict
+    resolution itself is #3; all that is asserted here is that both entries survive.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(8))
     first = harness.core.get_next_batch()
     assert isinstance(first, Batch)
     harness.core.submit_batch(first.id)
-    second = harness.core.get_next_batch()
-    assert isinstance(second, Batch)
 
-    harness.core.submit_batch(second.id)
+    for wallpaper_id in (w.id for w in first.wallpapers):
+        assert harness.core.edit_verdict(wallpaper_id, Verdict.IGNORE) is None
 
     history = harness.core.list_history()
     assert len(history) == 16
