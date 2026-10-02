@@ -209,9 +209,11 @@ DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
 """The **Thumbnail cache**'s size cap, as a backstop behind verdict-aware eviction (invariant 8).
 
 Five hundred megabytes is thousands of Wallhaven thumbnails — a **Pool** of 500 plus a **History** of
-**Explicit Verdicts** does not approach it — so in normal running the cap never fires and eviction is
-decided entirely by **Verdict**. It exists for the case eviction cannot reach: a **Pool** target raised a
-long way, or a machine that has been judging **Wallpapers** for a year.
+**Explicit Verdicts** does not approach it, at about 23KiB a thumbnail (measured at #44) — so in normal
+running the cap never fires and eviction is decided entirely by **Verdict**. The thumbnail downloader
+holds off while the cache is at it, so a cap set below what the **Pool** needs stalls the downloader
+rather than churning against the size-cap pass (ADR 0017). It exists for the case eviction cannot reach:
+a **Pool** target raised a long way, or a machine that has been judging **Wallpapers** for a year.
 """
 
 BYTES_IN_A_MEGABYTE = 1024 * 1024
@@ -1944,14 +1946,40 @@ class CoreService:
         return destination
 
     def thumbnail_wait(self) -> float:
-        """Seconds the thumbnail downloader should wait before calling `thumbnail_step` again."""
+        """Seconds the thumbnail downloader should wait before calling `thumbnail_step` again.
+
+        The Core service decides how long and the thread waits, cancellably — the refill's split, for the
+        refill's reason (invariants 11 and 12). Two things can ask for a wait and the longer wins: the gap
+        since the last fetch (`gap_needed`), and a hold — the end of a pass, a cache at its cap, nothing
+        missing, or a back-off after a 429 or a failed connection.
+        """
         now = self._clock.monotonic()
         paced = gap_needed(self._last_thumbnail_fetch, now=now)
         held = 0.0 if self._thumbnails_not_before is None else self._thumbnails_not_before - now
         return max(paced, held, 0.0)
 
     def thumbnail_step(self) -> None:
-        """One step of the thumbnail downloader: at most one fetch from the thumbnail host, never raising."""
+        """One step of the thumbnail downloader: at most one fetch from the thumbnail host, never raising.
+
+        #44, ADR 0017. Fetches the thumbnail of every **Pool** member that has none, so the embedding
+        provider — whose work list is the **Thumbnail cache** — covers the **Wallpapers** a **Batch** is
+        drawn from and not only the ones already shown. Called from `thumbnail_loop` and nowhere else:
+        never on a request, never inside `refill_loop`, never on the similarity thread.
+
+        **A pass** is the **Pool** members missing a file, in `wallpaper_id` order, listed once and then
+        taken one per step. The cache's size is checked once, before the pass is listed: at or over
+        `thumbnail_cache_max_mb`, nothing is fetched and the next look is in
+        `THUMBNAIL_IDLE_RECHECK_SECONDS`. So is the next pass after this one ends, which is what keeps a
+        file the host keeps refusing from being asked for four times a second.
+
+        **Rechecked before each fetch**: a file that now exists — the tile route got there first — or a
+        **Wallpaper** that has since left the **Pool** is skipped. A race with the tile route is still
+        possible and harmless: both writes are atomic to the same path, so it costs one request at most.
+
+        A refusal (`ThumbnailUnavailable`) skips that file until the next pass. A 429 or anything else
+        backs off `THUMBNAIL_BACKOFF_SECONDS` — "anything else" deliberately, as in `refill_step`, so that
+        the transport's spelling stays out of the Core service and no unexpected type can kill the thread.
+        """
         now = self._clock.monotonic()
         if not self._thumbnail_pass:
             if self._thumbnail_cache_full():

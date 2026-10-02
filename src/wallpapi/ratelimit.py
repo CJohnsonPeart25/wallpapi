@@ -7,6 +7,10 @@ that slept would be a limiter that could hang shutdown for a minute.
 The limit applies to **API calls** (`wallhaven.cc/api`) and to nothing else. Thumbnails and full-resolution
 images come from `th.wallhaven.cc` and `w.wallhaven.cc`, separate hosts, and counting them here would spend
 the search budget on files that never touch it.
+
+The thumbnail host has a pace of its own instead (#44): `gap_needed`, a fixed gap between one fetch and the
+next, for the background downloader that fetches every **Pool** member's thumbnail. Pure in the same way,
+for the same reason.
 """
 
 from __future__ import annotations

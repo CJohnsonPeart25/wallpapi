@@ -56,7 +56,9 @@ class SimilarityProvider(Protocol):
         page load. `thumbnails` is the **Thumbnail cache** directory, because the one image of a
         **Wallpaper** wallpapi already has is the one in there (invariant 8) — a **Wallpaper** whose
         thumbnail has not been fetched yet simply is not in it, so it gets no embedding and every pair it
-        is in falls back to the baseline until it has one.
+        is in falls back to the baseline until it has one. Since #44 a background downloader fetches a
+        thumbnail for every **Pool** member, so the work list covers the **Pool** and not only what has
+        been on screen.
 
         `stop_event` is the same one the refill waits on. Every wait inside an implementation is
         `stop_event.wait(n)` and every long piece of work checks it between chunks, so shutdown does not
