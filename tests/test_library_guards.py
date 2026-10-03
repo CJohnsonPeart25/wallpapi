@@ -18,9 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import Harness, favourite_the_whole_batch, make_harness
 from tests.fakes import catalogue_of, wallpaper
-from tests.test_library import favourite_the_whole_batch
 from wallpapi.core import confined_to_library, library_file_name
 from wallpapi.model import Verdict
 

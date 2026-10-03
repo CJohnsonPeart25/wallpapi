@@ -152,3 +152,12 @@ def favourite(harness: Harness, *wallpaper_ids: str) -> None:
     for wallpaper_id in wallpaper_ids:
         harness.core.set_draft_verdict(batch.id, wallpaper_id, Verdict.FAVOURITE)
     harness.core.submit_batch(batch.id)
+
+
+def favourite_the_whole_batch(harness: Harness, verdict: Verdict = Verdict.FAVOURITE) -> Batch:
+    """Mark every **Wallpaper** on the live **Batch** and submit it, returning the **Batch** submitted."""
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    harness.core.set_all_draft_verdicts(batch.id, verdict)
+    harness.core.submit_batch(batch.id)
+    return batch

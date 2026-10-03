@@ -12,19 +12,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import favourite_the_whole_batch, make_harness
 from tests.fakes import catalogue_of
 from wallpapi.core import Batch
 from wallpapi.model import Verdict
-
-
-def favourite_the_whole_batch(harness: Harness, verdict: Verdict = Verdict.FAVOURITE) -> Batch:
-    """Mark every **Wallpaper** on the live **Batch** and submit it, returning the **Batch** submitted."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.set_all_draft_verdicts(batch.id, verdict)
-    harness.core.submit_batch(batch.id)
-    return batch
 
 
 def test_a_favourite_is_downloaded_into_the_configured_library_path(db_path: Path, tmp_path: Path) -> None:
