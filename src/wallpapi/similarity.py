@@ -150,6 +150,11 @@ DOWNLOAD_CHUNK = 1 << 20
 DOWNLOAD_TIMEOUT = 30.0
 """Seconds without data before the download gives up: a read timeout, not a total one."""
 
+THREAD_NAME = "wallpapi-similarity"
+
+JOIN_TIMEOUT = DOWNLOAD_TIMEOUT + 5.0
+"""Seconds shutdown waits for the thread: greater than the model download's read timeout (invariant 12)."""
+
 _PENDING = (
     "Image similarity is still starting up — wallpapers are being compared by colour and category until "
     "its model is ready."
@@ -339,6 +344,14 @@ class Embeddings:
             return
         if len(vectors):
             self._store.store(path.stem, vectors[0])
+
+
+def upkeep_loop(embeddings: Embeddings, thumbnails: Path, stop_event: threading.Event) -> None:
+    """Take one step, wait as the provider asked, repeat; `catch_up` never raises."""
+    while not stop_event.is_set():
+        wait = embeddings.catch_up(thumbnails, stop_event)
+        if wait > 0 and stop_event.wait(wait):
+            return
 
 
 def _rows(

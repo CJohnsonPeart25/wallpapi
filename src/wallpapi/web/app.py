@@ -18,7 +18,6 @@ from starlette.types import Lifespan
 
 from wallpapi.core import Batch, BatchUnavailable, CoreService, HistoryRefused, SubmissionRefused
 from wallpapi.model import Verdict
-from wallpapi.refill import RefillThread
 from wallpapi.settings import (
     FORM_FIELDS,
     MAX_MIX_NAME_LENGTH,
@@ -27,8 +26,6 @@ from wallpapi.settings import (
     SettingsRefused,
     form_values,
 )
-from wallpapi.similarity_thread import SimilarityThread
-from wallpapi.thumbnail_thread import ThumbnailThread
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,18 +96,14 @@ def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         del app
 
-        refill = RefillThread(core)
-        similarity = SimilarityThread(core)
-        thumbnails = ThumbnailThread(core)
-        refill.start()
-        similarity.start()
-        thumbnails.start()
+        loops = core.background_loops()
+        for loop in loops:
+            loop.start()
         try:
             yield
         finally:
-            thumbnails.stop()
-            similarity.stop()
-            refill.stop()
+            for loop in reversed(loops):
+                loop.stop()
 
     return lifespan
 

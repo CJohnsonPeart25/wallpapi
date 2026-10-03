@@ -47,6 +47,8 @@ IDLE_RECHECK_SECONDS = 30.0
 ERROR_BACKOFF_SECONDS = 60.0
 """How long the refill waits after a failed **API call** that named no delay: one whole rate-limit window."""
 
+THREAD_NAME = "wallpapi-refill"
+
 JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
 """Seconds shutdown waits for the refill: more than the Wallhaven client's request timeout (invariant 12)."""
 

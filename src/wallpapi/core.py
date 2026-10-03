@@ -12,14 +12,16 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from wallpapi import decisions, storage
+from wallpapi import decisions, similarity, storage
 from wallpapi import pool as pool_module
 from wallpapi import settings as settings_module
 from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
+from wallpapi.background import BackgroundLoop
 from wallpapi.clock import Clock
 from wallpapi.decisions import ResolvedVerdict
 from wallpapi.files import write_atomically
@@ -37,7 +39,7 @@ from wallpapi.settings import SUPERSEDED_POOL_TARGET_SIZE as SUPERSEDED_POOL_TAR
 from wallpapi.settings import SUPERSEDED_SIMILARITY_RADIUS as SUPERSEDED_SIMILARITY_RADIUS
 from wallpapi.settings import MixListing, Settings, SettingsRefused
 from wallpapi.similarity import Embeddings
-from wallpapi.wallhaven import RateLimited, ThumbnailUnavailable, Wallhaven
+from wallpapi.wallhaven import REQUEST_TIMEOUT, RateLimited, ThumbnailUnavailable, Wallhaven
 
 THUMBNAIL_GAP_SECONDS = 0.25
 """The fixed gap between thumbnail fetches: a constant, never a setting."""
@@ -58,6 +60,11 @@ THUMBNAIL_REFUSALS_BEFORE_GIVING_UP = 2
 Without a limit a thumbnail gone for good is requested every pass and the page's coverage never reaches the
 whole **Pool**. A 429 or a failed connection is not a refusal and never counts.
 """
+
+THUMBNAIL_THREAD_NAME = "wallpapi-thumbnails"
+
+THUMBNAIL_JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
+"""Seconds shutdown waits for the downloader: greater than the client's request timeout (invariant 12)."""
 
 BYTES_IN_A_MEGABYTE = 1024 * 1024
 """Mebibytes, because matching what Explorer shows matters more than matching SI."""
@@ -461,6 +468,28 @@ class CoreService:
         next.
         """
         return self._similarity.catch_up(self.thumbnail_dir, stop_event)
+
+    def background_loops(self) -> tuple[BackgroundLoop, ...]:
+        """The refill, the **Similarity provider**'s upkeep and the thumbnail downloader, in the order the
+        lifespan starts them; it stops them in reverse.
+        """
+        return (
+            BackgroundLoop(
+                partial(pool_module.refill_loop, self.refill),
+                name=pool_module.THREAD_NAME,
+                join_timeout=pool_module.JOIN_TIMEOUT,
+            ),
+            BackgroundLoop(
+                partial(similarity.upkeep_loop, self._similarity, self.thumbnail_dir),
+                name=similarity.THREAD_NAME,
+                join_timeout=similarity.JOIN_TIMEOUT,
+            ),
+            BackgroundLoop(
+                partial(thumbnail_loop, self),
+                name=THUMBNAIL_THREAD_NAME,
+                join_timeout=THUMBNAIL_JOIN_TIMEOUT,
+            ),
+        )
 
     def _live_batch(self) -> Batch | None:
         """The unsubmitted **Batch**, if there is one."""
@@ -887,6 +916,17 @@ class CoreService:
     ) -> list[DecisionEntry]:
         """The **Decision log**'s raw entries in sequence order: `decisions.entries`."""
         return decisions.entries(self._connect(), batch_id=batch_id, wallpaper_id=wallpaper_id)
+
+
+def thumbnail_loop(core: CoreService, stop_event: threading.Event) -> None:
+    """Wait as the Core service says, take one step, repeat; `thumbnail_step` never raises."""
+    while not stop_event.is_set():
+        wait = core.thumbnail_wait()
+        if wait > 0 and stop_event.wait(wait):
+            return
+        if stop_event.is_set():
+            return
+        core.thumbnail_step()
 
 
 LIBRARY_FILE_NAME = re.compile(r"[A-Za-z0-9]+\.[a-z0-9]{1,5}")
