@@ -54,7 +54,6 @@ def _rolled(remainders: dict[Zone, int], random: SeededRandom) -> Zone:
         running += remainders[zone]
         if threshold < running:
             return zone
-    # Only the rounding of the multiply gets here.
     return ZONE_ORDER[-1]
 
 
@@ -77,7 +76,7 @@ def varied_order(
     # float64, so an argmax between near-equal cosines is not decided by float32 rounding.
     points = (vectors[embedded] / norms[embedded, None]).astype(np.float64)
     clusters = _spherical_kmeans(points, k, random)
-    # A cluster is empty only when rows duplicate each other; its slot comes from `rest`.
+
     picks = [
         embedded[weighted_order(members, [math.log1p(favourites[embedded[m]]) for m in members], random)[0]]
         for members in clusters
@@ -119,12 +118,11 @@ def _proportional(weights: NDArray[np.float64], chosen: Sequence[int], random: S
     """One index drawn in proportion to `weights`, never one already in `chosen`."""
     total = float(weights.sum())
     if total <= 0.0:
-        # Every row left duplicates one already drawn.
         remaining = [index for index in range(len(weights)) if index not in set(chosen)]
         return remaining[min(int(random.fraction() * len(remaining)), len(remaining) - 1)]
     cumulative = np.cumsum(weights)
     index = int(np.searchsorted(cumulative, random.fraction() * total, side="right"))
-    # Past the end only if the multiply rounds up to `total`.
+
     return index if index < len(weights) else int(np.flatnonzero(weights)[-1])
 
 
