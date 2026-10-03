@@ -1,10 +1,7 @@
-"""The entry point: `uv run python -m wallpapi`.
+"""The entry point: `uv run python -m wallpapi`, and the one place the real dependencies are wired together.
 
-This is the one place that wires the real dependencies together. Everything downstream of `build_core` is
-already covered by tests against fakes, so this module stays thin enough to read in one go.
-
-Bound to `127.0.0.1` and single-worker, both deliberate: `--workers N` would mean N writers against one
-SQLite file, and later N background refill threads.
+Bound to `127.0.0.1` and single-worker: `--workers N` would mean N writers and N refill threads on one SQLite
+file.
 """
 
 from __future__ import annotations
@@ -34,25 +31,15 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
 DEFAULT_SIMILARITY = "embedding"
-"""Which **Similarity provider** the app wires in unless `WALLPAPI_SIMILARITY` says otherwise.
+"""The **Similarity provider** wired in unless `WALLPAPI_SIMILARITY` says otherwise (ADR 0013).
 
-Image embeddings, decided at #14 and recorded in ADR 0013. It fetches its own model on first boot and
-falls back to the baseline for every **Wallpaper** it has not embedded yet, so there is nothing to install
-and nothing to run first — a fresh wallpapi behaves exactly as the baseline did and gets better as its
-cache fills, with a line on the page while that is happening.
-
-The other two stay selectable because the maintainer has not yet seen all three against a real **Decision
-log**, only against the spike's synthetic one. `metadata` is the baseline and costs nothing. `tags` needs
-its cache filled by hand — about 500 **API calls** for a **Pool** at its default target size, out of
-Wallhaven's 45 a minute — and until it is filled it behaves as the baseline.
+`embedding` fetches its own model on first boot and falls back to the baseline until its cache fills.
+`metadata` is the baseline; `tags` needs its cache filled by hand.
 """
 
 MODEL_FILENAME = "clip-vit-b32-vision-quantized.onnx"
-"""The image tower's name on disk, under `models/` in the wallpapi home.
-
-Beside the **Decision log** rather than inside the package: 85MiB of weights that are fetched once, are
-not wallpapi's to ship, and can be deleted without reinstalling anything. Named for what it is, so that a
-future change of model is a new file rather than a silent change of meaning behind one name.
+"""The image tower's name on disk, under `models/` in the wallpapi home. Named for what it is, so a new model
+is a new file.
 """
 
 
@@ -65,16 +52,8 @@ def wallpapi_home() -> Path:
 def build_similarity(root: Path) -> SimilarityProvider:
     """Which **Similarity provider** to wire in, from `WALLPAPI_SIMILARITY` (ADR 0013).
 
-    Each provider owns its own SQLite cache beside `wallpapi.db`, which is why switching between them
-    needs no migration and deleting one is deleting a file.
-
-    Only the embedding provider is wired to something that *fills* its cache, and even then not here: it
-    is handed a `ModelSource` and the background thread calls `catch_up`. Nothing on the path of a page
-    load ever downloads a model or runs one.
-
-    An unrecognised name raises rather than quietly falling back. The three behave differently and all
-    three look the same from the page — a typo that silently ran the baseline would be a wallpapi scoring
-    by colour with nothing anywhere saying so.
+    Each owns its own SQLite cache beside `wallpapi.db`. An unrecognised name raises rather than quietly
+    running a different provider.
     """
     choice = os.environ.get("WALLPAPI_SIMILARITY", DEFAULT_SIMILARITY).strip().lower()
     if choice == "metadata":
@@ -90,11 +69,7 @@ def build_similarity(root: Path) -> SimilarityProvider:
 
 
 def build_core(home: Path | None = None) -> CoreService:
-    """The real Core service.
-
-    The seed is fresh per boot unless `WALLPAPI_SEED` pins it — the random source is seedable so that tests
-    are reproducible, not so that every run shows the same **Wallpapers**.
-    """
+    """The real Core service. The seed is fresh per boot unless `WALLPAPI_SEED` pins it."""
     root = wallpapi_home() if home is None else home
     root.mkdir(parents=True, exist_ok=True)
     pinned = os.environ.get("WALLPAPI_SEED")
@@ -109,11 +84,10 @@ def build_core(home: Path | None = None) -> CoreService:
 
 
 def build_app() -> FastAPI:
-    """The real app, with the refill, the similarity upkeep and the thumbnail downloader behind it.
+    """The real app with its background threads.
 
-    `refill=True` appears here and nowhere else. `create_app` leaves it off by default so that no test can
-    start a thread that talks to Wallhaven, which makes this the one line that has to be right for the
-    **Pool** to fill at all.
+    `refill=True` appears here and nowhere else, and nothing tests this function: lose that line and nothing
+    fills.
     """
     return create_app(build_core(), refill=True)
 
