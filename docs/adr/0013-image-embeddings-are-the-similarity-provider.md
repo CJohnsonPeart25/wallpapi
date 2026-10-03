@@ -8,8 +8,8 @@ Accepted. Supersedes ADR 0007's choice of provider and its **Similarity radius**
 matrix interface, the **Score** formula, the **Zone** rule — stands unchanged. Amended by ADR 0017: a
 background downloader now fetches every **Pool** member's thumbnail, so the work list below covers the
 **Pool** rather than only what has been shown, and `notice` takes the **Pool**. Amended 2026-10-03: the two
-losing providers' selectability is withdrawn — the tag provider, its cache and the Wallhaven tag endpoint, the
-`WALLPAPI_SIMILARITY` switch and `scripts/similarity_spike.py` are deleted, and the spike's write-up
+losing providers' selectability is withdrawn — the tag provider, its cache and the Wallhaven tag endpoint,
+the `WALLPAPI_SIMILARITY` switch and `scripts/similarity_spike.py` are deleted, and the spike's write-up
 `docs/spikes/0014-similarity-tags-versus-embeddings.md` survives in git history only. The baseline stays as
 the per-pair fallback, now `metadata_similarity` in the one `similarity` module.
 
