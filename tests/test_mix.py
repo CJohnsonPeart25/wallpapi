@@ -16,9 +16,9 @@ import pytest
 from tests.conftest import make_harness
 from tests.zoned import FAVOURED, NEAR, drawn, zone_counts, zoned_pool
 from wallpapi.allocation import ZONE_ORDER, allocate
-from wallpapi.core import EXPLORE_MIX, MAX_MIX_NAME_LENGTH, MIX_TOTAL, REFINE_MIX, SettingsRefused
 from wallpapi.model import Mix, Zone
 from wallpapi.rng import SeededRandom
+from wallpapi.settings import EXPLORE_MIX, MAX_MIX_NAME_LENGTH, MIX_TOTAL, REFINE_MIX, SettingsRefused
 
 ROLLS = 4000
 """Seeded **Allocations** a distribution is read off: a 50/40/10 split is unmistakable at the tolerance."""

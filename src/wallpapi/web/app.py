@@ -10,32 +10,23 @@ from mimetypes import guess_type
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import Lifespan
 
-from wallpapi.core import (
-    MAX_BATCH_SIZE,
-    MAX_FILTER_PIXELS,
-    MAX_MIX_NAME_LENGTH,
-    MAX_POOL_TARGET_SIZE,
-    MAX_SIMILARITY_DECAY,
-    MIN_BATCH_SIZE,
-    MIN_POOL_TARGET_SIZE,
-    MIX_TOTAL,
-    UNDELETABLE_MIXES,
-    WALLHAVEN_RATIOS,
-    Batch,
-    BatchUnavailable,
-    CoreService,
-    HistoryRefused,
-    SettingsRefused,
-    SubmissionRefused,
-)
-from wallpapi.model import Mix, Verdict
+from wallpapi.core import Batch, BatchUnavailable, CoreService, HistoryRefused, SubmissionRefused
+from wallpapi.model import Verdict
 from wallpapi.refill import RefillThread
+from wallpapi.settings import (
+    FORM_FIELDS,
+    MAX_MIX_NAME_LENGTH,
+    MIX_TOTAL,
+    MixListing,
+    SettingsRefused,
+    form_values,
+)
 from wallpapi.similarity_thread import SimilarityThread
 from wallpapi.thumbnail_thread import ThumbnailThread
 
@@ -124,25 +115,19 @@ def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
     return lifespan
 
 
-def _stored_fields(core: CoreService) -> dict[str, str]:
-    """Every settings form field as text, read from the Core service.
+async def _posted_settings(request: Request) -> dict[str, str]:
+    """The settings form's fields as posted, by key; a field not posted, or posted empty, is left out, and so
+    left alone. Empty as `Form()` treats it, which is how the page has always behaved: a field cleared and
+    saved keeps its value.
 
-    Adding a setting takes six edits: its key, `Settings` field and refusal reason in `core.py`; its read in
-    `get_settings`; its validator; its keyword on `update_settings`; an entry here plus the settings POST's
-    `Form()` parameter; and the input and refusal message in `settings.html`.
+    Read off the form by the table rather than one `Form()` parameter each, so the web layer spells no field
+    name. Async only to read the body: the route that depends on it stays synchronous (ADR 0001).
     """
-    current = core.get_settings()
+    form = await request.form()
     return {
-        "batch_size": str(current.batch_size),
-        "library_path": str(current.library_path),
-        "pool_target_size": str(current.pool_target_size),
-        "min_width": str(current.min_width),
-        "min_height": str(current.min_height),
-        "allowed_ratios": current.ratios,
-        "min_favourites": str(current.min_favourites),
-        "similarity_radius": str(current.similarity_radius),
-        "similarity_decay": str(current.similarity_decay),
-        "thumbnail_cache_max_mb": str(current.thumbnail_cache_max_mb),
+        field.key: value
+        for field in FORM_FIELDS
+        if isinstance(value := form.get(field.key), str) and value != ""
     }
 
 
@@ -157,10 +142,11 @@ def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> 
     """
     typed = dict(posted or {})
     typed_name = typed.get("name", "").strip()
-    stored = core.list_mixes()
+    stored = core.mix_listings()
     active = core.get_settings().active_mix
 
-    def fields(mix: Mix) -> dict[str, object]:
+    def fields(listed: MixListing) -> dict[str, object]:
+        mix = listed.mix
         edited = typed if typed_name == mix.name else {}
         return {
             "name": mix.name,
@@ -168,12 +154,12 @@ def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> 
             "banger": edited.get("banger", str(mix.banger)),
             "dud": edited.get("dud", str(mix.dud)),
             "active": mix.name == active,
-            "deletable": mix.name not in UNDELETABLE_MIXES and mix.name != active,
+            "deletable": listed.deletable,
         }
 
-    added = typed if typed_name not in {mix.name for mix in stored} else {}
+    added = typed if typed_name not in {listed.mix.name for listed in stored} else {}
     return {
-        "mix_rows": [fields(mix) for mix in stored],
+        "mix_rows": [fields(listed) for listed in stored],
         "new_mix": {field: added.get(field, "") for field in ("name", "unknown", "banger", "dud")},
         "mix_total": MIX_TOTAL,
         "max_mix_name_length": MAX_MIX_NAME_LENGTH,
@@ -355,13 +341,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 "saved": saved,
                 "deleted": deleted,
                 "download": download,
-                "min_batch_size": MIN_BATCH_SIZE,
-                "max_batch_size": MAX_BATCH_SIZE,
-                "min_pool_target_size": MIN_POOL_TARGET_SIZE,
-                "max_pool_target_size": MAX_POOL_TARGET_SIZE,
-                "max_filter_pixels": MAX_FILTER_PIXELS,
-                "max_similarity_decay": MAX_SIMILARITY_DECAY,
-                "wallhaven_ratios": ", ".join(sorted(WALLHAVEN_RATIOS)),
+                "fields": {field.key: field for field in FORM_FIELDS},
             },
             status_code=status_code,
         )
@@ -381,7 +361,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         """
         return render_settings(
             request,
-            posted=_stored_fields(core),
+            posted=form_values(core.get_settings()),
             saved=saved,
             deleted=deleted,
             download=_DownloadCounts(downloaded, written, skipped, failed),
@@ -389,43 +369,17 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.post("/settings")
     def save_settings(
-        request: Request,
-        batch_size: Annotated[str | None, Form()] = None,
-        thumbnail_cache_max_mb: Annotated[str | None, Form()] = None,
-        library_path: Annotated[str | None, Form()] = None,
-        pool_target_size: Annotated[str | None, Form()] = None,
-        min_width: Annotated[str | None, Form()] = None,
-        min_height: Annotated[str | None, Form()] = None,
-        allowed_ratios: Annotated[str | None, Form()] = None,
-        min_favourites: Annotated[str | None, Form()] = None,
-        similarity_radius: Annotated[str | None, Form()] = None,
-        similarity_decay: Annotated[str | None, Form()] = None,
+        request: Request, posted: Annotated[dict[str, str], Depends(_posted_settings)]
     ) -> Response:
-        """Save the settings, or come back with the reason. Fields are `str` and coerced by the Core service;
-        one not posted is left alone.
+        """Save the settings, or come back with the reason. Fields are `str` and coerced by the settings
+        module; one not posted is left alone.
         """
-        posted = {
-            name: value
-            for name, value in (
-                ("batch_size", batch_size),
-                ("library_path", library_path),
-                ("pool_target_size", pool_target_size),
-                ("min_width", min_width),
-                ("min_height", min_height),
-                ("allowed_ratios", allowed_ratios),
-                ("min_favourites", min_favourites),
-                ("similarity_radius", similarity_radius),
-                ("similarity_decay", similarity_decay),
-                ("thumbnail_cache_max_mb", thumbnail_cache_max_mb),
-            )
-            if value is not None
-        }
         result = core.update_settings(**posted)
         if isinstance(result, SettingsRefused):
             # What was typed, over what is stored.
             return render_settings(
                 request,
-                posted={**_stored_fields(core), **posted},
+                posted={**form_values(core.get_settings()), **posted},
                 refused=result,
                 status_code=HTTPStatus.BAD_REQUEST,
             )
@@ -458,7 +412,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         if isinstance(result, SettingsRefused):
             return render_settings(
                 request,
-                posted=_stored_fields(core),
+                posted=form_values(core.get_settings()),
                 posted_mix={"name": name, "unknown": unknown, "banger": banger, "dud": dud},
                 refused=result,
                 status_code=HTTPStatus.BAD_REQUEST,
@@ -472,7 +426,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         if refused is not None:
             return render_settings(
                 request,
-                posted=_stored_fields(core),
+                posted=form_values(core.get_settings()),
                 refused=refused,
                 status_code=HTTPStatus.BAD_REQUEST,
             )
