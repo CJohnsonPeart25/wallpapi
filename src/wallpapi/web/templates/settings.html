@@ -194,10 +194,10 @@
     the table and every field and button in the row names its form with `form=`.
 
     Editing and adding post to the same route: a mix is saved under its name, so there is no rename. No
-    delete control on explore, refine or the active mix, which the core service refuses anyway.
+    delete control on explore, refine or the active mix, which the settings module refuses anyway.
 
     Each row adds itself up as it is typed into and marks its numbers when they miss the total: an Alpine
-    hint only, since the Core service still refuses a Mix that does not add up. A blank row is not marked.
+    hint only, since the settings module still refuses a Mix that does not add up. A blank row is not marked.
   #}
   {% set running_total %}{
       sum: 0,

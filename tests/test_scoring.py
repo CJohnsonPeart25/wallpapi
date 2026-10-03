@@ -143,7 +143,7 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
     assert _zones(harness)[swayed] is Zone.DUD
 
 
-def test_a_restarted_core_service_derives_the_same_classification(db_path: Path) -> None:
+def test_a_restart_derives_the_same_classification(db_path: Path) -> None:
     """The other half of never stored: the answer survives when nothing changes."""
     similarities = {("wp0004", "wp0000"): 0.9}
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE), similarities=similarities)

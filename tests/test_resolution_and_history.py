@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness, judge, live, make_harness, submit_with, write_legacy_clearance
+from tests.conftest import Harness, judge, live, make_harness, serving, submit_with, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import decisions, workflows
 from wallpapi.batches import Batch, BatchUnavailable
@@ -260,17 +260,18 @@ def test_an_untouched_pool_has_no_history(db_path: Path) -> None:
 
 def test_rows_carry_the_wallpaper_its_resolved_verdict_and_its_latest_timestamp(db_path: Path) -> None:
     """The *resolved* **Verdict**, which is the difference between **History** and a print-out of the
-    log."""
+    log. Read off the page, which is where the **Wallpaper** is joined on."""
     harness = make_harness(db_path, catalogue=(wallpaper("only"),))
     workflows.save_settings(harness.modules, batch_size=1)
     submit_with(harness, {"only": Verdict.LIKE})
 
-    row = harness.core.list_history_rows().rows[0]
+    with serving(harness) as client:
+        page = client.get("/history").text
 
-    assert row.wallpaper.id == "only"
-    assert row.wallpaper.page_url == "https://wallhaven.cc/w/only"
-    assert row.resolved.verdict is Verdict.LIKE
-    assert row.latest_at == harness.clock.now()
+    assert 'data-wallpaper-id="only"' in page
+    assert 'href="https://wallhaven.cc/w/only"' in page
+    assert 'data-resolved-verdict="like"' in page
+    assert f'<time datetime="{harness.clock.now().isoformat()}">' in page
 
 
 def test_one_row_per_wallpaper_however_many_entries_it_has(db_path: Path) -> None:

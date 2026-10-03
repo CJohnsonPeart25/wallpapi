@@ -37,8 +37,7 @@ from tests.fakes import (
 )
 from wallpapi import decisions, pool, settings, storage, workflows
 from wallpapi.batches import Batch
-from wallpapi.compose import Modules
-from wallpapi.core import CoreService
+from wallpapi.compose import Modules, compose
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.pool import RefillStrategy
@@ -94,7 +93,6 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
 class Harness:
     """The composed modules plus the fakes behind them, so tests can assert on both sides of the seam."""
 
-    core: CoreService
     modules: Modules
     wallhaven: FakeWallhavenClient
     library: FakeLibraryWriter
@@ -147,7 +145,7 @@ def make_harness(
     Safe to call twice on one path: that is how a restart is tested. `similarities` is
     `{(pool id, decided id): value}` for the injected matrix, a **Wallpaper** against itself 1.0 and
     everything unnamed 0.0; `vectors` are **Embeddings** already stored. The model is not yet fetched, so
-    the page shows the "still starting up" notice until `similarity_step` runs. `library` replaces the fake
+    the page shows the "still starting up" notice until the upkeep has caught up. `library` replaces the fake
     writer the **Library** gets, for the tests of the real one.
     """
     wallhaven = FakeWallhavenClient(
@@ -167,19 +165,18 @@ def make_harness(
     model = ModelOnDisk()
     embeddings = Embeddings(store, embed, model, fallback=similarity, batch=embed_batch)
     clock = FakeClock(now)
-    core = CoreService(
+    modules = compose(
         db_path=db_path,
         thumbnail_dir=db_path.parent / "thumbnails",
         wallhaven=wallhaven,
-        library=fake_library if library is None else library,
+        library_writer=fake_library if library is None else library,
         similarity=embeddings,
         random_source=SeededRandom(seed),
         refill_random_source=SeededRandom(seed),
         clock=clock,
     )
     harness = Harness(
-        core=core,
-        modules=core.modules,
+        modules=modules,
         wallhaven=wallhaven,
         library=fake_library,
         similarity=similarity,
