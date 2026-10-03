@@ -21,7 +21,6 @@ from wallpapi.similarity_embedding import (
     EmbeddingCache,
     EmbeddingSimilarityProvider,
 )
-from wallpapi.similarity_tags import TagCache, TagSimilarityProvider
 from wallpapi.wallhaven import WallhavenClient
 from wallpapi.web.app import create_app
 
@@ -46,14 +45,12 @@ def build_similarity(root: Path) -> SimilarityProvider:
     choice = os.environ.get("WALLPAPI_SIMILARITY", DEFAULT_SIMILARITY).strip().lower()
     if choice == "metadata":
         return MetadataSimilarityProvider()
-    if choice == "tags":
-        return TagSimilarityProvider(TagCache(root / "tags.db"))
     if choice == "embedding":
         return EmbeddingSimilarityProvider(
             EmbeddingCache(root / "embeddings.db"),
             model=DownloadedModel(root / "models" / MODEL_FILENAME),
         )
-    raise ValueError(f"WALLPAPI_SIMILARITY must be metadata, tags or embedding — not {choice!r}")
+    raise ValueError(f"WALLPAPI_SIMILARITY must be metadata or embedding — not {choice!r}")
 
 
 def build_core(home: Path | None = None) -> CoreService:

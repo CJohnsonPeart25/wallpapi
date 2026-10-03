@@ -1,13 +1,12 @@
-"""The three **Similarity providers** and the two caches behind them, tested directly.
+"""The two **Similarity providers** and the cache behind them, tested directly.
 
 A provider is one of the five injected dependencies, so these are unit tests of the protocol's contract and
 of each provider's arithmetic; every **Scoring** test drives the fake instead. No model, no `onnxruntime`
-and no network: vectors and tag sets are written by hand, and the caches are files under `tmp_path`.
+and no network: vectors are written by hand, and the cache is a file under `tmp_path`.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -18,13 +17,10 @@ from numpy.typing import NDArray
 from tests.fakes import wallpaper
 from wallpapi.similarity import CATEGORY_SHARE, MetadataSimilarityProvider, SimilarityProvider
 from wallpapi.similarity_embedding import EmbeddingCache, EmbeddingSimilarityProvider
-from wallpapi.similarity_tags import TAG_SHARE, TagCache, TagSimilarityProvider
-from wallpapi.wallhaven import Tag
 
 RED = ("#ff0000", "#880000")
 NEARLY_RED = ("#fa0505", "#850303")
 BLUE_AND_WHITE = ("#0000ff", "#ffffff")
-FETCHED_AT = dt.datetime(2026, 9, 27, 12, 0, 0, tzinfo=dt.UTC)
 
 baseline = MetadataSimilarityProvider()
 
@@ -50,20 +46,8 @@ class VectorsByHand:
         return {w: self._vectors[w] for w in wallpaper_ids if w in self._vectors}
 
 
-class TagsByHand:
-    def __init__(self, tags: Mapping[str, tuple[int, ...]]) -> None:
-        self._tags = dict(tags)
-
-    def tags_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, tuple[int, ...]]:
-        return {w: self._tags[w] for w in wallpaper_ids if w in self._tags}
-
-
 def embedding(vectors: Mapping[str, NDArray[np.float32]]) -> EmbeddingSimilarityProvider:
     return EmbeddingSimilarityProvider(VectorsByHand(vectors))
-
-
-def tagged(tags: Mapping[str, tuple[int, ...]]) -> TagSimilarityProvider:
-    return TagSimilarityProvider(TagsByHand(tags))
 
 
 def _metadata_knowing(ids: Sequence[str]) -> SimilarityProvider:
@@ -75,12 +59,8 @@ def _embedding_knowing(ids: Sequence[str]) -> SimilarityProvider:
     return embedding({w: DIRECTIONS[n % len(DIRECTIONS)] for n, w in enumerate(ids)})
 
 
-def _tags_knowing(ids: Sequence[str]) -> SimilarityProvider:
-    return tagged({w: (n, n + 1) for n, w in enumerate(ids)})
-
-
-PROVIDERS = {"metadata": _metadata_knowing, "embedding": _embedding_knowing, "tags": _tags_knowing}
-"""Each provider, given data (vectors, tags) for the IDs named and none for the rest."""
+PROVIDERS = {"metadata": _metadata_knowing, "embedding": _embedding_knowing}
+"""Each provider, given data (vectors) for the IDs named and none for the rest."""
 
 
 # -- the contract every provider keeps ---------------------------------------------------------------
@@ -107,16 +87,16 @@ def test_every_provider_keeps_the_protocol_contract(name: str) -> None:
     assert np.all(itself <= 1.0)
 
 
-@pytest.mark.parametrize("name", ["metadata", "tags"])
+@pytest.mark.parametrize("name", ["metadata"])
 def test_a_provider_with_no_positions_has_no_vectors(name: str) -> None:
     """The varied **Unknown** draw then falls back to the seeded shuffle."""
     assert PROVIDERS[name](["a"]).vectors([wallpaper("a"), wallpaper("b")]) is None
 
 
-@pytest.mark.parametrize("name", ["embedding", "tags"])
+@pytest.mark.parametrize("name", ["embedding"])
 @pytest.mark.parametrize("missing", ["pool", "decided"])
 def test_a_side_with_no_data_falls_back_to_the_baseline(name: str, missing: str) -> None:
-    """A **Pool** fills faster than it can be embedded or tagged. A 0.0 there would say the **Wallpaper**
+    """A **Pool** fills faster than it can be embedded. A 0.0 there would say the **Wallpaper**
     is unlike every **Ban** as well as every **Favourite**."""
     pool = [wallpaper("p")]
     decided = [wallpaper("d")]
@@ -239,40 +219,6 @@ def test_the_vectors_are_its_rows_in_pool_order_with_zeros_for_no_embedding() ->
     assert not np.any(nothing)
 
 
-# -- tags --------------------------------------------------------------------------------------------
-
-
-def test_identical_tag_sets_score_the_whole_tag_share() -> None:
-    matrix = tagged({"a": (10, 20), "b": (20, 10)}).similarities([wallpaper("a")], [wallpaper("b")])
-
-    assert float(matrix[0, 0]) == 1.0
-
-
-def test_tag_overlap_is_the_jaccard_index_of_the_two_sets() -> None:
-    pool = [wallpaper("a")]
-    decided = [wallpaper("b")]
-    base = float(baseline.similarities(pool, decided)[0, 0])
-
-    overlapping = tagged({"a": (1, 2), "b": (2, 3)}).similarities(pool, decided)
-    disjoint = tagged({"a": (1, 2), "b": (3, 4)}).similarities(pool, decided)
-
-    assert float(overlapping[0, 0]) == pytest.approx(TAG_SHARE / 3.0 + (1.0 - TAG_SHARE) * base)
-    assert float(disjoint[0, 0]) == pytest.approx((1.0 - TAG_SHARE) * base)
-
-
-def test_the_blend_leans_on_the_tags_rather_than_on_the_colours() -> None:
-    """The tag provider's whole claim: the baseline cannot tell a snowy peak from a white bedsheet."""
-    peak = wallpaper("peak", colours=("#ffffff", "#cccccc"))
-    sheet = wallpaper("sheet", colours=("#ffffff", "#cccccc"))
-    other_peak = wallpaper("otherpeak", colours=("#223344", "#000000"))
-
-    matrix = tagged({"peak": (1, 2), "otherpeak": (1, 2), "sheet": (99,)}).similarities(
-        [other_peak, sheet], [peak]
-    )
-
-    assert float(matrix[0, 0]) > float(matrix[1, 0])
-
-
 # -- the caches --------------------------------------------------------------------------------------
 
 
@@ -298,32 +244,11 @@ class _Embeddings:
         return EmbeddingSimilarityProvider(self.cache)
 
 
-class _Tags:
-    def __init__(self, path: Path) -> None:
-        self.cache = TagCache(path)
-
-    def store(self, wallpaper_id: str, n: int) -> None:
-        self.cache.store(wallpaper_id, [Tag(id=n, name=f"tag{n}")], fetched_at=FETCHED_AT)
-
-    def read(self, wallpaper_id: str) -> object:
-        return self.cache.tags_for([wallpaper_id]).get(wallpaper_id)
-
-    @staticmethod
-    def value(n: int) -> object:
-        return (n,)
-
-    def known(self) -> set[str]:
-        return self.cache.fetched_ids()
-
-    def provider(self) -> SimilarityProvider:
-        return TagSimilarityProvider(self.cache)
-
-
-@pytest.mark.parametrize("open_cache", [_Embeddings, _Tags])
+@pytest.mark.parametrize("open_cache", [_Embeddings])
 def test_a_cache_keeps_the_latest_value_across_a_reopen_and_serves_its_provider(
-    open_cache: Callable[[Path], _Embeddings | _Tags], tmp_path: Path
+    open_cache: Callable[[Path], _Embeddings], tmp_path: Path
 ) -> None:
-    """Permanent is the point: an entry cost a model run or an **API call**. Re-storing replaces rather
+    """Permanent is the point: an entry cost a model run. Re-storing replaces rather
     than adds, and an unknown **Wallpaper** is simply absent."""
     path = tmp_path / "cache.db"
     first = open_cache(path)
@@ -347,14 +272,3 @@ def test_the_embedding_cache_hands_back_a_unit_vector_it_can_dot(tmp_path: Path)
     cache.store("a", np.array([3.0, 4.0], dtype=np.float32))
 
     assert cache.vectors_for(["a"])["a"] == pytest.approx(np.array([0.6, 0.8], dtype=np.float32))
-
-
-def test_the_tag_cache_keeps_names_and_records_an_untagged_wallpaper_as_asked_about(tmp_path: Path) -> None:
-    """Without the empty record the fill step would ask Wallhaven about it again on every run, for ever."""
-    cache = TagCache(tmp_path / "tags.db")
-    cache.store("a", [Tag(id=1, name="nature"), Tag(id=2, name="mountains")], fetched_at=FETCHED_AT)
-    cache.store("untagged", [], fetched_at=FETCHED_AT)
-
-    assert cache.tags_for(["a", "untagged"]) == {"a": (1, 2)}
-    assert cache.names_for("a") == ("mountains", "nature")
-    assert cache.fetched_ids() == {"a", "untagged"}
