@@ -23,6 +23,7 @@ from pathlib import Path
 from wallpapi import batches, decisions, pool, settings
 from wallpapi.clock import Clock
 from wallpapi.files import url_suffix, write_atomically
+from wallpapi.model import Wallpaper
 from wallpapi.wallhaven import REQUEST_TIMEOUT, RateLimited, ThumbnailUnavailable, Wallhaven
 
 GAP_SECONDS = 0.25
@@ -163,6 +164,10 @@ class Thumbnails:
         """What the downloader stopped asking for, left out of the page's coverage so the notice can clear."""
         return frozenset(self._given_up)
 
+    def obtainable(self, connection: sqlite3.Connection) -> list[Wallpaper]:
+        """The **Pool** less what the downloader gave up on: what the **Similarity provider** can embed."""
+        return [w for w in pool.members(connection) if w.id not in self._given_up]
+
     def wait(self) -> float:
         """Seconds before the next `step`: the longer of the gap since the last fetch and any hold."""
         now = self._clock.monotonic()
@@ -232,7 +237,7 @@ class Thumbnails:
         downloader's thread a cap.
         """
         held = sum(cached.size for cached in _cached_thumbnails(self.directory))
-        return held >= settings.get(connection).thumbnail_cache_max_mb * BYTES_IN_A_MEGABYTE
+        return held >= cap_bytes(settings.get(connection))
 
     def _path_for(self, wallpaper_id: str, source_url: str) -> Path:
         return self.directory / f"{wallpaper_id}{url_suffix(source_url)}"
@@ -251,6 +256,11 @@ def download_loop(
         if stop_event.is_set():
             return
         thumbnails.step(connect())
+
+
+def cap_bytes(current: settings.Settings) -> int:
+    """The **Thumbnail cache**'s size cap, from `thumbnail_cache_max_mb`."""
+    return current.thumbnail_cache_max_mb * BYTES_IN_A_MEGABYTE
 
 
 def gap_needed(last_fetch: float | None, *, now: float, gap: float = GAP_SECONDS) -> float:

@@ -291,6 +291,26 @@ def test_history_pages_by_a_hundred_and_clamps_a_page_past_either_end(connection
     assert decisions.history(connection, page=0).page == 1
 
 
+def test_a_page_knows_its_neighbours(connection: sqlite3.Connection) -> None:
+    for wallpaper_id in WALLPAPERS:
+        append(connection, {wallpaper_id: Verdict.LIKE})
+
+    first = decisions.history(connection)
+    second = decisions.history(connection, page=2)
+
+    assert (first.previous_page, first.next_page) == (None, 2)
+    assert (second.previous_page, second.next_page) == (1, None)
+
+
+def test_one_wallpapers_line_is_the_line_the_page_shows(connection: sqlite3.Connection) -> None:
+    """What a **History** edit swaps back in, resolved and dated as the whole page would show it."""
+    append(connection, {SUBJECT: Verdict.LIKE, "wp0001": Verdict.BAN})
+    append(connection, {SUBJECT: Verdict.FAVOURITE}, at=LATER)
+
+    assert decisions.history_entry(connection, SUBJECT) == decisions.history(connection).entries[0]
+    assert decisions.history_entry(connection, "wp0002") is None
+
+
 def test_an_empty_log_has_one_empty_page(connection: sqlite3.Connection) -> None:
     listing = decisions.history(connection, Verdict.LIKE)
 

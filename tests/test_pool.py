@@ -271,6 +271,19 @@ def test_a_member_is_contained_until_it_is_retired(connection: sqlite3.Connectio
     assert not pool.contains(connection, "never-admitted")
 
 
+def test_any_recorded_wallpaper_is_looked_up_member_or_not(connection: sqlite3.Connection) -> None:
+    """**History** shows what the **Pool** retired: the `wallpapers` row is the record, not membership."""
+    rig_over(connection, catalogue=catalogue_of(3), steps=1)
+
+    with storage.write(connection) as write:
+        pool.retire(write, ["wp0001"])
+
+    assert pool.wallpapers(connection, ["wp0001", "wp0002", "never-admitted"]) == {
+        w.id: w for w in catalogue_of(3)[1:]
+    }
+    assert pool.wallpapers(connection, []) == {}
+
+
 def test_a_settings_change_that_touches_no_filter_prunes_nothing(rig: Rig) -> None:
     before = rig.members()
 

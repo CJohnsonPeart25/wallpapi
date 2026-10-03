@@ -432,6 +432,15 @@ def test_two_refusals_in_a_row_are_never_asked_for_again_in_this_process(rig: Ri
     assert rig.thumbnails.wait() == IDLE_RECHECK_SECONDS
 
 
+def test_the_obtainable_pool_leaves_out_what_was_given_up_on(rig: Rig) -> None:
+    """What the **Similarity provider**'s coverage is counted over, or a dead thumbnail would hold its notice
+    on the page for ever."""
+    _first_pass_refusing_the_dead_one(rig)
+    rig.run(1)
+
+    assert {w.id for w in rig.thumbnails.obtainable(rig.connection)} == {"bb0002", "cc0003"}
+
+
 def test_a_429_between_two_refusals_does_not_count_as_one(rig: Rig) -> None:
     """A 429 says the host is busy, not that the file is gone: it neither counts towards giving up nor
     wipes the first refusal out."""

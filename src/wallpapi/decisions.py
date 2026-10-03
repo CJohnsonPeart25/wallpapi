@@ -47,6 +47,14 @@ class History:
     pages: int
     total: int
 
+    @property
+    def previous_page(self) -> int | None:
+        return self.page - 1 if self.page > 1 else None
+
+    @property
+    def next_page(self) -> int | None:
+        return self.page + 1 if self.page < self.pages else None
+
 
 MENTIONED = "SELECT wallpaper_id FROM decision_log"
 """Every **Wallpaper** with any entry at all, a legacy **Clearance** included, as a subquery for SQL elsewhere
@@ -107,15 +115,13 @@ def history(connection: sqlite3.Connection, verdict: Verdict | None = None, page
         _history_query(filtered=filtered),
         [*parameters, HISTORY_PAGE_SIZE, (wanted - 1) * HISTORY_PAGE_SIZE],
     ).fetchall()
-    entries = tuple(
-        HistoryEntry(
-            wallpaper_id=str(row["wallpaper_id"]),
-            resolved=_resolved_from(row["resolved"]),
-            decided_at=dt.datetime.fromisoformat(str(row["decided_at"])),
-        )
-        for row in rows
-    )
-    return History(entries=entries, page=wanted, pages=pages, total=total)
+    return History(entries=tuple(map(_history_entry_from, rows)), page=wanted, pages=pages, total=total)
+
+
+def history_entry(connection: sqlite3.Connection, wallpaper_id: str) -> HistoryEntry | None:
+    """One **Wallpaper**'s line in **History**, as the page shows it, or `None` if it has no entry."""
+    row = connection.execute(_HISTORY_ENTRY, (wallpaper_id,)).fetchone()
+    return None if row is None else _history_entry_from(row)
 
 
 def favourites(connection: sqlite3.Connection) -> list[str]:
@@ -212,6 +218,14 @@ the resolved **Verdict**.
 """
 
 
+def _history_entry_from(row: sqlite3.Row) -> HistoryEntry:
+    return HistoryEntry(
+        wallpaper_id=str(row["wallpaper_id"]),
+        resolved=_resolved_from(row["resolved"]),
+        decided_at=dt.datetime.fromisoformat(str(row["decided_at"])),
+    )
+
+
 def _resolution_query(select: str, *, restriction: str = "") -> str:
     """A query over the resolved **Decision log**: the shared CTE, then whatever is selected from it."""
     return _RESOLUTION_CTE.format(restriction=restriction) + select
@@ -231,6 +245,10 @@ def _history_count_query(*, filtered: bool) -> str:
     where = "WHERE resolved = ?" if filtered else ""
     return _resolution_query(f"SELECT COUNT(*) FROM resolution {where}")
 
+
+_HISTORY_ENTRY = _resolution_query(
+    "SELECT wallpaper_id, resolved, decided_at FROM resolution", restriction="WHERE wallpaper_id = ?"
+)
 
 _EXPLICITLY_DECIDED = _resolution_query(
     f"SELECT wallpaper_id FROM resolution WHERE resolved IS NOT NULL AND resolved != '{Verdict.IGNORE.value}'"
