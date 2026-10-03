@@ -6,7 +6,11 @@ Date: 2026-09-27
 
 Accepted. Two parts superseded by ADR 0016: "Other **Verdicts** may reappear" — every **Verdict**, an
 **Ignore** included, now retires a **Wallpaper** from the **Pool** — and the default `pool_target_size`,
-now 500 rather than 2000. The rest stands.
+now 500 rather than 2000. The rest stands. Amended 2026-10-03: the refill's state, limiter and walks now live
+on `pool.Refill` (`wait`/`step`/`running`/`status`) with its own random source;
+`refill_wait`/`refill_step`/`refill_status` on the Core service and `refill.py` are gone, and the loop is
+`pool.refill_loop` run by `background.BackgroundLoop`. `wait_needed` lives in `pool`, the `ratelimit` module
+folded in.
 
 ## Context
 
