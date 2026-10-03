@@ -179,13 +179,13 @@ The locally stored thumbnails wallpapi serves to its own pages, so batches never
 _Avoid_: image cache, thumbs, local store, static files
 
 **Core service**:
-The single interface between the UI and everything else, today. It is being split into modules with seams of their own, and tests enter through those, not through it.
+Legacy term. It was the single interface between the UI and everything else until 2026-10-03, and is now the modules, `compose.py` and `workflows.py`; the heading stays so the ADRs that name it still resolve.
 _Avoid_: engine, manager, API, backend
 
 ### Configuration
 
 **Settings**:
-Everything the user configures, persisted between sessions and read as one typed value from the core service. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, the thumbnail cache limit and the active mix. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
+Everything the user configures, persisted between sessions and read as one typed value from the settings module. Batch size, the library path, the filters, the pool target size, the similarity radius and decay, the thumbnail cache limit and the active mix. The mixes themselves are rows of their own, not a setting — the active one is the setting that names which.
 _Avoid_: config, preferences, options
 
 **Batch size**:
