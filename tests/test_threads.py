@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import SOURCE, make_harness
 from tests.fakes import catalogue_of
+from wallpapi.background import BackgroundLoop
 from wallpapi.refill import JOIN_TIMEOUT, RefillThread
 from wallpapi.similarity import CAUGHT_UP
 from wallpapi.similarity_thread import SimilarityThread
@@ -164,6 +165,29 @@ def test_starting_and_stopping_twice_is_harmless(
     thread.stop()
 
     assert not _running(name)
+
+
+def test_a_background_loop_runs_on_its_named_thread_until_stopped() -> None:
+    """The loop is handed the stop event; `stop` sets it and joins, and a second start or stop is harmless."""
+    entered = threading.Event()
+    ran_on: list[str] = []
+
+    def loop(stop_event: threading.Event) -> None:
+        ran_on.append(threading.current_thread().name)
+        entered.set()
+        stop_event.wait()
+
+    background = BackgroundLoop(loop, name="wallpapi-test-loop", join_timeout=JOIN_TIMEOUT)
+    background.start()
+    background.start()
+    assert entered.wait(JOIN_TIMEOUT), "the loop should have started"
+    assert _running("wallpapi-test-loop"), "the loop should still be waiting on its stop event"
+
+    background.stop()
+    background.stop()
+
+    assert ran_on == ["wallpapi-test-loop"]
+    assert not _running("wallpapi-test-loop")
 
 
 def _sleep_calls(path: Path) -> list[int]:
