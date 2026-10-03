@@ -3,6 +3,8 @@
 {#
   The settings page: batch size, the **Library** folder, the **Filters** and the **Pool** target size.
 
+  One input per setting; its bounds and its refusal's words come from the settings module's field table.
+
   A plain form post, not htmx — saving settings changes the whole page's meaning, so there is no fragment
   worth swapping. Unlike submitting a **Batch**, a successful save redirects, because saving the same
   settings twice is the same settings and a refresh should not be an error.
@@ -31,51 +33,11 @@
       {% if download.failed %}Press the button again to retry the ones that failed.{% endif %}</p>
   {% endif %}
   {% if refused %}
-    {# The Core service's refusal reason, said in words. One branch per reason; the last branch is a
-       fallback that names the reason rather than guessing, so a reason added later is visibly
-       unhandled instead of being described as something else. In an article so that it stands out
-       from the page it is about. #}
+    {# The refusal in the settings module's words, from its field table; one it has no words for names
+       its reason rather than guessing. In an article so that it stands out from the page it is about. #}
     <article>
       <p>
-        {% if refused.reason.value == "batch_size_out_of_range" %}
-          Batch size must be between {{ min_batch_size }} and {{ max_batch_size }}.
-        {% elif refused.reason.value == "batch_size_not_a_number" %}
-          Batch size must be a whole number between {{ min_batch_size }} and {{ max_batch_size }}.
-        {% elif refused.reason.value == "library_path_empty" %}
-          The library folder cannot be blank.
-        {% elif refused.reason.value == "library_path_not_absolute" %}
-          The library folder must be an absolute path, such as C:\Users\you\Pictures\wallpapi.
-        {% elif refused.reason.value == "pool_target_size_invalid" %}
-          Pool target size must be a whole number between {{ min_pool_target_size }} and
-          {{ max_pool_target_size }}.
-        {% elif refused.reason.value == "min_width_invalid" %}
-          Minimum width must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
-        {% elif refused.reason.value == "min_height_invalid" %}
-          Minimum height must be a whole number of pixels from 0 to {{ max_filter_pixels }}.
-        {% elif refused.reason.value == "allowed_ratios_invalid" %}
-          Allowed ratios must be a comma-separated list of ratios Wallhaven knows:
-          {{ wallhaven_ratios }}.
-        {% elif refused.reason.value == "min_favourites_invalid" %}
-          Minimum favourites must be a whole number, 0 or more.
-        {% elif refused.reason.value == "similarity_radius_invalid" %}
-          Similarity radius must be a number from 0 to 1.
-        {% elif refused.reason.value == "similarity_decay_invalid" %}
-          Similarity decay must be a number from 0 to {{ max_similarity_decay }}.
-        {% elif refused.reason.value == "thumbnail_cache_max_mb_invalid" %}
-          The thumbnail cache limit must be a whole number of megabytes, 0 or more.
-        {% elif refused.reason.value == "mix_percentages_invalid" %}
-          Mix percentages must be whole numbers, 0 or more, that add up to {{ mix_total }}.
-        {% elif refused.reason.value == "mix_name_invalid" %}
-          A mix needs a name, of no more than {{ max_mix_name_length }} characters.
-        {% elif refused.reason.value == "mix_unknown" %}
-          No mix goes by that name — it may have been deleted in another tab.
-        {% elif refused.reason.value == "mix_in_use" %}
-          That is the active mix. Switch to another on the batch page before deleting it.
-        {% elif refused.reason.value == "mix_not_deletable" %}
-          Explore and refine can be edited but cannot be deleted.
-        {% else %}
-          That value was refused ({{ refused.reason.value }}).
-        {% endif %}
+        {{ refused.message }}
         Nothing was changed.
       </p>
     </article>
@@ -88,13 +50,13 @@
         type="number"
         id="batch_size"
         name="batch_size"
-        min="{{ min_batch_size }}"
-        max="{{ max_batch_size }}"
+        min="{{ fields.batch_size.minimum }}"
+        max="{{ fields.batch_size.maximum }}"
         step="1"
         value="{{ batch_size }}"
       />
-      <small>Wallpapers per batch, {{ min_batch_size }} to {{ max_batch_size }}. Applies to the next batch —
-        the one on screen keeps the size it was built with.</small>
+      <small>Wallpapers per batch, {{ fields.batch_size.minimum }} to {{ fields.batch_size.maximum }}. Applies
+        to the next batch — the one on screen keeps the size it was built with.</small>
       <label for="library_path">Library folder</label>
       <input type="text" id="library_path" name="library_path" value="{{ library_path }}" />
       <small>An absolute path. Favourites are downloaded here; the folder is created the first time one is
@@ -111,8 +73,8 @@
         type="number"
         id="min_width"
         name="min_width"
-        min="0"
-        max="{{ max_filter_pixels }}"
+        min="{{ fields.min_width.minimum }}"
+        max="{{ fields.min_width.maximum }}"
         step="1"
         value="{{ min_width }}"
       />
@@ -122,21 +84,21 @@
         type="number"
         id="min_height"
         name="min_height"
-        min="0"
-        max="{{ max_filter_pixels }}"
+        min="{{ fields.min_height.minimum }}"
+        max="{{ fields.min_height.maximum }}"
         step="1"
         value="{{ min_height }}"
       />
       <small>Pixels. Set either to 0 to stop filtering on that side.</small>
       <label for="allowed_ratios">Allowed ratios</label>
       <input type="text" id="allowed_ratios" name="allowed_ratios" value="{{ allowed_ratios }}" />
-      <small>Comma-separated, from {{ wallhaven_ratios }}.</small>
+      <small>Comma-separated, from {{ fields.allowed_ratios.choices | join(", ") }}.</small>
       <label for="min_favourites">Minimum favourites</label>
       <input
         type="number"
         id="min_favourites"
         name="min_favourites"
-        min="0"
+        min="{{ fields.min_favourites.minimum }}"
         step="1"
         value="{{ min_favourites }}"
       />
@@ -151,8 +113,8 @@
         type="number"
         id="pool_target_size"
         name="pool_target_size"
-        min="{{ min_pool_target_size }}"
-        max="{{ max_pool_target_size }}"
+        min="{{ fields.pool_target_size.minimum }}"
+        max="{{ fields.pool_target_size.maximum }}"
         step="1"
         value="{{ pool_target_size }}"
       />
@@ -170,8 +132,8 @@
         type="number"
         id="similarity_radius"
         name="similarity_radius"
-        min="0"
-        max="1"
+        min="{{ fields.similarity_radius.minimum }}"
+        max="{{ fields.similarity_radius.maximum }}"
         step="0.01"
         value="{{ similarity_radius }}"
       />
@@ -182,13 +144,13 @@
         type="number"
         id="similarity_decay"
         name="similarity_decay"
-        min="0"
-        max="{{ max_similarity_decay }}"
+        min="{{ fields.similarity_decay.minimum }}"
+        max="{{ fields.similarity_decay.maximum }}"
         step="0.1"
         value="{{ similarity_decay }}"
       />
-      <small>From 0 to {{ max_similarity_decay }}. How fast a verdict fades with distance. Higher is fussier;
-        0 counts everything inside the radius equally.</small>
+      <small>From 0 to {{ fields.similarity_decay.maximum }}. How fast a verdict fades with distance. Higher is
+        fussier; 0 counts everything inside the radius equally.</small>
     </article>
 
     <article>
@@ -198,7 +160,7 @@
         type="number"
         id="thumbnail_cache_max_mb"
         name="thumbnail_cache_max_mb"
-        min="0"
+        min="{{ fields.thumbnail_cache_max_mb.minimum }}"
         step="1"
         value="{{ thumbnail_cache_max_mb }}"
       />

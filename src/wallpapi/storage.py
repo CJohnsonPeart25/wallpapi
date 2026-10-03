@@ -11,6 +11,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
+from wallpapi import settings
+
 SCHEMA_VERSION = 10
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
@@ -87,17 +89,8 @@ def _steps() -> tuple[tuple[_Statement, ...], ...]:
     """Every step's statements, in order: the first entry is migration 1. Built per run, because the steps
     that re-seed take today's defaults.
     """
-    # Deferred: `core` imports this module. Until the settings module takes the seeds out of `core`.
-    from wallpapi.core import (
-        _POOL_TARGET_SIZE,  # pyright: ignore[reportPrivateUsage]
-        _SIMILARITY_RADIUS,  # pyright: ignore[reportPrivateUsage]
-        DEFAULT_MIXES,
-        SUPERSEDED_POOL_TARGET_SIZE,
-        SUPERSEDED_SIMILARITY_RADIUS,
-        _defaults,  # pyright: ignore[reportPrivateUsage]
-    )
-
-    seed_settings = tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
+    seeded = settings.seeds()
+    seed_settings = tuple((_SEED_SETTING, (key, value)) for key, value in seeded.items())
     return (
         tuple((statement, ()) for statement in _MIGRATION_1),
         tuple((statement, ()) for statement in _MIGRATION_2),
@@ -112,7 +105,7 @@ def _steps() -> tuple[tuple[_Statement, ...], ...]:
         # 7: **Mixes** as a table, seeded with **Explore** and **Refine**, and the active one as a setting.
         (
             (_CREATE_MIXES, ()),
-            *((_SEED_MIX, (mix.name, mix.unknown, mix.banger, mix.dud)) for mix in DEFAULT_MIXES),
+            *((_SEED_MIX, (mix.name, mix.unknown, mix.banger, mix.dud)) for mix in settings.DEFAULT_MIXES),
             *seed_settings,
         ),
         # 8: seeded the **Revisit weight**. That setting is gone, so on a fresh database this seeds nothing
@@ -122,7 +115,7 @@ def _steps() -> tuple[tuple[_Statement, ...], ...]:
         (
             (
                 _RETUNE_SETTING,
-                (_defaults()[_SIMILARITY_RADIUS], _SIMILARITY_RADIUS, str(SUPERSEDED_SIMILARITY_RADIUS)),
+                (seeded[_SIMILARITY_RADIUS], _SIMILARITY_RADIUS, str(settings.SUPERSEDED_SIMILARITY_RADIUS)),
             ),
             *seed_settings,
         ),
@@ -136,7 +129,7 @@ def _steps() -> tuple[tuple[_Statement, ...], ...]:
             ("DELETE FROM settings WHERE key = ?", (_REVISIT_WEIGHT_KEY,)),
             (
                 _RETUNE_SETTING,
-                (_defaults()[_POOL_TARGET_SIZE], _POOL_TARGET_SIZE, str(SUPERSEDED_POOL_TARGET_SIZE)),
+                (seeded[_POOL_TARGET_SIZE], _POOL_TARGET_SIZE, str(settings.SUPERSEDED_POOL_TARGET_SIZE)),
             ),
             *seed_settings,
         ),
@@ -264,6 +257,11 @@ ON CONFLICT (name) DO NOTHING
 
 _RETUNE_SETTING = "UPDATE settings SET value = ? WHERE key = ? AND value = ?"
 """Change a setting only where it still holds the value a previous migration seeded, so a choice survives."""
+
+
+_SIMILARITY_RADIUS = settings.Settings.similarity_radius.key
+_POOL_TARGET_SIZE = settings.Settings.pool_target_size.key
+"""The two keys a migration retunes where the seeded value is untouched."""
 
 
 _REVISIT_WEIGHT_KEY = "revisit_weight"
