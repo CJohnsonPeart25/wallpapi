@@ -20,14 +20,11 @@ Locked. The original spec issue lists it under "Technology"; if the two disagree
 - **Pico CSS 2.1.1** (`pico.indigo.min.css`, the default class-based build) and **Alpine.js 3.17.4**
   (`alpine.min.js`, the `cdn.min.js` build, loaded `defer`), both vendored into `web/static/` byte for byte
   with their licence headers, like htmx. Pico is the base and `base.css` is what Pico cannot say — ADR 0014.
-  `scripts/vendor_assets.py` holds the URL and SHA-256 of all three files, htmx 2.0.4 included, and nothing
-  else records them: upgrading one means changing its version and hash there and running
-  `uv run python scripts/vendor_assets.py`, which checks every hash before writing anything.
-  `.gitattributes` keeps checkout from rewriting them.
+  `scripts/vendor_assets.py` alone records each file's URL and SHA-256: upgrade by editing it and running
+  `uv run python scripts/vendor_assets.py`. `.gitattributes` stops checkout rewriting them.
 - **Synchronous throughout** (ADR 0001): `httpx2.Client`, standard library `sqlite3`, background work on
   `threading.Thread`s started in the FastAPI lifespan. Migrations are `user_version` plus numbered steps.
-- **numpy** as a *direct* dependency: the matrix interface needs it, and onnxruntime would otherwise supply it
-  transitively, so tidying `pyproject.toml` could drop it silently.
+- **numpy** as a *direct* dependency, never left to arrive through onnxruntime.
 - **onnxruntime** with **pillow** for the **Similarity provider** (ADR 0013): CPU, image tower only, the model
   fetched once into `~/.wallpapi/models/` and checksummed.
 - **Pydantic at the edges only**; dataclasses and enums inside. **pytest**, **pyright** strict, **ruff**.
@@ -44,28 +41,30 @@ that boots the app and hits `/`. No test touches the network.
 
 ## Invariants
 
-Design intent no test can hold. Numbered as in the longer list they came from, so old citations still resolve.
+Design intent no test can hold. Numbers are stable and never reused, because ADRs cite them. Retired:
+1 -> 14 (ADR 0019); 8 -> ADRs 0003 and 0009; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
 
-**1. Modules have their own seams.** Every module exposes a small interface taking a connection and its
-collaborators. Tests build one module with a real in-memory database and fake only the external collaborator
-it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder. ADR 0019.
-
-**2. Scores are never stored.** Always derived from the **Decision log** in one array operation over the whole
-**Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never **Pool** x
-**Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. ADR 0007.
-
-**4. The Decision log is append-only and resolves by sequence.** One transaction's rows, or two **History**
-clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence. The
-rule is one SQL fragment, `_RESOLUTION_CTE`; build on it. A submitted **Batch** is never retracted. ADR 0015.
-
-**9. The Library is confined.** Every write and deletion goes through `confined_to_library` and uses the
-path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks regular files
-only; a recorded path that fails the guard is dropped from the record and left on disk. ADR 0006.
-
-**10. Library writes are atomic**: a temp file beside the confined destination, then `os.replace`.
-
-**12. Every wait is cancellable**: `stop_event.wait(n)`, never `time.sleep(n)`, and the HTTP timeout below the
-shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
+- **2. Scores are never stored.** Always derived from the **Decision log** in one array operation over the
+  whole **Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never
+  **Pool** x **Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. ADR 0007.
+- **3. SQLite**: WAL set once at migration; every connection, one per thread, opened `isolation_level=None`
+  with `foreign_keys` on, writes in `BEGIN IMMEDIATE`, `synchronous` left at FULL, never NORMAL.
+- **4. The Decision log is append-only and resolves by sequence.** One transaction's rows, or two **History**
+  clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence.
+  The rule is one SQL fragment, `_RESOLUTION_CTE`; build on it. A submitted **Batch** is never retracted.
+  ADR 0015.
+- **5. Timestamps are ISO 8601 UTC strings** from the injected clock; no `sqlite3` adapters.
+- **6. A Draft Batch is not the Decision log**: a tile post sets its entry, never toggles; submit appends.
+- **7. A Batch is submitted once**: resubmitting, or drafting against it, is refused with a reason.
+- **9. The Library is confined.** Every write and deletion goes through `confined_to_library` and uses the
+  path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks regular files
+  only; a recorded path that fails the guard is dropped from the record and left on disk. ADR 0006.
+- **10. Library writes are atomic**: a temp file beside the confined destination, then `os.replace`.
+- **12. Every wait is cancellable**: `stop_event.wait(n)`, never `time.sleep(n)`, and the HTTP timeout below
+  the shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
+- **14. Modules have their own seams.** Every module exposes a small interface taking a connection and its
+  collaborators. Tests build one module with a real in-memory database and fake only the external
+  collaborator it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder. ADR 0019.
 
 ## Traps
 
