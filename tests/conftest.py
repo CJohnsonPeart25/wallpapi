@@ -34,9 +34,10 @@ from tests.fakes import (
     StubEmbed,
     catalogue_of,
 )
-from wallpapi import decisions, pool, settings, storage
+from wallpapi import decisions, pool, settings, storage, workflows
+from wallpapi.batches import Batch
 from wallpapi.compose import Modules
-from wallpapi.core import Batch, CoreService
+from wallpapi.core import CoreService
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.pool import RefillStrategy
@@ -105,10 +106,20 @@ class Harness:
     model: ModelOnDisk
     clock: FakeClock
 
+    def connect(self) -> sqlite3.Connection:
+        """This thread's connection, as the routes and workflows get it."""
+        return self.modules.connect()
+
+    @contextmanager
+    def write(self) -> Generator[sqlite3.Connection]:
+        """One write transaction, for a test calling a module function that takes the write handle."""
+        with storage.write(self.connect()) as write:
+            yield write
+
     def fill_pool(self, steps: int = 1) -> None:
         """Run the refill by hand, `steps` **API calls** worth. Never the thread."""
         for _ in range(steps):
-            self.core.refill.step()
+            self.modules.refill.step()
 
 
 def make_harness(
@@ -216,39 +227,43 @@ def batch_id_of(body: str) -> str:
 
 def favourite(harness: Harness, *wallpaper_ids: str) -> None:
     """Mint a **Batch**, mark these **Favourite** and submit it. They must all be in that **Batch**."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    batch = live(harness)
     shown = {w.id for w in batch.wallpapers}
     assert set(wallpaper_ids) <= shown, f"{set(wallpaper_ids) - shown} is not in the batch to judge"
     for wallpaper_id in wallpaper_ids:
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, Verdict.FAVOURITE)
-    harness.core.submit_batch(batch.id)
+        workflows.set_draft(harness.modules, batch.id, wallpaper_id, Verdict.FAVOURITE)
+    workflows.submit(harness.modules, batch.id)
 
 
 def favourite_the_whole_batch(harness: Harness, verdict: Verdict = Verdict.FAVOURITE) -> Batch:
     """Mark every **Wallpaper** on the live **Batch** and submit it, returning the **Batch** submitted."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.set_all_draft_verdicts(batch.id, verdict)
-    harness.core.submit_batch(batch.id)
+    batch = live(harness)
+    workflows.set_all_drafts(harness.modules, batch.id, verdict)
+    workflows.submit(harness.modules, batch.id)
     return batch
 
 
 def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
     """Draft `marks` against the live **Batch** and submit it. A tile left out keeps what the **Batch**
     was minted with, and `None` unmarks it."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    batch = live(harness)
     for wallpaper_id, verdict in marks.items():
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
-    harness.core.submit_batch(batch.id)
+        workflows.set_draft(harness.modules, batch.id, wallpaper_id, verdict)
+    workflows.submit(harness.modules, batch.id)
     return batch
 
 
 def judge(harness: Harness, **marks: Verdict) -> None:
     """Give each named **Wallpaper** a **Verdict** from **History**, in the order given."""
     for wallpaper_id, verdict in marks.items():
-        assert harness.core.edit_verdict(wallpaper_id, verdict) is None
+        assert workflows.edit_verdict(harness.modules, wallpaper_id, verdict) is None
+
+
+def live(harness: Harness) -> Batch:
+    """The live **Batch**, minted if there is none, as `/batch` serves it."""
+    batch = harness.modules.batches.next(harness.connect())
+    assert isinstance(batch, Batch), batch
+    return batch
 
 
 def library_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
