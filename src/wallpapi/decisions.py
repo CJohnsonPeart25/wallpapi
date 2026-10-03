@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from wallpapi.model import Clearance, DecisionEntry, Verdict
 
 HISTORY_PAGE_SIZE = 100
-"""**History** rows per page: enough to scroll, few enough that one page of thumbnails loads at once."""
+"""Rows on one page of **History**: it grows by thousands of **Ignores** a week and needs *a* bound."""
 
 
 @dataclass(frozen=True, slots=True)

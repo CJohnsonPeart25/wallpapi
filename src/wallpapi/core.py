@@ -17,12 +17,13 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from wallpapi import storage
+from wallpapi import decisions, storage
 from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
 from wallpapi.clock import Clock
+from wallpapi.decisions import ResolvedVerdict
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
-from wallpapi.model import Clearance, DecisionEntry, Mix, Verdict, Wallpaper, Zone
+from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper, Zone
 from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, gap_needed, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
@@ -138,9 +139,6 @@ churn against it (ADR 0017).
 
 BYTES_IN_A_MEGABYTE = 1024 * 1024
 """Mebibytes, because matching what Explorer shows matters more than matching SI."""
-
-HISTORY_PAGE_SIZE = 100
-"""Rows on one page of **History**: it grows by thousands of **Ignores** a week and needs *a* bound."""
 
 WALLHAVEN_RATIOS = frozenset(
     {"16x9", "16x10", "21x9", "32x9", "48x9", "9x16", "10x16", "9x18", "1x1", "3x2", "4x3", "5x4"}
@@ -342,16 +340,6 @@ class RefillStatus:
     def at_target(self) -> bool:
         """Whether the refill is idling rather than spending its budget."""
         return self.pool_size >= self.target_size
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedVerdict:
-    """What one **Wallpaper**'s **Decision log** entries come to: the `verdict` to show and the `value` to
-    score.
-    """
-
-    verdict: Verdict | None
-    value: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -759,13 +747,14 @@ class CoreService:
                     for position, scored in enumerate(chosen)
                 ],
             )
-            # Resolved under the write lock, on this thread's one connection, so a **History** edit cannot
-            # land between reading a **Verdict** and pre-filling it.
-            resolved = self.resolve_verdicts([scored.wallpaper.id for scored in chosen])
+            # Resolved under the write lock, so a **History** edit cannot land between reading a **Verdict**
+            # and pre-filling it.
+            resolved = decisions.resolve(write, [scored.wallpaper.id for scored in chosen])
+            explicit = decisions.explicitly_decided(write)
             drafts = {
                 wallpaper_id: standing.verdict
                 for wallpaper_id, standing in resolved.items()
-                if standing.verdict is not None and _is_explicit(standing)
+                if standing.verdict is not None and wallpaper_id in explicit
             }
             write.executemany(
                 "INSERT INTO draft_batch (batch_id, wallpaper_id, verdict) VALUES (?, ?, ?)",
@@ -838,7 +827,7 @@ class CoreService:
         if not pool:
             return ()
         judged = [_wallpaper_from_row(row) for row in self._connect().execute(_SELECT_DECIDED_WALLPAPERS)]
-        resolved = self.resolve_verdicts([w.id for w in pool] + [w.id for w in judged])
+        resolved = decisions.resolve(self._connect(), [w.id for w in pool] + [w.id for w in judged])
 
         candidates = [w for w in pool if resolved[w.id].verdict is not Verdict.BAN]
         decided = [w for w in judged if resolved[w.id].value != 0]
@@ -1021,10 +1010,7 @@ class CoreService:
         """Every **Wallpaper** whose *resolved* **Verdict** is **Favourite**, ordered so a seeded draw is
         repeatable.
         """
-        rows = self._connect().execute(_FAVOURITED_AT_LEAST_ONCE, (Verdict.FAVOURITE.value,)).fetchall()
-        candidates = [str(row["wallpaper_id"]) for row in rows]
-        resolved = self.resolve_verdicts(candidates)
-        return [c for c in candidates if resolved[c].verdict is Verdict.FAVOURITE]
+        return decisions.favourites(self._connect())
 
     def _take_up_a_like_walk(self, favourites: Sequence[str]) -> str:
         """The **Favourite** whose lookalikes the next like: search asks for. Lock held.
@@ -1158,7 +1144,7 @@ class CoreService:
         unmarked tile, retire everything shown from the **Pool** (ADR 0016), clear the **Draft Batch**. `BEGIN
         IMMEDIATE` takes the write lock before the claim is read, so a second tab cannot split them.
         """
-        recorded_at = self._clock.now().isoformat()
+        recorded_at = self._clock.now()
         with self._write() as write:
             batch = write.execute("SELECT submitted_at FROM batches WHERE id = ?", (batch_id,)).fetchone()
             if batch is None:
@@ -1171,24 +1157,21 @@ class CoreService:
                 (batch_id,),
             ).fetchall()
             drafted = _load_drafts(write, batch_id)
-            write.executemany(
-                "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, ?, ?, ?)",
-                [
-                    (
-                        row["wallpaper_id"],
-                        batch_id,
-                        drafted.get(str(row["wallpaper_id"]), Verdict.IGNORE).value,
-                        recorded_at,
-                    )
-                    for row in shown
-                ],
+            shown_ids = [str(row["wallpaper_id"]) for row in shown]
+            decisions.append(
+                write,
+                {wallpaper_id: drafted.get(wallpaper_id, Verdict.IGNORE) for wallpaper_id in shown_ids},
+                batch_id=batch_id,
+                at=recorded_at,
             )
             # Decided once (ADR 0016): everything shown leaves the **Pool** in this transaction.
             write.executemany(
                 "DELETE FROM pool WHERE wallpaper_id = ?", [(row["wallpaper_id"],) for row in shown]
             )
             write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
-            write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at, batch_id))
+            write.execute(
+                "UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at.isoformat(), batch_id)
+            )
 
         # Outside the transaction, deliberately: a download is a network call, and nothing the **Library**
         # does may roll the **Decision log** back. Idempotent, so a failure is picked up next time.
@@ -1207,8 +1190,7 @@ class CoreService:
         because this runs after the **Decision log** has committed. Nothing here stats a path.
         """
         library_path = self.get_settings().library_path
-        rows = self._connect().execute(_LIBRARY_CANDIDATES, (Verdict.FAVOURITE.value,)).fetchall()
-        resolved = self.resolve_verdicts([str(row["wallpaper_id"]) for row in rows])
+        favourites, rows = self._library_candidates()
 
         written: list[str] = []
         removed: list[str] = []
@@ -1216,7 +1198,7 @@ class CoreService:
         for row in rows:
             wallpaper_id = str(row["wallpaper_id"])
             recorded = None if row["path"] is None else Path(str(row["path"]))
-            wanted = resolved[wallpaper_id].verdict is Verdict.FAVOURITE
+            wanted = wallpaper_id in favourites
             try:
                 if wanted and recorded is None:
                     if self._add_to_library(wallpaper_id, str(row["full_url"]), library_path):
@@ -1241,15 +1223,14 @@ class CoreService:
         longer confined; it is written into the **Library path** of today and the record replaced.
         """
         library_path = self.get_settings().library_path
-        rows = self._connect().execute(_LIBRARY_CANDIDATES, (Verdict.FAVOURITE.value,)).fetchall()
-        resolved = self.resolve_verdicts([str(row["wallpaper_id"]) for row in rows])
+        favourites, rows = self._library_candidates()
 
         written: list[str] = []
         skipped: list[str] = []
         failed: list[str] = []
         for row in rows:
             wallpaper_id = str(row["wallpaper_id"])
-            if resolved[wallpaper_id].verdict is not Verdict.FAVOURITE:
+            if wallpaper_id not in favourites:
                 continue
             recorded = None if row["path"] is None else Path(str(row["path"]))
             # The guard first, so the only paths ever stat-ed are inside the **Library** folder.
@@ -1266,6 +1247,17 @@ class CoreService:
                 # As in `reconcile_library`: the writer declares no error type.
                 failed.append(wallpaper_id)
         return FavouriteDownload(written=tuple(written), skipped=tuple(skipped), failed=tuple(failed))
+
+    def _library_candidates(self) -> tuple[set[str], list[sqlite3.Row]]:
+        """The **Favourites**, and every row a reconciliation might act on: a **Favourite**, or one holding a
+        recorded file.
+        """
+        connection = self._connect()
+        favourites = decisions.favourites(connection)
+        # SQLite's parameter limit is 32,766 here, well above any count of **Favourites**.
+        placeholders = ",".join("?" * len(favourites))
+        rows = connection.execute(_LIBRARY_CANDIDATES.format(favourites=placeholders), favourites).fetchall()
+        return set(favourites), rows
 
     def _add_to_library(self, wallpaper_id: str, source_url: str, library_path: Path) -> bool:
         """Download one **Favourite** and record where it landed, or return `False` before fetching anything.
@@ -1418,7 +1410,7 @@ class CoreService:
         if not cached:
             return _NOTHING_EVICTED
 
-        decided = self._explicitly_decided()
+        decided = decisions.explicitly_decided(self._connect())
         awaiting = self._awaiting_a_verdict()
         evicted: list[str] = []
         capped: list[_CachedThumbnail] = []
@@ -1445,38 +1437,17 @@ class CoreService:
 
         return ThumbnailEviction(evicted=tuple(evicted), remaining_bytes=remaining, over_cap=remaining > cap)
 
-    def _explicitly_decided(self) -> set[str]:
-        """The **Wallpapers** whose resolved **Verdict** is an **Explicit Verdict**."""
-        return {str(row["wallpaper_id"]) for row in self._connect().execute(_EXPLICITLY_DECIDED)}
-
     def _awaiting_a_verdict(self) -> set[str]:
         """The **Pool** and the live **Batch**, which can hold a **Wallpaper** pruned from the **Pool**
         since.
         """
         return {str(row["wallpaper_id"]) for row in self._connect().execute(_AWAITING_A_VERDICT)}
 
-    # -- verdict resolution ----------------------------------------------------------------------------
+    # -- verdict resolution and history: forwarding to `decisions` until the web layer calls it directly ----
 
     def resolve_verdicts(self, wallpaper_ids: Sequence[str]) -> dict[str, ResolvedVerdict]:
-        """**Verdict resolution** for many **Wallpapers** at once, in one query.
-
-        No entries, a legacy **Clearance** last, and an unknown id all resolve to absent and zero.
-        """
-        requested = list(dict.fromkeys(wallpaper_ids))
-        resolved = dict.fromkeys(requested, _ABSENT)
-        if not requested:
-            return resolved
-        # SQLite's parameter limit is 32,766 here, well above any **Pool** this is handed.
-        placeholders = ",".join("?" * len(requested))
-        query = _resolution_query(
-            "SELECT wallpaper_id, resolved FROM resolution",
-            restriction=f"WHERE wallpaper_id IN ({placeholders})",
-        )
-        for row in self._connect().execute(query, requested).fetchall():
-            resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
-        return resolved
-
-    # -- history ---------------------------------------------------------------------------------------
+        """**Verdict resolution** for many **Wallpapers** at once: `decisions.resolve`."""
+        return decisions.resolve(self._connect(), wallpaper_ids)
 
     def edit_verdict(self, wallpaper_id: str, verdict: Verdict) -> HistoryRefused | None:
         """Change a **Wallpaper**'s **Verdict** from **History** by appending an entry with `batch_id` `NULL`.
@@ -1485,82 +1456,59 @@ class CoreService:
         **Wallpaper** is refused rather than left to the foreign key. The **Library** is reconciled
         afterwards, outside the transaction.
         """
-        recorded_at = self._clock.now().isoformat()
+        recorded_at = self._clock.now()
         with self._write() as write:
             if not _wallpaper_exists(write, wallpaper_id):
                 return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
-            write.execute(_APPEND_HISTORY_ENTRY, (wallpaper_id, verdict.value, recorded_at))
+            decisions.append(write, {wallpaper_id: verdict}, batch_id=None, at=recorded_at)
         self.reconcile_library()
         return None
 
     def list_history_rows(self, *, verdict: Verdict | None = None, page: int = 1) -> HistoryPage:
-        """One page of **History**, newest activity first, filtered by resolved **Verdict** in SQL.
-
-        `page` is clamped rather than refused, so a stale link shows the last page.
-        """
-        parameters: list[str] = [] if verdict is None else [verdict.value]
-        filtered = verdict is not None
-        connection = self._connect()
-        total = int(connection.execute(_history_count_query(filtered=filtered), parameters).fetchone()[0])
-        pages = max(1, -(-total // HISTORY_PAGE_SIZE))
-        wanted = min(max(page, 1), pages)
-        rows = connection.execute(
-            _history_rows_query(filtered=filtered),
-            [*parameters, HISTORY_PAGE_SIZE, (wanted - 1) * HISTORY_PAGE_SIZE],
-        ).fetchall()
+        """One page of **History**: `decisions.history`, with each line's **Wallpaper**."""
+        listing = decisions.history(self._connect(), verdict, page)
         return HistoryPage(
-            rows=self._history_rows_from(rows), page=wanted, pages=pages, total=total, verdict=verdict
+            rows=self._history_rows_from(listing.entries),
+            page=listing.page,
+            pages=listing.pages,
+            total=listing.total,
+            verdict=verdict,
         )
 
     def get_history_row(self, wallpaper_id: str) -> HistoryRow | None:
-        """One **Wallpaper**'s **History** row, or `None`: the same query as the listing, for an edit to swap
-        in.
+        """One **Wallpaper**'s **History** row, or `None`, for an edit to swap in: what it resolves to, and
+        its latest entry's timestamp, which is the deciding one.
         """
-        row = self._connect().execute(_HISTORY_ROW, (wallpaper_id,)).fetchone()
-        if row is None:
+        connection = self._connect()
+        logged = decisions.entries(connection, wallpaper_id=wallpaper_id)
+        if not logged:
             return None
-        return self._history_rows_from([row])[0]
+        line = decisions.HistoryEntry(
+            wallpaper_id=wallpaper_id,
+            resolved=decisions.resolve(connection, [wallpaper_id])[wallpaper_id],
+            decided_at=logged[-1].recorded_at,
+        )
+        return self._history_rows_from([line])[0]
 
-    def _history_rows_from(self, rows: Sequence[sqlite3.Row]) -> tuple[HistoryRow, ...]:
-        """Turn listing rows into **History** rows, resolving the page's **Wallpapers** in one call."""
-        resolved = self.resolve_verdicts([str(row["id"]) for row in rows])
+    def _history_rows_from(self, lines: Sequence[decisions.HistoryEntry]) -> tuple[HistoryRow, ...]:
+        """Join each line's **Wallpaper** on, the page's in one query."""
+        placeholders = ",".join("?" * len(lines))
+        rows = self._connect().execute(
+            f"SELECT * FROM wallpapers WHERE id IN ({placeholders})", [line.wallpaper_id for line in lines]
+        )
+        wallpapers = {str(row["id"]): _wallpaper_from_row(row) for row in rows}
         return tuple(
             HistoryRow(
-                wallpaper=_wallpaper_from_row(row),
-                resolved=resolved[str(row["id"])],
-                latest_at=dt.datetime.fromisoformat(str(row["latest_at"])),
+                wallpaper=wallpapers[line.wallpaper_id], resolved=line.resolved, latest_at=line.decided_at
             )
-            for row in rows
+            for line in lines
         )
 
     def list_history(
         self, *, batch_id: str | None = None, wallpaper_id: str | None = None
     ) -> list[DecisionEntry]:
-        """The **Decision log**'s raw entries in sequence order, optionally for one **Batch** or
-        **Wallpaper**.
-        """
-        conditions: list[str] = []
-        parameters: list[str] = []
-        if batch_id is not None:
-            conditions.append("batch_id = ?")
-            parameters.append(batch_id)
-        if wallpaper_id is not None:
-            conditions.append("wallpaper_id = ?")
-            parameters.append(wallpaper_id)
-        query = "SELECT seq, wallpaper_id, batch_id, verdict, recorded_at FROM decision_log"
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        rows = self._connect().execute(f"{query} ORDER BY seq", parameters).fetchall()
-        return [
-            DecisionEntry(
-                seq=int(row["seq"]),
-                wallpaper_id=str(row["wallpaper_id"]),
-                batch_id=None if row["batch_id"] is None else str(row["batch_id"]),
-                entry=_entry_from(row["verdict"]),
-                recorded_at=dt.datetime.fromisoformat(str(row["recorded_at"])),
-            )
-            for row in rows
-        ]
+        """The **Decision log**'s raw entries in sequence order: `decisions.entries`."""
+        return decisions.entries(self._connect(), batch_id=batch_id, wallpaper_id=wallpaper_id)
 
 
 def _alternated(last: RefillStrategy | None, *, has_favourites: bool) -> RefillStrategy:
@@ -1815,19 +1763,13 @@ _LIBRARY_CANDIDATES = """
 SELECT w.id AS wallpaper_id, w.full_url AS full_url, f.path AS path
 FROM wallpapers AS w
 LEFT JOIN library_files AS f ON f.wallpaper_id = w.id
-WHERE f.wallpaper_id IS NOT NULL
-   OR w.id IN (SELECT wallpaper_id FROM decision_log WHERE verdict = ?)
+WHERE f.wallpaper_id IS NOT NULL OR w.id IN ({favourites})
 ORDER BY w.id
 """
-"""Everything a reconciliation might act on: ever **Favourited**, or holding a recorded file.
+"""Everything a reconciliation might act on: a **Favourite** now, or holding a recorded file.
 
-A superset: `resolve_verdicts` decides which still count, so the rule is not spelled a second time here.
+`{favourites}` is placeholders built here; the ids from `decisions.favourites` are bound as parameters.
 """
-
-_FAVOURITED_AT_LEAST_ONCE = """
-SELECT DISTINCT wallpaper_id FROM decision_log WHERE verdict = ? ORDER BY wallpaper_id
-"""
-"""Every **Wallpaper** that could resolve to **Favourite**; a superset for `resolve_verdicts` to narrow."""
 
 _RECORD_LIBRARY_FILE = """
 INSERT INTO library_files (wallpaper_id, path, written_at) VALUES (?, ?, ?)
@@ -1836,103 +1778,6 @@ ON CONFLICT (wallpaper_id) DO UPDATE SET path = excluded.path, written_at = excl
 """An upsert, so an unexpected existing row is overwritten rather than an `IntegrityError` retried for
 ever.
 """
-
-_ABSENT = ResolvedVerdict(verdict=None, value=0)
-"""A **Wallpaper** with no **Decision log** entries at all."""
-
-_EXPLICIT_VALUES = {Verdict.FAVOURITE: 100, Verdict.LIKE: 50, Verdict.BAN: -100}
-"""What each **Explicit Verdict** resolves to. An **Ignore** is not here — it is `_IGNORE_VALUE`."""
-
-_IGNORE_VALUE = -10
-"""What a resolved **Ignore** is worth. Once, never stacked."""
-
-
-def _entry_from(stored: object) -> Verdict | Clearance:
-    """One `decision_log.verdict` cell as the entry it is: the column also holds legacy **Clearances**."""
-    text = str(stored)
-    return Clearance.CLEARED if text == Clearance.CLEARED.value else Verdict(text)
-
-
-def _is_explicit(resolved: ResolvedVerdict) -> bool:
-    """Whether what stands is an **Explicit Verdict**: present and not an **Ignore**. Asked by pre-marking."""
-    return resolved.verdict is not None and resolved.verdict is not Verdict.IGNORE
-
-
-def _resolved_from(resolved: object) -> ResolvedVerdict:
-    """What a resolved **Verdict** is worth. The rule that *chose* it is `_RESOLUTION_CTE`, never copied
-    here.
-    """
-    if resolved is None:
-        return _ABSENT
-    verdict = Verdict(str(resolved))
-    if verdict is Verdict.IGNORE:
-        return ResolvedVerdict(verdict=verdict, value=_IGNORE_VALUE)
-    return ResolvedVerdict(verdict=verdict, value=_EXPLICIT_VALUES[verdict])
-
-
-_RESOLUTION_CTE = f"""
-WITH entries AS (
-    SELECT wallpaper_id, MAX(seq) AS latest_seq
-    FROM decision_log
-    {{restriction}}
-    GROUP BY wallpaper_id
-),
-resolution AS (
-    SELECT
-        entries.wallpaper_id,
-        entries.latest_seq,
-        CASE WHEN latest.verdict != '{Clearance.CLEARED.value}' THEN latest.verdict END AS resolved
-    FROM entries
-    JOIN decision_log AS latest ON latest.seq = entries.latest_seq
-)
-"""
-"""**Verdict resolution**, as the prelude to every query that needs it (ADR 0015).
-
-The latest entry decides, by `MAX(seq)` and never `recorded_at`: one submission's entries share a timestamp. A
-legacy **Clearance** as the latest entry resolves to `NULL`. In SQL because **History** filters and pages over
-the resolved **Verdict**.
-
-`{{restriction}}` is a `WHERE` built here, never caller text; values are bound as parameters.
-"""
-
-
-def _resolution_query(select: str, *, restriction: str = "") -> str:
-    """A query over the resolved **Decision log**: the shared CTE, then whatever the caller selects."""
-    return _RESOLUTION_CTE.format(restriction=restriction) + select
-
-
-_HISTORY_SELECT = """
-SELECT w.*, resolution.resolved AS resolved, latest.recorded_at AS latest_at
-FROM resolution
-JOIN wallpapers AS w ON w.id = resolution.wallpaper_id
-JOIN decision_log AS latest ON latest.seq = resolution.latest_seq
-"""
-"""One **History** row per **Wallpaper**: `latest` joined on `latest_seq`, so its timestamp is the deciding
-one.
-"""
-
-
-def _history_rows_query(*, filtered: bool) -> str:
-    """The **History** listing, by `latest_seq` and never `latest_at`, which a whole **Batch** shares."""
-    where = "WHERE resolution.resolved = ?" if filtered else ""
-    return _resolution_query(
-        f"{_HISTORY_SELECT}{where}\nORDER BY resolution.latest_seq DESC\nLIMIT ? OFFSET ?"
-    )
-
-
-def _history_count_query(*, filtered: bool) -> str:
-    """How many rows the same filter matches, for the paging."""
-    where = "WHERE resolved = ?" if filtered else ""
-    return _resolution_query(f"SELECT COUNT(*) FROM resolution {where}")
-
-
-_HISTORY_ROW = _resolution_query(_HISTORY_SELECT, restriction="WHERE wallpaper_id = ?")
-"""One **Wallpaper**'s **History** row."""
-
-_EXPLICITLY_DECIDED = _resolution_query(
-    f"SELECT wallpaper_id FROM resolution WHERE resolved IS NOT NULL AND resolved != '{Verdict.IGNORE.value}'"
-)
-"""Every **Wallpaper** with an **Explicit Verdict** standing: never evicted from the **Thumbnail cache**."""
 
 _AWAITING_A_VERDICT = """
 SELECT wallpaper_id FROM pool
@@ -1943,13 +1788,6 @@ JOIN batches AS b ON b.id = bw.batch_id
 WHERE b.submitted_at IS NULL
 """
 """Every **Wallpaper** still to be shown: the **Pool**, plus the live **Batch**."""
-
-_APPEND_HISTORY_ENTRY = """
-INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)
-"""
-"""An edit made from **History**. `batch_id` is `NULL`, which is what keeps it out of a **Batch**'s
-entries.
-"""
 
 
 def _wallpaper_exists(connection: sqlite3.Connection, wallpaper_id: str) -> bool:
@@ -2058,10 +1896,10 @@ def _wallpaper_row(wallpaper: Wallpaper) -> tuple[str | int, ...]:
     )
 
 
-_ADMIT_TO_POOL = """
+_ADMIT_TO_POOL = f"""
 INSERT INTO pool (wallpaper_id, fetched_at, source)
 SELECT :id, :fetched_at, :source
-WHERE NOT EXISTS (SELECT 1 FROM decision_log WHERE wallpaper_id = :id)
+WHERE :id NOT IN ({decisions.MENTIONED})
 ON CONFLICT (wallpaper_id) DO NOTHING
 """
 """Admit unless the **Decision log** mentions it at all, a legacy `cleared` entry included (ADR 0016).
@@ -2085,10 +1923,10 @@ ORDER BY pool.wallpaper_id
 """
 """Every **Pool** member's thumbnail URL, in the order the downloader fetches them."""
 
-_SELECT_DECIDED_WALLPAPERS = """
+_SELECT_DECIDED_WALLPAPERS = f"""
 SELECT w.*
 FROM wallpapers AS w
-WHERE w.id IN (SELECT wallpaper_id FROM decision_log)
+WHERE w.id IN ({decisions.MENTIONED})
 ORDER BY w.id
 """
 """Every **Wallpaper** the **Decision log** mentions, as whole rows, in a fixed order.

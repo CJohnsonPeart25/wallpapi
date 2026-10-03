@@ -14,7 +14,8 @@ import pytest
 
 from tests.conftest import Harness, judge, make_harness, submit_with, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi.core import HISTORY_PAGE_SIZE, Batch, BatchUnavailable, HistoryRefused, ResolvedVerdict
+from wallpapi.core import Batch, BatchUnavailable, HistoryRefused
+from wallpapi.decisions import HISTORY_PAGE_SIZE, ResolvedVerdict
 from wallpapi.model import Verdict
 
 SUBJECT = "wp0000"
