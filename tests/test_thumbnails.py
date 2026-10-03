@@ -9,6 +9,7 @@ seam.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -382,6 +383,7 @@ def test_the_notice_leaves_out_what_the_downloader_gave_up_on(db_path: Path) -> 
     _first_pass_refusing_the_dead_one(harness)
     _run(harness, 1)
 
-    harness.core.similarity_notice()
+    harness.core.similarity_step(threading.Event())
 
-    assert harness.similarity.notice_pools == [("cc0003", "bb0002")]
+    assert set(harness.embed.seen) == {"cc0003", "bb0002"}
+    assert harness.core.similarity_notice() is None

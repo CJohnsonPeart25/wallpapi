@@ -35,7 +35,7 @@ from wallpapi.settings import REFINE_MIX as REFINE_MIX
 from wallpapi.settings import SUPERSEDED_POOL_TARGET_SIZE as SUPERSEDED_POOL_TARGET_SIZE
 from wallpapi.settings import SUPERSEDED_SIMILARITY_RADIUS as SUPERSEDED_SIMILARITY_RADIUS
 from wallpapi.settings import MixListing, Settings, SettingsRefused
-from wallpapi.similarity import SimilarityProvider
+from wallpapi.similarity import Embeddings
 from wallpapi.wallhaven import RateLimited, SearchPage, ThumbnailUnavailable, Wallhaven
 
 SFW_PURITY = "100"
@@ -265,7 +265,7 @@ class CoreService:
         db_path: Path,
         wallhaven: Wallhaven,
         library: LibraryWriter,
-        similarity: SimilarityProvider,
+        similarity: Embeddings,
         random_source: SeededRandom,
         clock: Clock,
     ) -> None:
@@ -470,7 +470,7 @@ class CoreService:
         """The order one **Zone** gives its **Wallpapers** up in, best first.
 
         **Bangers** by **Score** over a random order, so ties break by the seed. **Duds** stay random.
-        **Unknowns** one per look-alike group first (ADR 0018), or random when the provider has no `vectors`.
+        **Unknowns** one per look-alike group first (ADR 0018), or random while nothing has an **Embedding**.
         """
         members = [scored for scored in classified if scored.zone is zone]
         ordered = self._random.sample(members, len(members))
@@ -478,9 +478,8 @@ class CoreService:
             ordered.sort(key=lambda scored: scored.score, reverse=True)
         if zone is Zone.UNKNOWN:
             vectors = self._similarity.vectors([scored.wallpaper for scored in ordered])
-            if vectors is not None:
-                favourites = [scored.wallpaper.favourites for scored in ordered]
-                ordered = [ordered[i] for i in varied_order(vectors, favourites, slots, self._random)]
+            favourites = [scored.wallpaper.favourites for scored in ordered]
+            ordered = [ordered[i] for i in varied_order(vectors, favourites, slots, self._random)]
         return ordered
 
     # -- scoring and zones -----------------------------------------------------------------------------
