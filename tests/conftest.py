@@ -1,8 +1,8 @@
-"""Harness for driving the Core service the way the UI does.
+"""Harness for driving the Core service the way the UI does, and the guard that keeps tests off the network.
 
-Every test enters through the Core service. Nothing here touches the network, and nothing reaches past the
-seam into storage to check a result — if a behaviour isn't observable through the Core service, it isn't
-asserted.
+Every test enters through the Core service with fakes behind it. The only reach past the seam is the raw
+connection the migration and legacy-Clearance tests need, because nothing the seam offers can produce an
+un-migrated database or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -10,14 +10,17 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import socket
 import sqlite3
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 from numpy.typing import NDArray
 
 from tests.fakes import (
@@ -29,18 +32,50 @@ from tests.fakes import (
     catalogue_of,
 )
 from wallpapi.core import Batch, CoreService
-from wallpapi.model import Verdict, Wallpaper
+from wallpapi.library import LibraryWriter
+from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.rng import SeededRandom
+from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
 
-BATCH_ID = re.compile(r'name="batch_id" value="([0-9a-f]+)"')
+LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
+"""Allowed through the socket guard: every `TestClient` on Windows makes one loopback `connect` for
+asyncio's self-pipe, so a guard that refused it would refuse the whole web suite."""
 
 
-def batch_id_of(body: str) -> str:
-    match = BATCH_ID.search(body)
-    assert match is not None, "the page must carry the Batch ID it will submit"
-    return match.group(1)
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Refuse every connection and name lookup that is not loopback, and fail the test at teardown if one
+    was tried. Recorded as well as refused, because the background loops catch every error: an attempt
+    made on the refill thread would otherwise pass silently."""
+    attempts: list[str] = []
+    connect, connect_ex, getaddrinfo = socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo
+
+    def refuse(address: object) -> None:
+        described = repr(address)
+        host = address[0] if isinstance(address, tuple) else address  # pyright: ignore[reportUnknownVariableType]
+        if isinstance(host, str) and host not in LOOPBACK:
+            attempts.append(described)
+            raise OSError(f"tests do not touch the network: {described}")
+
+    def guarded_connect(self: socket.socket, address: object) -> None:
+        refuse(address)
+        connect(self, address)  # pyright: ignore[reportArgumentType]
+
+    def guarded_connect_ex(self: socket.socket, address: object) -> int:
+        refuse(address)
+        return connect_ex(self, address)  # pyright: ignore[reportArgumentType]
+
+    def guarded_getaddrinfo(host: object, *args: object, **kwargs: object) -> object:
+        refuse((host,))
+        return getaddrinfo(host, *args, **kwargs)  # pyright: ignore[reportArgumentType, reportCallIssue]
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    yield attempts
+    assert not attempts, f"a test tried to reach the network: {attempts}"
 
 
 @dataclass
@@ -50,17 +85,12 @@ class Harness:
     core: CoreService
     wallhaven: FakeWallhavenClient
     library: FakeLibraryWriter
+    """The fake the Core service writes through, unless `make_harness` was handed a real writer."""
     similarity: FakeSimilarityProvider
     clock: FakeClock
 
     def fill_pool(self, steps: int = 1) -> None:
-        """Run the refill by hand, `steps` **API calls** worth.
-
-        Never the thread. A test that started one would be a test with a race in it and a real second of
-        waiting somewhere; `refill_step` is a Core service method precisely so the refill can be driven one
-        call at a time. The one test that does start a thread is `test_refill_thread.py`, and what it
-        checks is the thread, not the refilling.
-        """
+        """Run the refill by hand, `steps` **API calls** worth. Never the thread."""
         for _ in range(steps):
             self.core.refill_step()
 
@@ -83,26 +113,14 @@ def make_harness(
     similarity_notice: str | None = None,
     catch_up_waits: Sequence[float] = (),
     vectors: Mapping[str, NDArray[np.float32]] | None = None,
+    library: LibraryWriter | None = None,
 ) -> Harness:
-    """Build a Core service over `db_path`, with the **Pool** already primed.
+    """Build a Core service over `db_path`, with `fill_pool` refill steps already run (one page each).
 
-    Called twice with the same path to prove the Decision log survives a restart, so it must run migrations
-    idempotently rather than assuming an empty database.
-
-    `fill_pool` is how many refill steps to run before handing the harness over. One by default, because a
-    **Batch** is drawn from the **Pool** and a test that only wants "a **Batch** exists" should not have to
-    say so; one step is a whole page, which is 24 **Wallpapers** at the default page size. Pass `0` in the
-    tests that care what an empty **Pool** does.
-
-    `similarities` goes straight to the fake **Similarity provider**: `{(pool id, decided id): value}`, with
-    a **Wallpaper** against itself 1.0 and everything unnamed 0.0.
-
-    `similarity_notice` is what that provider says about itself on the **Batch** page — `None`, a provider
-    working at full strength, unless a test is about the notice. `catch_up_waits` is what its upkeep asks
-    the background thread to wait between steps.
-
-    `vectors` is each **Wallpaper**'s position for the varied **Unknown** draw (#45), keyed by ID. `None`,
-    a provider with no positions, unless a test is about that draw.
+    Safe to call twice on one path: that is how a restart is tested. `similarities` is
+    `{(pool id, decided id): value}` for the fake provider, a **Wallpaper** against itself 1.0 and
+    everything unnamed 0.0. `library` replaces the fake writer the Core service gets, for the tests of the
+    real one.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
@@ -114,7 +132,7 @@ def make_harness(
         retry_after=retry_after,
         like_results=like_results,
     )
-    library = FakeLibraryWriter()
+    fake_library = FakeLibraryWriter()
     similarity = FakeSimilarityProvider(
         similarities, notice=similarity_notice, catch_up_waits=catch_up_waits, vectors=vectors
     )
@@ -122,12 +140,14 @@ def make_harness(
     core = CoreService(
         db_path=db_path,
         wallhaven=wallhaven,
-        library=library,
+        library=fake_library if library is None else library,
         similarity=similarity,
         random_source=SeededRandom(seed),
         clock=clock,
     )
-    harness = Harness(core=core, wallhaven=wallhaven, library=library, similarity=similarity, clock=clock)
+    harness = Harness(
+        core=core, wallhaven=wallhaven, library=fake_library, similarity=similarity, clock=clock
+    )
     harness.fill_pool(fill_pool)
     return harness
 
@@ -142,12 +162,31 @@ def harness(db_path: Path) -> Harness:
     return make_harness(db_path)
 
 
-def favourite(harness: Harness, *wallpaper_ids: str) -> None:
-    """Record a **Favourite** the way the UI does: mint a **Batch**, mark it, submit it.
+@contextmanager
+def serving(harness: Harness) -> Generator[TestClient]:
+    """The app over `harness`, lifespan and all, with no background threads."""
+    with TestClient(create_app(harness.core)) as client:
+        yield client
 
-    Through the seam and never by writing a row. The **Wallpapers** have to be *in* the **Batch** to be
-    judged, so every test here keeps the **Pool** small enough that one **Batch** shows all of it.
-    """
+
+@pytest.fixture
+def web(harness: Harness) -> Iterator[tuple[Harness, TestClient]]:
+    """The default harness and a client for the app over it."""
+    with serving(harness) as client:
+        yield harness, client
+
+
+BATCH_ID = re.compile(r'name="batch_id" value="([0-9a-f]+)"')
+
+
+def batch_id_of(body: str) -> str:
+    match = BATCH_ID.search(body)
+    assert match is not None, "the page must carry the Batch ID it will submit"
+    return match.group(1)
+
+
+def favourite(harness: Harness, *wallpaper_ids: str) -> None:
+    """Mint a **Batch**, mark these **Favourite** and submit it. They must all be in that **Batch**."""
     batch = harness.core.get_next_batch()
     assert isinstance(batch, Batch)
     shown = {w.id for w in batch.wallpapers}
@@ -166,40 +205,9 @@ def favourite_the_whole_batch(harness: Harness, verdict: Verdict = Verdict.FAVOU
     return batch
 
 
-def library_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
-    """Make `link` a symlink to `target`, or skip — Windows needs a privilege tests cannot assume."""
-    link.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        link.symlink_to(target, target_is_directory=directory)
-    except (OSError, NotImplementedError) as unavailable:  # pragma: no cover - platform dependent
-        pytest.skip(f"symlinks are not available here: {unavailable}")
-
-
-def library_junction(link: Path, target: Path) -> None:
-    """Make `link` a Windows directory junction to `target`, or skip.
-
-    The symlink tests above skip on an ordinary Windows account — `CreateSymbolicLink` needs a privilege
-    a developer machine does not hand out by default — and this is what stops the most important case in
-    the ticket from going untested on the one platform wallpapi runs on. A junction is a reparse point
-    just the same, it needs no privilege at all, and `Path.resolve` follows it, which is the whole of what
-    the guard depends on.
-    """
-    if os.name != "nt":  # pragma: no cover - platform dependent
-        pytest.skip("junctions are a Windows thing; the symlink tests carry this elsewhere")
-    link.parent.mkdir(parents=True, exist_ok=True)
-    made = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
-    )
-    if made.returncode != 0:  # pragma: no cover - platform dependent
-        pytest.skip(f"junctions are not available here: {made.stderr.decode(errors='replace').strip()}")
-
-
 def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
-    """Draft `marks` against the live **Batch** and submit it, returning the **Batch** submitted.
-
-    The catalogues here hold exactly `batch_size` **Wallpapers**, so every **Batch** shows all of them. A
-    tile left out of `marks` keeps what the **Batch** was minted with, and `None` unmarks it.
-    """
+    """Draft `marks` against the live **Batch** and submit it. A tile left out keeps what the **Batch**
+    was minted with, and `None` unmarks it."""
     batch = harness.core.get_next_batch()
     assert isinstance(batch, Batch)
     for wallpaper_id, verdict in marks.items():
@@ -214,16 +222,51 @@ def judge(harness: Harness, **marks: Verdict) -> None:
         assert harness.core.edit_verdict(wallpaper_id, verdict) is None
 
 
-def force_remigration(db_path: Path, *, to_version: int) -> None:
-    """Wind `user_version` back to `to_version` so the next Core service over this file applies the
-    migration after it again.
+def library_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
+    """Make `link` a symlink to `target`, or skip: Windows needs a privilege tests cannot assume."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except (OSError, NotImplementedError) as unavailable:  # pragma: no cover - platform dependent
+        pytest.skip(f"symlinks are not available here: {unavailable}")
 
-    The one place a test reaches past the seam, and it is unavoidable: what is being checked is a
-    *migration*, and a migration only runs against a database that has not had it. There is no way to ask
-    the Core service for an un-migrated database, because the Core service migrates in its constructor.
+
+def library_junction(link: Path, target: Path) -> None:
+    """Make `link` a Windows directory junction to `target`, or skip.
+
+    The symlink tests skip on an ordinary Windows account; a junction needs no privilege, is a reparse point
+    just the same and `Path.resolve` follows it, so it keeps the escape case tested on the one platform
+    wallpapi runs on.
     """
+    if os.name != "nt":  # pragma: no cover - platform dependent
+        pytest.skip("junctions are a Windows thing; the symlink tests carry this elsewhere")
+    link.parent.mkdir(parents=True, exist_ok=True)
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
+    )
+    if made.returncode != 0:  # pragma: no cover - platform dependent
+        pytest.skip(f"junctions are not available here: {made.stderr.decode(errors='replace').strip()}")
+
+
+@contextmanager
+def raw_connection(db_path: Path) -> Generator[sqlite3.Connection]:
     connection = sqlite3.connect(db_path, isolation_level=None)
     try:
-        connection.execute(f"PRAGMA user_version = {to_version}")
+        yield connection
     finally:
         connection.close()
+
+
+def force_remigration(db_path: Path, *, to_version: int) -> None:
+    """Wind `user_version` back so the next Core service over this file applies the migrations after it."""
+    with raw_connection(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {to_version}")
+
+
+def write_legacy_clearance(db_path: Path, *wallpaper_ids: str) -> None:
+    """Append a **Clearance** for each, as a database from before ADR 0015 may hold."""
+    with raw_connection(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
+            [(w, Clearance.CLEARED.value, FIXED_NOW.isoformat()) for w in wallpaper_ids],
+        )

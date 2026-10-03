@@ -10,7 +10,10 @@ No network: `httpx2.MockTransport` answers from the fixture.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import socket
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -251,3 +254,24 @@ def test_a_thumbnail_the_host_refuses_is_unavailable() -> None:
     with pytest.raises(ThumbnailUnavailable) as raised:
         client.fetch_thumbnail("https://th.wallhaven.cc/small/ox/oxkzwm.jpg")
     assert raised.value.status == 404
+
+
+def test_a_test_that_reaches_for_the_network_fails(no_network: list[str]) -> None:
+    """The conftest guard: a raw connect, a real client and an attempt swallowed on another thread are all
+    refused and recorded. Cleared at the end, or this test would fail at teardown as any other would."""
+
+    def swallowed() -> None:
+        with contextlib.suppress(OSError):
+            socket.getaddrinfo("wallhaven.cc", 443)
+
+    with pytest.raises(OSError):
+        socket.create_connection(("192.0.2.1", 80), timeout=1)
+    with httpx2.Client() as client, pytest.raises(httpx2.ConnectError):
+        client.get("https://wallhaven.cc/api/v1/search")
+    background = threading.Thread(target=swallowed)
+    background.start()
+    background.join()
+
+    assert any("192.0.2.1" in attempt for attempt in no_network)
+    assert sum("wallhaven.cc" in attempt for attempt in no_network) >= 2
+    no_network.clear()
