@@ -18,7 +18,7 @@ How a ticket goes from `ready-for-agent` to merged. Written down after the first
 Parallel agents must not both take "the next" migration or ADR number. The lead assigns each ticket its
 migration number and ADR number before dispatch and records them in the dispatch. A number that is reserved
 and then not used stays unused: ADR 0011 is a deliberate gap for that reason, not a lost file. Migration
-numbers must stay contiguous because `_migrate` chains `if applied < n` steps in order.
+numbers must stay contiguous because `storage.migrate` applies its steps by number, in order.
 
 ## The pull request
 
