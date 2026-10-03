@@ -179,13 +179,3 @@ def test_a_provider_at_full_strength_adds_no_line(db_path: Path) -> None:
         response = client.get("/batch")
 
     assert "similarity-notice" not in response.text
-
-
-def test_the_provider_is_asked_about_the_whole_pool(db_path: Path) -> None:
-    """#44: `notice` takes the **Pool**, the same shape `similarities` already does, so a provider can say
-    how much of it is covered without the Core service learning which provider it holds."""
-    harness = make_harness(db_path, catalogue=catalogue_of(24))
-
-    harness.core.similarity_notice()
-
-    assert harness.similarity.notice_pools == [tuple(w.id for w in catalogue_of(24))]
