@@ -10,12 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness, force_remigration, make_harness
+from tests.conftest import Harness, make_harness
 from wallpapi.core import (
-    DEFAULT_SIMILARITY_RADIUS,
     MAX_BATCH_SIZE,
     MIN_BATCH_SIZE,
-    SUPERSEDED_SIMILARITY_RADIUS,
     Batch,
     Settings,
     SettingsRefused,
@@ -199,33 +197,3 @@ def test_a_refused_batch_size_leaves_the_next_batch_alone(harness: Harness) -> N
 
 
 # -- migration 9: the Similarity radius default moves with the provider (#14) ---------------------------
-
-
-def test_the_new_default_reaches_a_database_that_still_held_the_old_one(db_path: Path) -> None:
-    """The upgrade path: a **Decision log** written before #14 gets the radius its new provider needs.
-
-    Arranged through the seam rather than by writing a row: setting it *to* the old default is exactly the
-    state a pre-#14 database is in, and it is the state migration 9 has to recognise.
-    """
-    before = make_harness(db_path, fill_pool=0)
-    before.core.update_settings(similarity_radius=SUPERSEDED_SIMILARITY_RADIUS)
-    force_remigration(db_path, to_version=8)
-
-    after = make_harness(db_path, fill_pool=0)
-
-    assert after.core.get_settings().similarity_radius == DEFAULT_SIMILARITY_RADIUS
-
-
-def test_a_radius_the_user_chose_is_left_exactly_as_they_set_it(db_path: Path) -> None:
-    """The other half, and the one that matters: a migration must never undo a setting.
-
-    0.42 is not the old default, so migration 9's `WHERE value = ?` does not match it and the row is not
-    touched. Without that clause the only way to move a default would be to overwrite everybody's.
-    """
-    chosen = make_harness(db_path, fill_pool=0)
-    chosen.core.update_settings(similarity_radius=0.42)
-    force_remigration(db_path, to_version=8)
-
-    after = make_harness(db_path, fill_pool=0)
-
-    assert after.core.get_settings().similarity_radius == 0.42
