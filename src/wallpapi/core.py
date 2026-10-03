@@ -8,12 +8,9 @@ import threading
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import StrEnum
-from functools import partial
 from pathlib import Path
 
-from wallpapi import batches, decisions, similarity, storage, thumbnails
-from wallpapi import pool as pool_module
+from wallpapi import decisions, storage, workflows
 from wallpapi import settings as settings_module
 from wallpapi.allocation import ScoredWallpaper as ScoredWallpaper
 from wallpapi.background import BackgroundLoop
@@ -22,8 +19,9 @@ from wallpapi.batches import BatchUnavailable as BatchUnavailable
 from wallpapi.batches import SubmissionRefused as SubmissionRefused
 from wallpapi.batches import Submitted as Submitted
 from wallpapi.clock import Clock
+from wallpapi.compose import background_loops, compose
 from wallpapi.decisions import ResolvedVerdict
-from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
+from wallpapi.library import FavouriteDownload, LibraryReconciliation, LibraryWriter
 from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper
 from wallpapi.pool import wallpaper_from_row
 from wallpapi.rng import SeededRandom
@@ -37,6 +35,7 @@ from wallpapi.settings import SUPERSEDED_SIMILARITY_RADIUS as SUPERSEDED_SIMILAR
 from wallpapi.settings import MixListing, Settings, SettingsRefused
 from wallpapi.similarity import Embeddings
 from wallpapi.wallhaven import Wallhaven
+from wallpapi.workflows import HistoryRefused as HistoryRefused
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,19 +68,6 @@ class HistoryPage:
         return self.page + 1 if self.page < self.pages else None
 
 
-@dataclass(frozen=True)
-class HistoryRefused:
-    """A **History** edit did not happen, and this is why. Only a hand-made post or a second tab can cause
-    one.
-    """
-
-    class Reason(StrEnum):
-        UNKNOWN_WALLPAPER = "unknown_wallpaper"
-        """No such **Wallpaper** in this database."""
-
-    reason: Reason
-
-
 class CoreService:
     def __init__(
         self,
@@ -95,24 +81,26 @@ class CoreService:
         refill_random_source: SeededRandom,
         clock: Clock,
     ) -> None:
+        self.modules = compose(
+            db_path=db_path,
+            thumbnail_dir=thumbnail_dir,
+            wallhaven=wallhaven,
+            library_writer=library,
+            similarity=similarity,
+            random_source=random_source,
+            refill_random_source=refill_random_source,
+            clock=clock,
+        )
+        """Transitional: what `compose` built, until the tests stop reaching for this class."""
         self._similarity = similarity
         self._clock = clock
-        self._connections = storage.ThreadConnections(db_path)
-
-        storage.migrate(self._connect())
-        self.refill = pool_module.Refill(self._connect, wallhaven, clock, refill_random_source)
-        """The background search that keeps the **Pool** stocked: the thread drives it, the page reads it."""
-        self.batches = batches.Batches(similarity, self.refill.status, clock, random_source)
-        """Minting and submitting **Batches**, with the draw's own random source."""
-        self.library = Library(library, clock)
-        """Reconciliation and the **Favourite** download, run after the **Decision log** commits."""
-        self.thumbnails = thumbnails.Thumbnails(thumbnail_dir, wallhaven, clock)
-        """The **Thumbnail cache**: tiles served from it, the submission's eviction, and the downloader."""
+        self._connect = self.modules.connect
+        self.refill = self.modules.refill
+        self.batches = self.modules.batches
+        self.library = self.modules.library
+        self.thumbnails = self.modules.thumbnails
 
     # -- storage ---------------------------------------------------------------------------------------
-
-    def _connect(self) -> sqlite3.Connection:
-        return self._connections.get()
 
     @contextmanager
     def _write(self) -> Generator[sqlite3.Connection]:
@@ -130,11 +118,7 @@ class CoreService:
         """Validate and store the settings named, then prune the **Pool** to the **Filters**, in one write
         transaction; see `settings.update`.
         """
-        with self._write() as write:
-            updated = settings_module.update(write, **fields)
-            if isinstance(updated, Settings):
-                pool_module.prune(write, updated)
-            return updated
+        return workflows.save_settings(self.modules, **fields)
 
     # -- mixes -----------------------------------------------------------------------------------------
 
@@ -154,13 +138,11 @@ class CoreService:
         self, name: str, *, unknown: int | str, banger: int | str, dud: int | str
     ) -> Mix | SettingsRefused:
         """Store a **Mix** under that name; see `settings.save_mix`."""
-        with self._write() as write:
-            return settings_module.save_mix(write, name, unknown=unknown, banger=banger, dud=dud)
+        return workflows.save_mix(self.modules, name, unknown=unknown, banger=banger, dud=dud)
 
     def delete_mix(self, name: str) -> SettingsRefused | None:
         """Remove a **Mix**, or say why it stays; see `settings.delete_mix`."""
-        with self._write() as write:
-            return settings_module.delete_mix(write, name)
+        return workflows.delete_mix(self.modules, name)
 
     # -- batches ---------------------------------------------------------------------------------------
 
@@ -180,10 +162,7 @@ class CoreService:
         Handed the **Pool** less what the thumbnail downloader gave up on, so the line clears once everything
         that can be embedded has been.
         """
-        given_up = self.thumbnails.given_up()
-        return self._similarity.notice(
-            [w for w in pool_module.members(self._connect()) if w.id not in given_up]
-        )
+        return self._similarity.notice(self.thumbnails.obtainable(self._connect()))
 
     def similarity_step(self, stop_event: threading.Event) -> float:
         """One step of the **Similarity provider**'s upkeep, on its background thread only; seconds to the
@@ -195,50 +174,21 @@ class CoreService:
         """The refill, the **Similarity provider**'s upkeep and the thumbnail downloader, in the order the
         lifespan starts them; it stops them in reverse.
         """
-        return (
-            BackgroundLoop(
-                partial(pool_module.refill_loop, self.refill),
-                name=pool_module.THREAD_NAME,
-                join_timeout=pool_module.JOIN_TIMEOUT,
-            ),
-            BackgroundLoop(
-                partial(similarity.upkeep_loop, self._similarity, self.thumbnails.directory),
-                name=similarity.THREAD_NAME,
-                join_timeout=similarity.JOIN_TIMEOUT,
-            ),
-            BackgroundLoop(
-                partial(thumbnails.download_loop, self.thumbnails, self._connect),
-                name=thumbnails.THREAD_NAME,
-                join_timeout=thumbnails.JOIN_TIMEOUT,
-            ),
-        )
+        return background_loops(self.modules)
 
     def set_draft_verdict(
         self, batch_id: str, wallpaper_id: str, verdict: Verdict | None
     ) -> Batch | SubmissionRefused:
         """Mark one tile, or clear it: `batches.set_draft` in its own transaction."""
-        with self._write() as write:
-            return batches.set_draft(write, batch_id, wallpaper_id, verdict)
+        return workflows.set_draft(self.modules, batch_id, wallpaper_id, verdict)
 
     def set_all_draft_verdicts(self, batch_id: str, verdict: Verdict | None) -> Batch | SubmissionRefused:
         """Select-all or select-none: `batches.set_all_drafts` in its own transaction."""
-        with self._write() as write:
-            return batches.set_all_drafts(write, batch_id, verdict)
+        return workflows.set_all_drafts(self.modules, batch_id, verdict)
 
     def submit_batch(self, batch_id: str) -> Submitted | SubmissionRefused:
         """Submit the **Batch** in one transaction, then reconcile the **Library** and evict thumbnails."""
-        with self._write() as write:
-            submitted = self.batches.submit(write, batch_id)
-        if isinstance(submitted, SubmissionRefused):
-            return submitted
-
-        # Outside the transaction, deliberately: a download is a network call, and nothing the **Library**
-        # does may roll the **Decision log** back. Idempotent, so a failure is picked up next time.
-        self.reconcile_library()
-        # Before the next **Batch** is drawn, so nothing about to be drawn is being counted as evictable.
-        cap = self.get_settings().thumbnail_cache_max_mb * thumbnails.BYTES_IN_A_MEGABYTE
-        self.thumbnails.evict(self._connect(), cap)
-        return submitted
+        return workflows.submit(self.modules, batch_id)
 
     # -- library ---------------------------------------------------------------------------------------
 
@@ -248,7 +198,7 @@ class CoreService:
 
     def download_favourites(self) -> FavouriteDownload:
         """Write a **Library** file for every **Favourite** without one: `Library.download_favourites`."""
-        return self.library.download_favourites(self._connect(), self.get_settings().library_path)
+        return workflows.download_favourites(self.modules)
 
     # -- thumbnails ------------------------------------------------------------------------------------
 
@@ -269,13 +219,7 @@ class CoreService:
         **Wallpaper** is refused rather than left to the foreign key. The **Library** is reconciled
         afterwards, outside the transaction.
         """
-        recorded_at = self._clock.now()
-        with self._write() as write:
-            if not _wallpaper_exists(write, wallpaper_id):
-                return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
-            decisions.append(write, {wallpaper_id: verdict}, batch_id=None, at=recorded_at)
-        self.reconcile_library()
-        return None
+        return workflows.edit_verdict(self.modules, wallpaper_id, verdict)
 
     def list_history_rows(self, *, verdict: Verdict | None = None, page: int = 1) -> HistoryPage:
         """One page of **History**: `decisions.history`, with each line's **Wallpaper**."""
@@ -322,10 +266,3 @@ class CoreService:
     ) -> list[DecisionEntry]:
         """The **Decision log**'s raw entries in sequence order: `decisions.entries`."""
         return decisions.entries(self._connect(), batch_id=batch_id, wallpaper_id=wallpaper_id)
-
-
-def _wallpaper_exists(connection: sqlite3.Connection, wallpaper_id: str) -> bool:
-    """Whether this database has ever seen the **Wallpaper**, so an edit is refused rather than an
-    `IntegrityError`.
-    """
-    return connection.execute("SELECT 1 FROM wallpapers WHERE id = ?", (wallpaper_id,)).fetchone() is not None
