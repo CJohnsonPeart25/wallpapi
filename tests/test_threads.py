@@ -37,10 +37,10 @@ def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> N
     with TestClient(app) as client:
         response = client.get("/batch")
         assert response.status_code == 200
-        assert harness.core.refill_status().running, "the lifespan should have started the thread"
+        assert harness.core.refill.status().running, "the lifespan should have started the thread"
         assert "Refill idle" in response.text
 
-    assert not harness.core.refill_status().running, "shutdown should have joined the thread"
+    assert not harness.core.refill.status().running, "shutdown should have joined the thread"
 
 
 def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> None:
@@ -52,7 +52,7 @@ def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> 
         client.get("/batch")
         assert harness.wallhaven.searched.wait(JOIN_TIMEOUT), "the thread should have searched"
 
-    assert harness.core.refill_status().pool_size == 24
+    assert harness.core.refill.status().pool_size == 24
 
 
 def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Path) -> None:

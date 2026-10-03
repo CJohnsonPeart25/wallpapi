@@ -7,24 +7,7 @@ from __future__ import annotations
 import threading
 
 from wallpapi.core import CoreService
-from wallpapi.wallhaven import REQUEST_TIMEOUT
-
-JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
-"""Seconds shutdown waits: greater than the Wallhaven client's request timeout (invariant 12)."""
-
-
-def refill_loop(core: CoreService, stop_event: threading.Event) -> None:
-    """Wait as long as the Core service says, take one step, repeat. `refill_step` never raises, so the thread
-    cannot die.
-    """
-    with core.refill_running():
-        while not stop_event.is_set():
-            wait = core.refill_wait()
-            if wait > 0 and stop_event.wait(wait):
-                return
-            if stop_event.is_set():
-                return
-            core.refill_step()
+from wallpapi.pool import JOIN_TIMEOUT, refill_loop
 
 
 class RefillThread:
@@ -40,7 +23,7 @@ class RefillThread:
             return
         # Not a daemon: shutdown joins it, so a step half way through a write finishes.
         self._thread = threading.Thread(
-            target=refill_loop, args=(self._core, self._stop), name="wallpapi-refill", daemon=False
+            target=refill_loop, args=(self._core.refill, self._stop), name="wallpapi-refill", daemon=False
         )
         self._thread.start()
 

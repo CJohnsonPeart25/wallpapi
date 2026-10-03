@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from wallpapi import decisions, storage
+from wallpapi import pool as pool_module
 from wallpapi import settings as settings_module
 from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
 from wallpapi.clock import Clock
@@ -24,7 +25,7 @@ from wallpapi.decisions import ResolvedVerdict
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
 from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper, Zone
-from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, gap_needed, wait_needed
+from wallpapi.pool import wallpaper_from_row
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 
@@ -36,24 +37,10 @@ from wallpapi.settings import SUPERSEDED_POOL_TARGET_SIZE as SUPERSEDED_POOL_TAR
 from wallpapi.settings import SUPERSEDED_SIMILARITY_RADIUS as SUPERSEDED_SIMILARITY_RADIUS
 from wallpapi.settings import MixListing, Settings, SettingsRefused
 from wallpapi.similarity import Embeddings
-from wallpapi.wallhaven import RateLimited, SearchPage, ThumbnailUnavailable, Wallhaven
+from wallpapi.wallhaven import RateLimited, ThumbnailUnavailable, Wallhaven
 
-SFW_PURITY = "100"
-"""Wallhaven's purity mask: SFW on, sketchy and NSFW off. Fixed; NSFW is what needs an API key."""
-
-SFW_PURITY_NAME = "sfw"
-"""What a search *result* calls the same thing. The mask is a query parameter; this is a response field."""
-
-ALL_CATEGORIES = "111"
-"""Wallhaven's category mask: general, anime and people, all on. The **Filters** are about shape, not
-subject.
-"""
-
-IDLE_RECHECK_SECONDS = 30.0
-"""How long the refill waits before looking again once the **Pool** is at target: not a spin, not minutes."""
-
-ERROR_BACKOFF_SECONDS = 60.0
-"""How long the refill waits after a failed **API call** that named no delay: one whole rate-limit window."""
+THUMBNAIL_GAP_SECONDS = 0.25
+"""The fixed gap between thumbnail fetches: a constant, never a setting."""
 
 THUMBNAIL_IDLE_RECHECK_SECONDS = 30.0
 """How long the thumbnail downloader waits once no **Pool** member is missing a thumbnail."""
@@ -72,28 +59,8 @@ Without a limit a thumbnail gone for good is requested every pass and the page's
 whole **Pool**. A 429 or a failed connection is not a refusal and never counts.
 """
 
-POOL_SOURCE_RANDOM = "random"
-POOL_SOURCE_LIKE = "like"
-"""How a **Pool** member got there: a random walk, or a like: search on a **Favourite**."""
-
-LIKE_QUERY_PREFIX = "like:"
-"""Wallhaven's spelling of "wallpapers similar to this one", sent as the `q` of a search."""
-
-LIKE_SORTING = "relevance"
-"""How a like: search is sorted: most similar first, because the walk is capped and the tail is weak."""
-
-LIKE_PAGES_PER_FAVOURITE = 3
-"""How far a like: walk goes before the next **Favourite**'s turn: 72 **Wallpapers**, and the tail is weak."""
-
 BYTES_IN_A_MEGABYTE = 1024 * 1024
 """Mebibytes, because matching what Explorer shows matters more than matching SI."""
-
-RATIO_TOLERANCE = 0.08
-"""How far a **Wallpaper**'s own width/height may sit from a named ratio and still count as it.
-
-Wallhaven buckets: a 3440x1440 is 2.39 and served under `21x9`, which is 2.33. Generous on purpose, and still
-under half the gap between `16x9` (1.78) and `16x10` (1.60).
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,32 +95,6 @@ class BatchUnavailable:
     reason: Reason
     error: str | None = None
     error_at: dt.datetime | None = None
-
-
-class RefillStrategy(StrEnum):
-    """Which search a refill step makes, and so the `source` it tags what it admits with."""
-
-    RANDOM = POOL_SOURCE_RANDOM
-    LIKE = POOL_SOURCE_LIKE
-
-
-@dataclass(frozen=True, slots=True)
-class RefillStatus:
-    """What the background **Pool** refill is doing, for the indicator on the **Batch** page."""
-
-    pool_size: int
-    target_size: int
-    running: bool
-    last_run_at: dt.datetime | None
-    last_error: str | None
-    last_error_at: dt.datetime | None
-    last_strategy: RefillStrategy | None
-    """Which search the last step made, or `None`. A stalled like: rotation means no **Favourites** yet."""
-
-    @property
-    def at_target(self) -> bool:
-        """Whether the refill is idling rather than spending its budget."""
-        return self.pool_size >= self.target_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +208,7 @@ class CoreService:
         library: LibraryWriter,
         similarity: Embeddings,
         random_source: SeededRandom,
+        refill_random_source: SeededRandom,
         clock: Clock,
     ) -> None:
         self._db_path = db_path
@@ -276,33 +218,6 @@ class CoreService:
         self._random = random_source
         self._clock = clock
         self._connections = storage.ThreadConnections(db_path)
-
-        # The refill's own state, in memory: a walk half-finished at shutdown is worth nothing afterwards.
-        # Locked because the refill thread writes it and request threads read it.
-        self._refill_lock = threading.Lock()
-        self._api_call_times: deque[float] = deque(maxlen=CALLS_PER_MINUTE)
-        """The **API call** timestamps still inside the limiter's window.
-
-        Trimmed by age on every append, and capped by `maxlen` as well: only the cap holds when the clock does
-        not move.
-        """
-        self._walk_seed: str | None = None
-        self._walk_page = 1
-
-        # The like: walk, kept apart from the random one: they interleave, and would clobber a shared place.
-        self._like_subject: str | None = None
-        """The **Favourite** whose lookalikes are being walked, or `None` between walks."""
-        self._like_seed: str | None = None
-        self._like_page = 1
-        self._like_walked: set[str] = set()
-        """The **Favourites** already walked this cycle, so every one has a turn before any has a second."""
-        self._last_strategy: RefillStrategy | None = None
-
-        self._retry_not_before: float | None = None
-        self._refill_last_run: dt.datetime | None = None
-        self._refill_last_error: str | None = None
-        self._refill_last_error_at: dt.datetime | None = None
-        self._refill_thread_running = False
 
         # The thumbnail downloader's own state. Touched only by its thread, so it needs no lock.
         self._last_thumbnail_fetch: float | None = None
@@ -319,6 +234,8 @@ class CoreService:
         """
 
         storage.migrate(self._connect())
+        self.refill = pool_module.Refill(self._connect, wallhaven, clock, refill_random_source)
+        """The background search that keeps the **Pool** stocked: the thread drives it, the page reads it."""
 
     # -- storage ---------------------------------------------------------------------------------------
 
@@ -344,7 +261,7 @@ class CoreService:
         with self._write() as write:
             updated = settings_module.update(write, **fields)
             if isinstance(updated, Settings):
-                self._prune_pool(write, updated)
+                pool_module.prune(write, updated)
             return updated
 
     # -- mixes -----------------------------------------------------------------------------------------
@@ -490,10 +407,10 @@ class CoreService:
         The decided columns are every **Wallpaper** with a non-zero resolved value, in the **Pool** or not; a
         **Ban** is a column like any other, but never a row.
         """
-        pool = self._pool_wallpapers()
+        pool = pool_module.members(self._connect())
         if not pool:
             return ()
-        judged = [_wallpaper_from_row(row) for row in self._connect().execute(_SELECT_DECIDED_WALLPAPERS)]
+        judged = [wallpaper_from_row(row) for row in self._connect().execute(_SELECT_DECIDED_WALLPAPERS)]
         resolved = decisions.resolve(self._connect(), [w.id for w in pool] + [w.id for w in judged])
 
         candidates = [w for w in pool if resolved[w.id].verdict is not Verdict.BAN]
@@ -517,11 +434,12 @@ class CoreService:
 
     def _nothing_to_show(self) -> BatchUnavailable:
         """Why the **Pool** had nothing. A recorded refill failure outranks "nothing yet"."""
-        with self._refill_lock:
-            error, error_at = self._refill_last_error, self._refill_last_error_at
-        if error is not None:
+        status = self.refill.status()
+        if status.last_error is not None:
             return BatchUnavailable(
-                reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE, error=error, error_at=error_at
+                reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE,
+                error=status.last_error,
+                error_at=status.last_error_at,
             )
         return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
 
@@ -534,222 +452,15 @@ class CoreService:
         that can be embedded has been.
         """
         given_up = self._thumbnails_given_up
-        return self._similarity.notice([w for w in self._pool_wallpapers() if w.id not in given_up])
+        return self._similarity.notice(
+            [w for w in pool_module.members(self._connect()) if w.id not in given_up]
+        )
 
     def similarity_step(self, stop_event: threading.Event) -> float:
         """One step of the **Similarity provider**'s upkeep, on its background thread only; seconds to the
         next.
         """
         return self._similarity.catch_up(self.thumbnail_dir, stop_event)
-
-    # -- the Pool and its refill -------------------------------------------------------------------------
-
-    def refill_status(self) -> RefillStatus:
-        """What the refill is doing, for the indicator on the **Batch** page."""
-        with self._refill_lock:
-            return RefillStatus(
-                pool_size=self._pool_size(),
-                target_size=self.get_settings().pool_target_size,
-                running=self._refill_thread_running,
-                last_run_at=self._refill_last_run,
-                last_error=self._refill_last_error,
-                last_error_at=self._refill_last_error_at,
-                last_strategy=self._last_strategy,
-            )
-
-    def refill_wait(self) -> float:
-        """Seconds before the next `refill_step`: the longest of idling at target, the rate limiter and a
-        back-off.
-        """
-        now = self._clock.monotonic()
-        if self._pool_size() >= self.get_settings().pool_target_size:
-            return IDLE_RECHECK_SECONDS
-        with self._refill_lock:
-            limited = wait_needed(self._api_call_times, now=now)
-            backing_off = 0.0 if self._retry_not_before is None else self._retry_not_before - now
-        return max(limited, backing_off, 0.0)
-
-    def refill_step(self) -> None:
-        """One step of the refill: at most one **API call**, and never an exception, because the thread must
-        not die.
-
-        The random and like: strategies take strict turns; with no **Favourites** every step is random. A
-        failure is recorded, the walk keeps its place, and the caller backs off.
-        """
-        settings = self.get_settings()
-        self._mark_refill_run()
-        if self._pool_size() >= settings.pool_target_size:
-            # At target: the random walk is over, and the next starts from a fresh seed.
-            self._reset_walk()
-            return
-
-        favourites = self._favourites()
-        with self._refill_lock:
-            strategy = _alternated(self._last_strategy, has_favourites=bool(favourites))
-            self._last_strategy = strategy
-            if strategy is RefillStrategy.LIKE:
-                subject = self._take_up_a_like_walk(favourites)
-                seed, page_number = self._like_seed, self._like_page
-            else:
-                subject = None
-                seed, page_number = self._walk_seed, self._walk_page
-            self._record_api_call(self._clock.monotonic())
-        try:
-            page = self._wallhaven.search(
-                sorting="random" if subject is None else LIKE_SORTING,
-                query=None if subject is None else f"{LIKE_QUERY_PREFIX}{subject}",
-                purity=SFW_PURITY,
-                categories=ALL_CATEGORIES,
-                page=page_number,
-                seed=seed,
-                atleast=settings.atleast,
-                ratios=settings.ratios,
-            )
-        except RateLimited as limited:
-            # Wallhaven's own answer beats the default: it knows when it will start answering again.
-            self._record_refill_failure(limited, limited.retry_after or ERROR_BACKOFF_SECONDS)
-            return
-        except Exception as failure:
-            # Deliberately everything: the protocol names only `RateLimited`, and one unexpected type must
-            # not kill the thread.
-            self._record_refill_failure(failure, ERROR_BACKOFF_SECONDS)
-            return
-
-        self._admit_to_pool(page.wallpapers, settings, source=strategy)
-        if strategy is RefillStrategy.LIKE:
-            self._advance_like_walk(page)
-        else:
-            self._advance_walk(page)
-        with self._refill_lock:
-            self._retry_not_before = None
-            self._refill_last_error = None
-            self._refill_last_error_at = None
-
-    @contextmanager
-    def refill_running(self) -> Generator[None]:
-        """Marks the refill as running while the thread's loop is inside this, and clears it however the loop
-        ends.
-        """
-        with self._refill_lock:
-            self._refill_thread_running = True
-        try:
-            yield
-        finally:
-            with self._refill_lock:
-                self._refill_thread_running = False
-
-    def _record_api_call(self, at: float) -> None:
-        """Note an **API call** and drop those aged out of the window, so `wait_needed` stays a pure function.
-        Lock held.
-        """
-        while self._api_call_times and at - self._api_call_times[0] >= WINDOW_SECONDS:
-            self._api_call_times.popleft()
-        self._api_call_times.append(at)
-
-    def _mark_refill_run(self) -> None:
-        with self._refill_lock:
-            self._refill_last_run = self._clock.now()
-
-    def _record_refill_failure(self, failure: Exception, backoff: float) -> None:
-        """Remember why the last **API call** failed, for the page, and how long to leave Wallhaven alone."""
-        with self._refill_lock:
-            self._refill_last_error = str(failure) or type(failure).__name__
-            self._refill_last_error_at = self._clock.now()
-            self._retry_not_before = self._clock.monotonic() + backoff
-
-    def _advance_walk(self, page: SearchPage) -> None:
-        """Carry `meta.seed` to the next page of this walk, or start a fresh walk on an empty page."""
-        with self._refill_lock:
-            if not page.wallpapers:
-                self._walk_seed, self._walk_page = None, 1
-                return
-            self._walk_seed = page.seed or self._walk_seed
-            self._walk_page += 1
-
-    def _reset_walk(self) -> None:
-        """Forget where the random walk had got to. The like: walk keeps its place: `like:<id>` has no seed
-        trap.
-        """
-        with self._refill_lock:
-            self._walk_seed, self._walk_page = None, 1
-
-    def _favourites(self) -> list[str]:
-        """Every **Wallpaper** whose *resolved* **Verdict** is **Favourite**, ordered so a seeded draw is
-        repeatable.
-        """
-        return decisions.favourites(self._connect())
-
-    def _take_up_a_like_walk(self, favourites: Sequence[str]) -> str:
-        """The **Favourite** whose lookalikes the next like: search asks for. Lock held.
-
-        Carries on with the walk in progress while its subject is still a **Favourite**; otherwise starts on
-        one that has not had a turn this cycle, so every **Favourite** gets one.
-        """
-        current = self._like_subject
-        if current is not None and current in favourites:
-            return current
-        self._like_walked.intersection_update(favourites)
-        remaining = [f for f in favourites if f not in self._like_walked]
-        if not remaining:
-            self._like_walked.clear()
-            remaining = list(favourites)
-        chosen = self._random.sample(remaining, 1)[0]
-        self._like_subject, self._like_seed, self._like_page = chosen, None, 1
-        return chosen
-
-    def _advance_like_walk(self, page: SearchPage) -> None:
-        """Page on through one **Favourite**'s lookalikes until an empty page or
-        `LIKE_PAGES_PER_FAVOURITE`.
-        """
-        with self._refill_lock:
-            if page.wallpapers and self._like_page < LIKE_PAGES_PER_FAVOURITE:
-                self._like_seed = page.seed or self._like_seed
-                self._like_page += 1
-                return
-            if self._like_subject is not None:
-                self._like_walked.add(self._like_subject)
-            self._like_subject, self._like_seed, self._like_page = None, None, 1
-
-    def _admit_to_pool(
-        self, wallpapers: Sequence[Wallpaper], settings: Settings, *, source: RefillStrategy
-    ) -> None:
-        """Put the **Wallpapers** that pass every **Filter** into the **Pool**, checked locally whatever was
-        asked.
-
-        A **Wallpaper** already in the **Pool** keeps the `source` and `fetched_at` it arrived with. One the
-        **Decision log** mentions is refused (ADR 0016), though its `wallpapers` row is still refreshed.
-        """
-        passing = [w for w in _distinct(wallpapers) if _passes_filters(w, settings)]
-        if not passing:
-            return
-        fetched_at = self._clock.now().isoformat()
-        with self._write() as write:
-            write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in passing])
-            write.executemany(
-                _ADMIT_TO_POOL,
-                [{"id": w.id, "fetched_at": fetched_at, "source": source.value} for w in passing],
-            )
-
-    def _prune_pool(self, write: sqlite3.Connection, settings: Settings) -> None:
-        """Drop every **Pool** member that no longer passes the **Filters**, after every settings write.
-
-        Membership only: the `wallpapers` row and the **Decision log** stay, and the live **Batch** is
-        untouched.
-        """
-        rows = write.execute(_SELECT_POOL_WALLPAPERS).fetchall()
-        failing = [
-            (str(row["id"]),) for row in rows if not _passes_filters(_wallpaper_from_row(row), settings)
-        ]
-        if failing:
-            write.executemany("DELETE FROM pool WHERE wallpaper_id = ?", failing)
-
-    def _pool_size(self) -> int:
-        return int(self._connect().execute("SELECT COUNT(*) FROM pool").fetchone()[0])
-
-    def _pool_wallpapers(self) -> list[Wallpaper]:
-        """Every **Wallpaper** in the **Pool**, ordered so a seeded random source draws the same sample."""
-        rows = self._connect().execute(_SELECT_POOL_WALLPAPERS).fetchall()
-        return [_wallpaper_from_row(row) for row in rows]
 
     def _live_batch(self) -> Batch | None:
         """The unsubmitted **Batch**, if there is one."""
@@ -1163,7 +874,7 @@ class CoreService:
         rows = self._connect().execute(
             f"SELECT * FROM wallpapers WHERE id IN ({placeholders})", [line.wallpaper_id for line in lines]
         )
-        wallpapers = {str(row["id"]): _wallpaper_from_row(row) for row in rows}
+        wallpapers = {str(row["id"]): wallpaper_from_row(row) for row in rows}
         return tuple(
             HistoryRow(
                 wallpaper=wallpapers[line.wallpaper_id], resolved=line.resolved, latest_at=line.decided_at
@@ -1176,52 +887,6 @@ class CoreService:
     ) -> list[DecisionEntry]:
         """The **Decision log**'s raw entries in sequence order: `decisions.entries`."""
         return decisions.entries(self._connect(), batch_id=batch_id, wallpaper_id=wallpaper_id)
-
-
-def _alternated(last: RefillStrategy | None, *, has_favourites: bool) -> RefillStrategy:
-    """Whichever strategy did not take the last step, while both have work: strict turns are an even split."""
-    if not has_favourites or last is RefillStrategy.LIKE:
-        return RefillStrategy.RANDOM
-    return RefillStrategy.RANDOM if last is None else RefillStrategy.LIKE
-
-
-def _passes_filters(wallpaper: Wallpaper, settings: Settings) -> bool:
-    """Every **Filter**, checked locally: the one rule for admitting to the **Pool** and for pruning it.
-
-    Purity, `atleast` and `ratios` are checked here as well as sent: the API is trusted but not relied upon.
-    """
-    return (
-        wallpaper.purity.strip().lower() == SFW_PURITY_NAME
-        and wallpaper.width >= settings.min_width
-        and wallpaper.height >= settings.min_height
-        and wallpaper.favourites >= settings.min_favourites
-        and _matches_an_allowed_ratio(wallpaper, settings.allowed_ratios)
-    )
-
-
-def _matches_an_allowed_ratio(wallpaper: Wallpaper, allowed: Sequence[str]) -> bool:
-    """Whether the **Wallpaper**'s own shape is within `RATIO_TOLERANCE` of an allowed ratio.
-
-    Computed from width and height, not Wallhaven's `ratio`, which is rounded; a band because Wallhaven's
-    `ratios=` buckets: a 3440x1440 is 2.39 and served under `21x9`.
-    """
-    if wallpaper.height <= 0:
-        return False
-    shape = wallpaper.width / wallpaper.height
-    return any(
-        abs(shape - named) <= RATIO_TOLERANCE
-        for named in (_ratio_value(ratio) for ratio in allowed)
-        if named is not None
-    )
-
-
-def _ratio_value(named: str) -> float | None:
-    """`"16x9"` as 1.777…, or `None`; it is also reached with whatever a hand-edited row holds."""
-    width, _, height = named.partition("x")
-    try:
-        return int(width) / int(height)
-    except ValueError, ZeroDivisionError:
-        return None
 
 
 LIBRARY_FILE_NAME = re.compile(r"[A-Za-z0-9]+\.[a-z0-9]{1,5}")
@@ -1354,7 +1019,7 @@ def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
         id=str(batch["id"]),
         size=int(batch["size"]),
         created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
-        wallpapers=tuple(_wallpaper_from_row(row) for row in rows),
+        wallpapers=tuple(wallpaper_from_row(row) for row in rows),
         drafts=_load_drafts(connection, str(batch["id"])),
         # A **Batch** minted before migration 6 has NULL here, and its tiles go unlabelled.
         zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
@@ -1369,72 +1034,10 @@ def _load_drafts(connection: sqlite3.Connection, batch_id: str) -> dict[str, Ver
     return {str(row["wallpaper_id"]): Verdict(str(row["verdict"])) for row in rows}
 
 
-def _wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
-    return Wallpaper(
-        id=str(row["id"]),
-        width=int(row["width"]),
-        height=int(row["height"]),
-        ratio=str(row["ratio"]),
-        category=str(row["category"]),
-        purity=str(row["purity"]),
-        favourites=int(row["favourites"]),
-        colours=tuple(str(row["colours"]).split(",")) if row["colours"] else (),
-        thumbnail_url=str(row["thumbnail_url"]),
-        full_url=str(row["full_url"]),
-        page_url=str(row["page_url"]),
-    )
-
-
 def _url_suffix(url: str, *, default: str = ".jpg") -> str:
     """The file extension of a URL's path, ignoring any query string."""
     return PurePosixPath(urlsplit(url).path).suffix or default
 
-
-def _distinct(wallpapers: Sequence[Wallpaper]) -> list[Wallpaper]:
-    """Distinct **Wallpapers** by ID, first occurrence winning: a random search can repeat one."""
-    seen: set[str] = set()
-    unique: list[Wallpaper] = []
-    for wallpaper in wallpapers:
-        if wallpaper.id not in seen:
-            seen.add(wallpaper.id)
-            unique.append(wallpaper)
-    return unique
-
-
-def _wallpaper_row(wallpaper: Wallpaper) -> tuple[str | int, ...]:
-    return (
-        wallpaper.id,
-        wallpaper.width,
-        wallpaper.height,
-        wallpaper.ratio,
-        wallpaper.category,
-        wallpaper.purity,
-        wallpaper.favourites,
-        ",".join(wallpaper.colours),
-        wallpaper.thumbnail_url,
-        wallpaper.full_url,
-        wallpaper.page_url,
-    )
-
-
-_ADMIT_TO_POOL = f"""
-INSERT INTO pool (wallpaper_id, fetched_at, source)
-SELECT :id, :fetched_at, :source
-WHERE :id NOT IN ({decisions.MENTIONED})
-ON CONFLICT (wallpaper_id) DO NOTHING
-"""
-"""Admit unless the **Decision log** mentions it at all, a legacy `cleared` entry included (ADR 0016).
-
-`DO NOTHING`, so `fetched_at` stays the first arrival.
-"""
-
-_SELECT_POOL_WALLPAPERS = """
-SELECT w.*
-FROM pool
-JOIN wallpapers AS w ON w.id = pool.wallpaper_id
-ORDER BY pool.rowid
-"""
-"""The whole **Pool**, in a fixed order, so a seeded draw is reproducible."""
 
 _SELECT_POOL_THUMBNAILS = """
 SELECT w.id, w.thumbnail_url
@@ -1472,19 +1075,9 @@ WHERE batch_id = ?
 """
 """Select-all as one statement, read inside the same transaction as the delete."""
 
-_UPSERT_WALLPAPER = """
-INSERT INTO wallpapers
-    (id, width, height, ratio, category, purity, favourites, colours, thumbnail_url, full_url, page_url)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (id) DO UPDATE SET
-    width = excluded.width,
-    height = excluded.height,
-    ratio = excluded.ratio,
-    category = excluded.category,
-    purity = excluded.purity,
-    favourites = excluded.favourites,
-    colours = excluded.colours,
-    thumbnail_url = excluded.thumbnail_url,
-    full_url = excluded.full_url,
-    page_url = excluded.page_url
-"""
+
+def gap_needed(last_fetch: float | None, *, now: float, gap: float = THUMBNAIL_GAP_SECONDS) -> float:
+    """Seconds to wait before the next thumbnail fetch, or zero. A gap, not a window."""
+    if last_fetch is None:
+        return 0.0
+    return max(0.0, last_fetch + gap - now)

@@ -262,7 +262,7 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
     """Most needed on an empty page, where an empty **Pool** and a dead refill look alike. A **Score** from
     the fallback looks like one from the model, so the provider's notice goes beside it."""
     harness = make_harness(db_path, fill_pool=fill_pool)
-    status = harness.core.refill_status()
+    status = harness.core.refill.status()
 
     with serving(harness) as client:
         text = client.get("/batch").text

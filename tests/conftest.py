@@ -105,7 +105,7 @@ class Harness:
     def fill_pool(self, steps: int = 1) -> None:
         """Run the refill by hand, `steps` **API calls** worth. Never the thread."""
         for _ in range(steps):
-            self.core.refill_step()
+            self.core.refill.step()
 
 
 def make_harness(
@@ -158,6 +158,7 @@ def make_harness(
         library=fake_library if library is None else library,
         similarity=embeddings,
         random_source=SeededRandom(seed),
+        refill_random_source=SeededRandom(seed),
         clock=clock,
     )
     harness = Harness(

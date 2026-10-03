@@ -1,6 +1,6 @@
 """The settings rules, through `settings` alone: a real database, no Core service. One refusal table across
 the fields, what is accepted, a partial update, a restart, and a refusal that writes nothing; and which
-**Mixes** can be deleted. What each **Filter** excludes is `test_pool_and_refill.py`; the **Mix** rules in a
+**Mixes** can be deleted. What each **Filter** excludes is `test_pool.py`; the **Mix** rules in a
 **Batch** are `test_mix.py`.
 """
 

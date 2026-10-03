@@ -67,7 +67,7 @@ def test_migration_retires_every_pool_member_the_decision_log_already_mentions(d
 
     after = make_harness(db_path, fill_pool=0)
 
-    assert after.core.refill_status().pool_size == 9
+    assert after.core.refill.status().pool_size == 9
     batch = after.core.get_next_batch()
     assert isinstance(batch, Batch)
     assert not {w.id for w in batch.wallpapers} & {"wp0000", "wp0001", "wp0002"}

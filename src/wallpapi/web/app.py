@@ -183,7 +183,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
                 status_code=HTTPStatus.CONFLICT if already else HTTPStatus.NOT_FOUND,
             )
         context: dict[str, object] = {
-            "status": core.refill_status(),
+            "status": core.refill.status(),
             "similarity_notice": core.similarity_notice(),
         }
         if isinstance(result, Batch):
