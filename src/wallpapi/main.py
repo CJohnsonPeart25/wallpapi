@@ -39,16 +39,21 @@ def build_similarity(root: Path) -> Embeddings:
 
 
 def build_core(home: Path | None = None) -> CoreService:
-    """The real Core service. The seed is fresh per boot unless `WALLPAPI_SEED` pins it."""
+    """The real Core service. The seed is fresh per boot unless `WALLPAPI_SEED` pins it; the Refill draws its
+    own stream from the one after it.
+    """
     root = wallpapi_home() if home is None else home
     root.mkdir(parents=True, exist_ok=True)
     pinned = os.environ.get("WALLPAPI_SEED")
+    seed = int(pinned) if pinned else secrets.randbits(64)
     return CoreService(
         db_path=root / "wallpapi.db",
         wallhaven=WallhavenClient(),
         library=DownloadingLibraryWriter(),
         similarity=build_similarity(root),
-        random_source=SeededRandom(int(pinned) if pinned else secrets.randbits(64)),
+        random_source=SeededRandom(seed),
+        # Its own stream, so a refill step never changes which **Batch** a seed draws.
+        refill_random_source=SeededRandom(seed + 1),
         clock=SystemClock(),
     )
 

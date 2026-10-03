@@ -1,8 +1,9 @@
 """The three background threads: they start with the app, run their loop, and stop when told.
 
-Everything the loops *decide* is a Core service method the other modules drive by hand. What is left here is
-what a fake cannot stand in for: a loop on another thread, and a shutdown that has to end it. Every wait is on
-an event a fake sets, never a sleep, and fails the test rather than hanging.
+What the loops *decide* belongs to their modules (the pool's refill, the similarity upkeep, the Core
+service's downloader), which the other tests drive by hand. What is left here is what a fake cannot stand in
+for: a loop on another thread, and a shutdown that has to end it. Every wait is on an event a fake sets, never
+a sleep, and fails the test rather than hanging.
 """
 
 from __future__ import annotations
@@ -14,17 +15,22 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import SOURCE, make_harness
+from tests.conftest import SOURCE, Harness, make_harness
 from tests.fakes import catalogue_of
-from wallpapi.refill import JOIN_TIMEOUT, RefillThread
+from wallpapi import core, pool, similarity
+from wallpapi.background import BackgroundLoop
+from wallpapi.pool import JOIN_TIMEOUT
 from wallpapi.similarity import CAUGHT_UP
-from wallpapi.similarity_thread import SimilarityThread
-from wallpapi.thumbnail_thread import THREAD_NAME, ThumbnailThread
 from wallpapi.web.app import create_app
 
 
 def _running(name: str) -> bool:
     return any(thread.name == name for thread in threading.enumerate())
+
+
+def _loop_named(harness: Harness, name: str) -> BackgroundLoop:
+    (loop,) = [loop for loop in harness.core.background_loops() if loop.name == name]
+    return loop
 
 
 def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> None:
@@ -37,10 +43,10 @@ def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> N
     with TestClient(app) as client:
         response = client.get("/batch")
         assert response.status_code == 200
-        assert harness.core.refill_status().running, "the lifespan should have started the thread"
+        assert harness.core.refill.status().running, "the lifespan should have started the thread"
         assert "Refill idle" in response.text
 
-    assert not harness.core.refill_status().running, "shutdown should have joined the thread"
+    assert not harness.core.refill.status().running, "shutdown should have joined the thread"
 
 
 def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> None:
@@ -52,7 +58,7 @@ def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> 
         client.get("/batch")
         assert harness.wallhaven.searched.wait(JOIN_TIMEOUT), "the thread should have searched"
 
-    assert harness.core.refill_status().pool_size == 24
+    assert harness.core.refill.status().pool_size == 24
 
 
 def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Path) -> None:
@@ -84,7 +90,7 @@ def test_a_backlog_is_worked_through_without_waiting(db_path: Path) -> None:
     harness.core.thumbnail_dir.mkdir(parents=True, exist_ok=True)
     for name in ("wp0001", "wp0002", "wp0003"):
         (harness.core.thumbnail_dir / f"{name}.jpg").write_bytes(b"thumbnail")
-    upkeep = SimilarityThread(harness.core)
+    upkeep = _loop_named(harness, similarity.THREAD_NAME)
 
     upkeep.start()
     try:
@@ -104,11 +110,11 @@ def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_
 
     with TestClient(app):
         assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "the downloader should have fetched"
-        assert _running(THREAD_NAME)
+        assert _running(core.THUMBNAIL_THREAD_NAME)
 
     assert harness.wallhaven.thumbnail_threads
     assert set(harness.wallhaven.thumbnail_threads) == {"wallpapi-thumbnails"}
-    assert not _running(THREAD_NAME), "shutdown should have joined the downloader"
+    assert not _running(core.THUMBNAIL_THREAD_NAME), "shutdown should have joined the downloader"
 
 
 def test_without_the_refill_flag_no_downloader_starts(db_path: Path) -> None:
@@ -117,7 +123,7 @@ def test_without_the_refill_flag_no_downloader_starts(db_path: Path) -> None:
 
     with TestClient(app) as client:
         client.get("/batch")
-        assert not _running(THREAD_NAME)
+        assert not _running(core.THUMBNAIL_THREAD_NAME)
 
     assert harness.wallhaven.thumbnail_fetches == []
 
@@ -128,10 +134,10 @@ def test_a_stop_during_a_fetch_ends_the_downloader_once_the_fetch_returns(db_pat
     harness = make_harness(db_path, catalogue=catalogue_of(3))
     release = threading.Event()
     harness.wallhaven.hold_thumbnails = release
-    downloader = ThumbnailThread(harness.core)
+    downloader = _loop_named(harness, core.THUMBNAIL_THREAD_NAME)
     downloader.start()
     assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "a fetch should be in flight"
-    (thread,) = [t for t in threading.enumerate() if t.name == THREAD_NAME]
+    (thread,) = [t for t in threading.enumerate() if t.name == core.THUMBNAIL_THREAD_NAME]
 
     downloader.stop(timeout=0.0)
     release.set()
@@ -141,21 +147,12 @@ def test_a_stop_during_a_fetch_ends_the_downloader_once_the_fetch_returns(db_pat
     assert len(harness.wallhaven.thumbnail_fetches) == 1
 
 
-@pytest.mark.parametrize(
-    ("thread_type", "name"),
-    [
-        (RefillThread, "wallpapi-refill"),
-        (SimilarityThread, "wallpapi-similarity"),
-        (ThumbnailThread, THREAD_NAME),
-    ],
-)
-def test_starting_and_stopping_twice_is_harmless(
-    thread_type: type[RefillThread | SimilarityThread | ThumbnailThread], name: str, db_path: Path
-) -> None:
+@pytest.mark.parametrize("name", [pool.THREAD_NAME, similarity.THREAD_NAME, core.THUMBNAIL_THREAD_NAME])
+def test_starting_and_stopping_twice_is_harmless(name: str, db_path: Path) -> None:
     """A stop without a start, and a second stop, must not raise: shutdown paths get run twice."""
     harness = make_harness(db_path, fill_pool=0)
     harness.core.update_settings(pool_target_size=1)
-    thread = thread_type(harness.core)
+    thread = _loop_named(harness, name)
 
     thread.stop()
     thread.start()
@@ -164,6 +161,61 @@ def test_starting_and_stopping_twice_is_harmless(
     thread.stop()
 
     assert not _running(name)
+
+
+def test_the_lifespan_starts_the_loops_in_order_and_stops_them_in_reverse(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, str]] = []
+    start, stop = BackgroundLoop.start, BackgroundLoop.stop
+
+    def recording_start(self: BackgroundLoop) -> None:
+        events.append(("start", self.name))
+        start(self)
+
+    def recording_stop(self: BackgroundLoop, timeout: float | None = None) -> None:
+        events.append(("stop", self.name))
+        stop(self, timeout)
+
+    monkeypatch.setattr(BackgroundLoop, "start", recording_start)
+    monkeypatch.setattr(BackgroundLoop, "stop", recording_stop)
+    harness = make_harness(db_path, catalogue=catalogue_of(3))
+    harness.core.update_settings(pool_target_size=1)
+
+    with TestClient(create_app(harness.core, refill=True)):
+        pass
+
+    assert events == [
+        ("start", pool.THREAD_NAME),
+        ("start", similarity.THREAD_NAME),
+        ("start", core.THUMBNAIL_THREAD_NAME),
+        ("stop", core.THUMBNAIL_THREAD_NAME),
+        ("stop", similarity.THREAD_NAME),
+        ("stop", pool.THREAD_NAME),
+    ]
+
+
+def test_a_background_loop_runs_on_its_named_thread_until_stopped() -> None:
+    """The loop is handed the stop event; `stop` sets it and joins, and a second start or stop is harmless."""
+    entered = threading.Event()
+    ran_on: list[str] = []
+
+    def loop(stop_event: threading.Event) -> None:
+        ran_on.append(threading.current_thread().name)
+        entered.set()
+        stop_event.wait()
+
+    background = BackgroundLoop(loop, name="wallpapi-test-loop", join_timeout=JOIN_TIMEOUT)
+    background.start()
+    background.start()
+    assert entered.wait(JOIN_TIMEOUT), "the loop should have started"
+    assert _running("wallpapi-test-loop"), "the loop should still be waiting on its stop event"
+
+    background.stop()
+    background.stop()
+
+    assert ran_on == ["wallpapi-test-loop"]
+    assert not _running("wallpapi-test-loop")
 
 
 def _sleep_calls(path: Path) -> list[int]:

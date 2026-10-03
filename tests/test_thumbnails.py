@@ -16,9 +16,14 @@ import pytest
 
 from tests.conftest import Harness, make_harness
 from tests.fakes import WallhavenUnreachable, wallpaper
-from wallpapi.core import THUMBNAIL_BACKOFF_SECONDS, THUMBNAIL_IDLE_RECHECK_SECONDS, Batch
+from wallpapi.core import (
+    THUMBNAIL_BACKOFF_SECONDS,
+    THUMBNAIL_GAP_SECONDS,
+    THUMBNAIL_IDLE_RECHECK_SECONDS,
+    Batch,
+    gap_needed,
+)
 from wallpapi.model import Verdict, Wallpaper
-from wallpapi.ratelimit import THUMBNAIL_GAP_SECONDS
 from wallpapi.wallhaven import RateLimited, ThumbnailUnavailable
 
 BIG_THUMBNAIL = b"x" * (400 * 1024)
@@ -387,3 +392,18 @@ def test_the_notice_leaves_out_what_the_downloader_gave_up_on(db_path: Path) -> 
 
     assert set(harness.embed.seen) == {"cc0003", "bb0002"}
     assert harness.core.similarity_notice() is None
+
+
+@pytest.mark.parametrize(
+    ("last", "now", "wait"),
+    [
+        pytest.param(None, 100.0, 0.0, id="nothing fetched yet"),
+        pytest.param(10.0, 10.0, THUMBNAIL_GAP_SECONDS, id="straight after a fetch the whole gap is owed"),
+        pytest.param(10.0, 10.1, THUMBNAIL_GAP_SECONDS - 0.1, id="part of the gap gone is not owed again"),
+        pytest.param(10.0, 10.0 + THUMBNAIL_GAP_SECONDS, 0.0, id="the gap has passed"),
+        pytest.param(10.0, 99.0, 0.0, id="long after"),
+    ],
+)
+def test_the_thumbnail_gap(last: float | None, now: float, wait: float) -> None:
+    """One thumbnail at a time, a fixed gap apart."""
+    assert gap_needed(last, now=now) == pytest.approx(wait)  # pyright: ignore[reportUnknownMemberType]

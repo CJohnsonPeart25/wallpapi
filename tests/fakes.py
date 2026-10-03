@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi.core import LIKE_QUERY_PREFIX
 from wallpapi.model import Wallpaper
+from wallpapi.pool import LIKE_QUERY_PREFIX
 from wallpapi.wallhaven import RateLimited, SearchPage
 
 
@@ -63,7 +63,7 @@ class FakeWallhavenClient:
     the first N searches 429; `fail_from_call` fails every call from the Nth. `like_results` answers
     `q=like:<id>`, keyed by that ID, an unnamed one with an empty page. `failing_thumbnails` maps a URL to
     what fetching it raises and is mutable, so a test can watch a retry. `hold_thumbnails` keeps every
-    fetch in flight until a test sets it.
+    fetch in flight until a test sets it, and `hold_searches` every search.
     """
 
     def __init__(
@@ -97,6 +97,7 @@ class FakeWallhavenClient:
         self.hold_thumbnails: threading.Event | None = None
         self.searched = threading.Event()
         """Set by every search, so a thread test waits on an event rather than a guess."""
+        self.hold_searches: threading.Event | None = None
 
     def search(
         self,
@@ -123,6 +124,8 @@ class FakeWallhavenClient:
             }
         )
         self.searched.set()
+        if self.hold_searches is not None:
+            self.hold_searches.wait()
         if len(self.searches) <= self.rate_limited_calls:
             raise RateLimited(self.retry_after)
         if self.fail_from_call is not None and len(self.searches) >= self.fail_from_call:

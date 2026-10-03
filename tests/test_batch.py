@@ -12,8 +12,9 @@ import pytest
 
 from tests.conftest import FIXED_NOW, Harness, make_harness, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi.core import IDLE_RECHECK_SECONDS, Batch
+from wallpapi.core import Batch, BatchUnavailable
 from wallpapi.model import Verdict, Zone
+from wallpapi.pool import IDLE_RECHECK_SECONDS
 
 
 def live(harness: Harness) -> Batch:
@@ -99,11 +100,11 @@ def test_submitting_retires_every_shown_wallpaper_and_no_edit_brings_it_back(db_
 
     following = harness.core.submit_batch(first.id)
 
-    assert harness.core.refill_status().pool_size == 4
+    assert harness.core.refill.status().pool_size == 4
     assert isinstance(following, Batch)
     assert not {w.id for w in following.wallpapers} & shown
     assert harness.core.edit_verdict(liked, Verdict.FAVOURITE) is None
-    assert harness.core.refill_status().pool_size == 4
+    assert harness.core.refill.status().pool_size == 4
 
 
 def test_a_refill_that_meets_a_decided_wallpaper_again_does_not_readmit_it(db_path: Path) -> None:
@@ -116,7 +117,7 @@ def test_a_refill_that_meets_a_decided_wallpaper_again_does_not_readmit_it(db_pa
     harness.fill_pool(3)
 
     assert any(search["page"] == 1 for search in harness.wallhaven.searches[searched_before:])
-    assert harness.core.refill_status().pool_size == 0
+    assert harness.core.refill.status().pool_size == 0
 
 
 def test_a_wallpaper_whose_only_entry_is_a_legacy_clearance_is_not_readmitted(db_path: Path) -> None:
@@ -124,14 +125,14 @@ def test_a_wallpaper_whose_only_entry_is_a_legacy_clearance_is_not_readmitted(db
     Pruned by a **Filter**, cleared, and the **Filter** put back so the walk meets it again."""
     harness = make_harness(db_path, catalogue=(wallpaper("cleared", width=2560, height=1440),))
     harness.core.update_settings(min_width=3840)
-    assert harness.core.refill_status().pool_size == 0
+    assert harness.core.refill.status().pool_size == 0
     write_legacy_clearance(db_path, "cleared")
     assert harness.core.resolve_verdicts(["cleared"])["cleared"].verdict is None
     harness.core.update_settings(min_width=2560)
 
     harness.fill_pool(2)
 
-    assert harness.core.refill_status().pool_size == 0
+    assert harness.core.refill.status().pool_size == 0
 
 
 def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) -> None:
@@ -153,23 +154,84 @@ def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) 
 
 def test_lowering_the_target_below_the_pool_trims_nothing(harness: Harness) -> None:
     """A **Pool** above its target drains by submission rather than being cut."""
-    assert harness.core.refill_status().pool_size == 24
+    assert harness.core.refill.status().pool_size == 24
 
     harness.core.update_settings(pool_target_size=5)
 
-    status = harness.core.refill_status()
+    status = harness.core.refill.status()
     assert status.pool_size == 24
     assert status.at_target
-    assert harness.core.refill_wait() == IDLE_RECHECK_SECONDS
+    assert harness.core.refill.wait() == IDLE_RECHECK_SECONDS
 
 
 def test_a_submission_takes_a_pool_at_target_below_it_and_wakes_the_refill(harness: Harness) -> None:
     """The bug ADR 0016 was written for: at target nothing ever left the **Pool**, so the refill idled
     for good."""
     harness.core.update_settings(pool_target_size=24)
-    assert harness.core.refill_wait() == IDLE_RECHECK_SECONDS
+    assert harness.core.refill.wait() == IDLE_RECHECK_SECONDS
 
     harness.core.submit_batch(live(harness).id)
 
-    assert not harness.core.refill_status().at_target
-    assert harness.core.refill_wait() != IDLE_RECHECK_SECONDS
+    assert not harness.core.refill.status().at_target
+    assert harness.core.refill.wait() != IDLE_RECHECK_SECONDS
+
+
+def test_a_batch_is_drawn_from_the_pool_without_calling_wallhaven(harness: Harness) -> None:
+    """The page load path makes no **API call**, so there is no network call on it to fail with a 500."""
+    calls_before = len(harness.wallhaven.searches)
+
+    batch = live(harness)
+
+    assert len(batch.wallpapers) == 8
+    assert len(harness.wallhaven.searches) == calls_before
+
+
+def test_changing_the_filters_prunes_the_pool_in_the_same_save(db_path: Path) -> None:
+    """What each **Filter** excludes is `test_pool.py`'s; this is that the settings save prunes at all."""
+    harness = make_harness(
+        db_path,
+        catalogue=(wallpaper("modest", width=2560, height=1440), wallpaper("huge", width=3840, height=2160)),
+    )
+
+    harness.core.update_settings(min_width=3840, min_height=2160)
+
+    assert [w.id for w in live(harness).wallpapers] == ["huge"]
+
+
+def test_pruning_leaves_the_live_batch_and_its_drafts_alone(db_path: Path) -> None:
+    """A **Batch** holds its own rows, so a **Pool** row going cannot take a tile or its mark with it."""
+    harness = make_harness(db_path, catalogue=catalogue_of(10))
+    first = live(harness)
+    marked = first.wallpapers[0].id
+    harness.core.set_draft_verdict(first.id, marked, Verdict.FAVOURITE)
+
+    harness.core.update_settings(min_width=3840, min_height=2160, allowed_ratios="1x1")
+
+    still_live = live(harness)
+    assert still_live.id == first.id
+    assert [w.id for w in still_live.wallpapers] == [w.id for w in first.wallpapers]
+    assert still_live.drafts[marked] is Verdict.FAVOURITE
+
+
+def test_an_empty_pool_after_a_failed_refill_says_wallhaven_is_unreachable(db_path: Path) -> None:
+    """The **Batch unavailable** result carries the error and when, read off the Refill's status, which is
+    more help than "not working"."""
+    harness = make_harness(db_path, catalogue=catalogue_of(24), fail_from_call=1, fill_pool=0)
+
+    harness.fill_pool(1)
+
+    result = harness.core.get_next_batch()
+    assert isinstance(result, BatchUnavailable)
+    assert result.reason is BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE
+    assert result.error and "set up to fail" in result.error
+    assert result.error_at == harness.clock.now()
+
+
+def test_an_empty_pool_with_no_refill_yet_says_so(db_path: Path) -> None:
+    harness = make_harness(db_path, fill_pool=0)
+
+    result = harness.core.get_next_batch()
+
+    assert isinstance(result, BatchUnavailable)
+    assert result.reason is BatchUnavailable.Reason.POOL_EMPTY
+    assert result.error is None
