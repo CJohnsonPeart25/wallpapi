@@ -45,7 +45,10 @@ REFUSALS = [
     *[
         ("allowed_ratios", bad, Reason.ALLOWED_RATIOS_INVALID)
         for bad in ("", "   ", "16:9", "16x9,widescreen", "4000x3000", ",")
-    ],
+    ],  # `float()` accepts nan and inf, and a NaN radius would turn the whole Pool Unknown, looking like a
+    # broken Similarity provider rather than a bad setting.
+    *[("similarity_radius", bad, Reason.SIMILARITY_RADIUS_INVALID) for bad in ("-0.1", "1.5", "wide", "nan")],
+    *[("similarity_decay", bad, Reason.SIMILARITY_DECAY_INVALID) for bad in ("-1", "1000", "fast", "inf")],
 ]
 
 
