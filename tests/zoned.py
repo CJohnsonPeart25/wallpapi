@@ -23,13 +23,14 @@ is handed back rather than rerolled (ADR 0002), so a test that left one behind w
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from tests.conftest import Harness, make_harness
 from tests.fakes import wallpaper
 from wallpapi.core import Batch
-from wallpapi.model import Verdict, Wallpaper
+from wallpapi.model import Verdict, Wallpaper, Zone
 
 FAVOURED = "sd0000"
 LOATHED = "sd0001"
@@ -66,6 +67,18 @@ class ZonedPool:
     bangers: tuple[str, ...]
     duds: tuple[str, ...]
     unknowns: tuple[str, ...]
+
+
+def drawn(pool: ZonedPool, size: int) -> Batch:
+    """One **Batch** of `size` off an arranged **Pool**."""
+    pool.harness.core.update_settings(batch_size=size)
+    batch = pool.harness.core.get_next_batch()
+    assert isinstance(batch, Batch), batch
+    return batch
+
+
+def zone_counts(batch: Batch) -> Counter[Zone]:
+    return Counter(batch.zones[w.id] for w in batch.wallpapers)
 
 
 def zoned_pool(

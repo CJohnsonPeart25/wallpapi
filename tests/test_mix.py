@@ -20,7 +20,7 @@ import pytest
 
 from tests.conftest import make_harness
 from tests.fakes import catalogue_of
-from tests.zoned import FAVOURED, NEAR, ZonedPool, zoned_pool
+from tests.zoned import FAVOURED, NEAR, drawn, zone_counts, zoned_pool
 from wallpapi.core import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX, Batch, SettingsRefused
 from wallpapi.model import Zone
 
@@ -33,18 +33,6 @@ it showed, which is a **Verdict**, which moves the very **Zones** the test is co
 is a third of a second and forty independent rolls, which at a **Batch** of 32 is plenty: 31 of every 32
 slots are guaranteed, so the rolls are all there is to average over.
 """
-
-
-def _drawn(pool: ZonedPool, size: int) -> Batch:
-    """One **Batch** of `size` off an arranged **Pool**."""
-    pool.harness.core.update_settings(batch_size=size)
-    batch = pool.harness.core.get_next_batch()
-    assert isinstance(batch, Batch), batch
-    return batch
-
-
-def _zone_counts(batch: Batch) -> Counter[Zone]:
-    return Counter(batch.zones[w.id] for w in batch.wallpapers)
 
 
 def test_the_mixes_survive_a_restart(db_path: Path) -> None:
@@ -84,7 +72,7 @@ def test_a_well_stocked_pool_gives_a_batch_the_shape_of_the_mix(db_path: Path) -
     """
     pool = zoned_pool(db_path, bangers=30, duds=30, unknowns=60)
 
-    counts = _zone_counts(_drawn(pool, 32))
+    counts = zone_counts(drawn(pool, 32))
 
     assert sum(counts.values()) == 32
     assert counts[Zone.UNKNOWN] >= 24
@@ -97,7 +85,7 @@ def test_no_wallpaper_is_shown_twice_in_one_batch(db_path: Path) -> None:
     drawn from, is exactly the shape that produces a duplicate if the draw ever restarts a **Zone**."""
     pool = zoned_pool(db_path, bangers=4, duds=4, unknowns=8)
 
-    batch = _drawn(pool, 16)
+    batch = drawn(pool, 16)
 
     assert len({w.id for w in batch.wallpapers}) == 16
 
@@ -108,7 +96,7 @@ def test_with_no_bangers_at_all_the_batch_is_every_unknown_there_is(db_path: Pat
     and the shortfall goes to **Unknown** first."""
     pool = zoned_pool(db_path, bangers=0, duds=0, unknowns=20)
 
-    counts = _zone_counts(_drawn(pool, 8))
+    counts = zone_counts(drawn(pool, 8))
 
     assert counts == Counter({Zone.UNKNOWN: 8})
 
@@ -122,7 +110,7 @@ def test_with_no_unknowns_the_shortfall_goes_to_bangers_before_duds(db_path: Pat
     """
     pool = zoned_pool(db_path, bangers=4, duds=20, unknowns=0)
 
-    counts = _zone_counts(_drawn(pool, 8))
+    counts = zone_counts(drawn(pool, 8))
 
     assert counts[Zone.UNKNOWN] == 0
     assert counts[Zone.BANGER] == 4
@@ -139,7 +127,7 @@ def test_a_zone_that_falls_short_is_made_up_from_unknown(db_path: Path) -> None:
     """
     pool = zoned_pool(db_path, bangers=1, duds=0, unknowns=20)
 
-    counts = _zone_counts(_drawn(pool, 8))
+    counts = zone_counts(drawn(pool, 8))
 
     assert counts[Zone.DUD] == 0
     assert counts[Zone.BANGER] <= 1
@@ -154,7 +142,7 @@ def test_a_pool_smaller_than_the_batch_ships_the_smaller_batch(db_path: Path) ->
     """
     pool = zoned_pool(db_path, bangers=1, duds=1, unknowns=3)
 
-    batch = _drawn(pool, 32)
+    batch = drawn(pool, 32)
 
     assert len(batch.wallpapers) == 5
     assert len({w.id for w in batch.wallpapers}) == 5
@@ -179,12 +167,12 @@ def test_banger_slots_take_the_highest_scores(db_path: Path) -> None:
     )
     pool.harness.core.update_settings(active_mix="refine")
 
-    batch = _drawn(pool, 6)
+    batch = drawn(pool, 6)
 
     ranked = sorted(graded, key=lambda banger: graded[banger], reverse=True)
-    drawn = {w.id for w in batch.wallpapers if batch.zones[w.id] is Zone.BANGER}
-    assert len(drawn) >= 4
-    assert drawn == set(ranked[: len(drawn)])
+    taken = {w.id for w in batch.wallpapers if batch.zones[w.id] is Zone.BANGER}
+    assert len(taken) >= 4
+    assert taken == set(ranked[: len(taken)])
 
 
 def test_unknown_slots_are_sampled_rather_than_taken_in_order(tmp_path: Path) -> None:
@@ -198,12 +186,12 @@ def test_unknown_slots_are_sampled_rather_than_taken_in_order(tmp_path: Path) ->
     be the live one handed back (ADR 0002), which would pass this test while proving nothing.
     """
 
-    def drawn(name: str, seed: int) -> set[str]:
+    def ids_drawn(name: str, seed: int) -> set[str]:
         pool = zoned_pool(tmp_path / name, bangers=0, duds=0, unknowns=40, seed=seed)
-        return {w.id for w in _drawn(pool, 8).wallpapers}
+        return {w.id for w in drawn(pool, 8).wallpapers}
 
-    assert drawn("a.db", 1) != drawn("b.db", 2)
-    assert drawn("c.db", 1) == drawn("d.db", 1)
+    assert ids_drawn("a.db", 1) != ids_drawn("b.db", 2)
+    assert ids_drawn("c.db", 1) == ids_drawn("d.db", 1)
 
 
 def test_the_long_run_zone_proportions_are_the_active_mix(tmp_path: Path) -> None:
@@ -216,7 +204,7 @@ def test_the_long_run_zone_proportions_are_the_active_mix(tmp_path: Path) -> Non
     counted: Counter[Zone] = Counter()
     for seed in range(DRAWS):
         pool = zoned_pool(tmp_path / f"{seed}.db", bangers=30, duds=30, unknowns=60, seed=seed)
-        counted.update(_zone_counts(_drawn(pool, 32)))
+        counted.update(zone_counts(drawn(pool, 32)))
 
     slots = sum(counted.values())
     assert slots == DRAWS * 32
@@ -231,11 +219,11 @@ def test_switching_to_refine_changes_what_the_next_batch_is_made_of(tmp_path: Pa
     The same arranged **Pool** under both **Mixes**, so the only thing that differs between the two
     **Batches** is the **Mix** they were drawn with.
     """
-    exploring = _zone_counts(_drawn(zoned_pool(tmp_path / "a.db", bangers=30, duds=30, unknowns=60), 32))
+    exploring = zone_counts(drawn(zoned_pool(tmp_path / "a.db", bangers=30, duds=30, unknowns=60), 32))
 
     refining = zoned_pool(tmp_path / "b.db", bangers=30, duds=30, unknowns=60)
     refining.harness.core.update_settings(active_mix="refine")
-    counts = _zone_counts(_drawn(refining, 32))
+    counts = zone_counts(drawn(refining, 32))
 
     assert exploring[Zone.UNKNOWN] >= 24
     assert counts[Zone.BANGER] >= 22
@@ -250,7 +238,7 @@ def test_switching_leaves_the_batch_on_screen_alone(db_path: Path) -> None:
     page load gives back.
     """
     pool = zoned_pool(db_path, bangers=30, duds=30, unknowns=60)
-    live = _drawn(pool, 32)
+    live = drawn(pool, 32)
 
     pool.harness.core.update_settings(active_mix="refine")
     reloaded = pool.harness.core.get_next_batch()
@@ -271,7 +259,7 @@ def test_a_shortfall_records_the_zone_the_wallpaper_came_from(db_path: Path) -> 
     """
     pool = zoned_pool(db_path, bangers=0, duds=0, unknowns=20)
 
-    batch = _drawn(pool, 8)
+    batch = drawn(pool, 8)
 
     assert set(batch.zones.values()) == {Zone.UNKNOWN}
     classified = {s.wallpaper.id: s.zone for s in pool.harness.core.classify_pool()}

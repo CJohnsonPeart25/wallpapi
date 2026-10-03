@@ -17,12 +17,11 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import make_harness
-from tests.zoned import ZonedPool, zoned_pool
+from tests.zoned import drawn, zone_counts, zoned_pool
 from wallpapi.core import (
     EXPLORE_MIX,
     MAX_MIX_NAME_LENGTH,
     REFINE_MIX,
-    Batch,
     SettingsRefused,
 )
 from wallpapi.model import Mix, Zone
@@ -34,18 +33,6 @@ and 1 — so what a **Batch** drawn under it looks like is arithmetic rather tha
 EXACT_BATCH = 20
 """A size that divides every percentage of `EDITED_EXPLORE` exactly, so there is no leftover **Slot** and
 the assertion can be an equality instead of a bound."""
-
-
-def _drawn(pool: ZonedPool, size: int) -> Batch:
-    """One **Batch** of `size` off an arranged **Pool**."""
-    pool.harness.core.update_settings(batch_size=size)
-    batch = pool.harness.core.get_next_batch()
-    assert isinstance(batch, Batch), batch
-    return batch
-
-
-def _zone_counts(batch: Batch) -> Counter[Zone]:
-    return Counter(batch.zones[w.id] for w in batch.wallpapers)
 
 
 # -- editing what is there -------------------------------------------------------------------------
@@ -65,7 +52,7 @@ def test_editing_explore_changes_what_the_next_batch_is_made_of(db_path: Path) -
 
     assert saved == EDITED_EXPLORE
     assert pool.harness.core.active_mix() == EDITED_EXPLORE
-    counts = _zone_counts(_drawn(pool, EXACT_BATCH))
+    counts = zone_counts(drawn(pool, EXACT_BATCH))
     assert counts == Counter({Zone.UNKNOWN: 10, Zone.BANGER: 9, Zone.DUD: 1})
 
 
@@ -113,7 +100,7 @@ def test_a_custom_mix_can_be_made_selected_and_drawn_under(db_path: Path) -> Non
 
     assert made == Mix(name="duds only", unknown=0, banger=0, dud=100)
     assert pool.harness.core.active_mix() == made
-    assert _zone_counts(_drawn(pool, EXACT_BATCH)) == Counter({Zone.DUD: EXACT_BATCH})
+    assert zone_counts(drawn(pool, EXACT_BATCH)) == Counter({Zone.DUD: EXACT_BATCH})
 
 
 def test_a_custom_mix_that_is_not_active_can_be_deleted(db_path: Path) -> None:
