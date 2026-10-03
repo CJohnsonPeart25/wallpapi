@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 SCHEMA_VERSION = 10
-"""The last numbered step. Steps chain `if applied < n` in order, so the numbers stay contiguous."""
+"""The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
