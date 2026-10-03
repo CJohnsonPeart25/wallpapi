@@ -2,9 +2,9 @@
 stocked.
 
 The Refill owns its state, its lock, its random source and its rate limiter; nothing outside reads its fields.
-The **Pool**'s own storage (admit, prune, size, members) is a set of functions taking a connection, and the
-**Filters** check and the ratio band live beside them because admitting and pruning share them (ADR 0005, ADR
-0016).
+The **Pool**'s own storage (admit, prune, retire, size, members) is a set of functions taking a connection,
+and the **Filters** check and the ratio band live beside them because admitting and pruning share them (ADR
+0005, ADR 0016).
 """
 
 from __future__ import annotations
@@ -379,6 +379,13 @@ def prune(write: sqlite3.Connection, current: Settings) -> None:
     failing = [(w.id,) for w in members(write) if not _passes_filters(w, current)]
     if failing:
         write.executemany("DELETE FROM pool WHERE wallpaper_id = ?", failing)
+
+
+def retire(write: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> None:
+    """Drop these **Wallpapers** from the **Pool** inside the caller's transaction: what a submitted **Batch**
+    showed, decided once (ADR 0016). Membership only, as with `prune`.
+    """
+    write.executemany("DELETE FROM pool WHERE wallpaper_id = ?", [(w,) for w in wallpaper_ids])
 
 
 def size(connection: sqlite3.Connection) -> int:

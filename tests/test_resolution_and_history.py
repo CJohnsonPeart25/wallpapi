@@ -230,7 +230,7 @@ def test_unmarking_a_reshown_wallpaper_overturns_its_verdict(
     assert batch.drafts == {SUBJECT: Verdict.FAVOURITE}
 
     if select_none:
-        assert harness.core.set_all_draft_verdicts(batch.id, None) is None
+        assert isinstance(harness.core.set_all_draft_verdicts(batch.id, None), Batch)
         harness.core.submit_batch(batch.id)
     else:
         submit_with(harness, {SUBJECT: None})

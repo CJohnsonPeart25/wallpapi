@@ -1,18 +1,16 @@
-"""Minting a **Batch**, the **Zones** it records, and deciding once (ADR 0016): the **Pool** holds no
+"""A **Batch** and the **Pool** through the Core service: deciding once (ADR 0016), so the **Pool** holds no
 **Wallpaper** the **Decision log** mentions, kept at submission, at admission and (in `test_migrations.py`)
-at migration.
+at migration; and what a submission leaves behind. The draw, the **Draft Batch** and submit itself are
+`test_batches.py`'s.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 from pathlib import Path
 
-import pytest
-
-from tests.conftest import FIXED_NOW, Harness, make_harness, write_legacy_clearance
+from tests.conftest import Harness, make_harness, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi.core import Batch, BatchUnavailable
+from wallpapi.core import Batch
 from wallpapi.model import Verdict, Zone
 from wallpapi.pool import IDLE_RECHECK_SECONDS
 
@@ -21,68 +19,6 @@ def live(harness: Harness) -> Batch:
     batch = harness.core.get_next_batch()
     assert isinstance(batch, Batch)
     return batch
-
-
-@pytest.mark.parametrize("size", [None, 2], ids=["the seeded size", "a size the user set"])
-def test_a_batch_has_the_configured_size(db_path: Path, size: int | None) -> None:
-    harness = make_harness(db_path)
-    if size is not None:
-        harness.core.update_settings(batch_size=size)
-
-    batch = live(harness)
-
-    assert len(batch.wallpapers) == batch.size == harness.core.get_settings().batch_size
-
-
-def test_a_batch_carries_its_id_and_a_utc_timestamp_from_the_clock(harness: Harness) -> None:
-    """Never `datetime.now()` (invariant 5): a naive or machine-clock time fails here, and the ISO 8601
-    round trip is what the **Decision log** stores."""
-    harness.clock.advance(3600)
-    expected = FIXED_NOW + dt.timedelta(hours=1)
-
-    batch = live(harness)
-
-    assert batch.id
-    assert batch.created_at == expected
-    assert batch.created_at.tzinfo is dt.UTC
-    assert dt.datetime.fromisoformat(batch.created_at.isoformat()) == expected
-    assert all(w.thumbnail_url for w in batch.wallpapers)
-
-
-def test_asking_again_returns_the_live_batch_rather_than_minting_another(harness: Harness) -> None:
-    """A refresh is not a decision: minting per page load would reroll what the user was looking at. Read
-    back from storage, so the **Zones** it was minted with come back too. The one search is the harness
-    priming the **Pool**."""
-    first = live(harness)
-    second = live(harness)
-
-    assert second.id == first.id
-    assert [w.id for w in second.wallpapers] == [w.id for w in first.wallpapers]
-    assert second.zones == first.zones
-    assert len(harness.wallhaven.searches) == 1
-
-
-def test_every_wallpaper_in_a_batch_comes_with_the_zone_it_was_drawn_from(harness: Harness) -> None:
-    batch = live(harness)
-
-    assert {w.id for w in batch.wallpapers} == set(batch.zones)
-    assert set(batch.zones.values()) == {Zone.UNKNOWN}
-
-
-def test_the_zones_recorded_are_the_ones_the_pool_was_classified_into(harness: Harness) -> None:
-    """Recorded at mint time, so the label is what the draw used rather than a second opinion. Every
-    **Wallpaper** is made to resemble the one **Favourite**, well inside the radius."""
-    first = live(harness)
-    loved = first.wallpapers[0].id
-    harness.similarity.similarity_by_pair.update({(f"wp{n:04d}", loved): 0.95 for n in range(24)})
-    harness.core.set_draft_verdict(first.id, loved, Verdict.FAVOURITE)
-
-    following = harness.core.submit_batch(first.id)
-
-    assert isinstance(following, Batch)
-    classified = {scored.wallpaper.id: scored.zone for scored in harness.core.classify_pool()}
-    assert following.zones == {w.id: classified[w.id] for w in following.wallpapers}
-    assert set(following.zones.values()) == {Zone.BANGER}
 
 
 # -- deciding once -----------------------------------------------------------------------------------
@@ -98,10 +34,10 @@ def test_submitting_retires_every_shown_wallpaper_and_no_edit_brings_it_back(db_
     harness.core.set_draft_verdict(first.id, liked, Verdict.LIKE)
     harness.core.set_draft_verdict(first.id, banned, Verdict.BAN)
 
-    following = harness.core.submit_batch(first.id)
+    harness.core.submit_batch(first.id)
 
+    following = live(harness)
     assert harness.core.refill.status().pool_size == 4
-    assert isinstance(following, Batch)
     assert not {w.id for w in following.wallpapers} & shown
     assert harness.core.edit_verdict(liked, Verdict.FAVOURITE) is None
     assert harness.core.refill.status().pool_size == 4
@@ -142,7 +78,7 @@ def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) 
     alike = {(a, b): 0.95 for a in ids for b in ids if a != b}
     harness = make_harness(db_path, catalogue=catalogue_of(9), similarities=alike)
     first = live(harness)
-    assert harness.core.set_all_draft_verdicts(first.id, Verdict.BAN) is None
+    harness.core.set_all_draft_verdicts(first.id, Verdict.BAN)
 
     harness.core.submit_batch(first.id)
 
@@ -213,25 +149,30 @@ def test_pruning_leaves_the_live_batch_and_its_drafts_alone(db_path: Path) -> No
     assert still_live.drafts[marked] is Verdict.FAVOURITE
 
 
-def test_an_empty_pool_after_a_failed_refill_says_wallhaven_is_unreachable(db_path: Path) -> None:
-    """The **Batch unavailable** result carries the error and when, read off the Refill's status, which is
-    more help than "not working"."""
-    harness = make_harness(db_path, catalogue=catalogue_of(24), fail_from_call=1, fill_pool=0)
+def test_a_second_ignore_is_appended_not_folded_into_the_first(db_path: Path) -> None:
+    """Append-only. **History** is the only way to decide a submitted **Wallpaper** again."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    first = live(harness)
+    harness.core.submit_batch(first.id)
 
-    harness.fill_pool(1)
+    for w in first.wallpapers:
+        assert harness.core.edit_verdict(w.id, Verdict.IGNORE) is None
 
-    result = harness.core.get_next_batch()
-    assert isinstance(result, BatchUnavailable)
-    assert result.reason is BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE
-    assert result.error and "set up to fail" in result.error
-    assert result.error_at == harness.clock.now()
+    history = harness.core.list_history()
+    assert len(history) == 16
+    for w in first.wallpapers:
+        assert [e.entry for e in history if e.wallpaper_id == w.id] == [Verdict.IGNORE, Verdict.IGNORE]
 
 
-def test_an_empty_pool_with_no_refill_yet_says_so(db_path: Path) -> None:
-    harness = make_harness(db_path, fill_pool=0)
+def test_the_decision_log_survives_a_restart(db_path: Path) -> None:
+    """A second Core service over the same file, which also proves the migrations are idempotent."""
+    first_run = make_harness(db_path)
+    first_run.core.submit_batch(live(first_run).id)
+    recorded = first_run.core.list_history()
 
-    result = harness.core.get_next_batch()
+    restored = make_harness(db_path).core.list_history()
 
-    assert isinstance(result, BatchUnavailable)
-    assert result.reason is BatchUnavailable.Reason.POOL_EMPTY
-    assert result.error is None
+    assert len(restored) == 8
+    assert [(e.wallpaper_id, e.entry, e.recorded_at) for e in restored] == [
+        (e.wallpaper_id, e.entry, e.recorded_at) for e in recorded
+    ]

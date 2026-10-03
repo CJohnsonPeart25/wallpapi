@@ -7,7 +7,9 @@ Date: 2026-09-27
 Accepted. **Partly superseded by ADR 0018**: "there is no best **Unknown**" becomes "the **Unknowns** are
 spread one per group". The **Unknown** draw order is no longer only the random order; the allocation, the
 **Banger** and **Dud** orders, the **Shortfall** rule and the shuffle before the **Batch** is written all
-stand.
+stand. Amended 2026-10-03: `_choose` and `_draw_order` are now `allocation.draw`, a pure function over a
+classified sequence, so a test of the draw arranges its **Zones** directly. `tests/zoned.py`, which the
+Consequences describe, is gone.
 
 ## Context
 

@@ -186,6 +186,11 @@ HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus]] =
         lambda batch: {"batch_id": batch, "wallpaper_id": "wp0001", "verdict": "ignore"},
         HTTPStatus.BAD_REQUEST,
     ),
+    (
+        "/draft",
+        lambda batch: {"batch_id": batch, "wallpaper_id": "nope", "verdict": "like"},
+        HTTPStatus.NOT_FOUND,
+    ),
     ("/draft/all", lambda batch: {"batch_id": batch, "verdict": "ignore"}, HTTPStatus.BAD_REQUEST),
     ("/draft/all", lambda batch: {"batch_id": batch, "verdict": "adore"}, HTTPStatus.BAD_REQUEST),
     ("/history/verdict", lambda _: {"wallpaper_id": "wp0000", "verdict": ""}, HTTPStatus.BAD_REQUEST),

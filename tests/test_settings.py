@@ -265,7 +265,8 @@ def test_a_new_batch_size_applies_to_the_next_batch_minted_and_not_the_live_one(
     assert isinstance(still_live, Batch)
     assert (still_live.id, len(still_live.wallpapers)) == (live.id, 8)
 
-    following = harness.core.submit_batch(live.id)
+    harness.core.submit_batch(live.id)
 
+    following = harness.core.get_next_batch()
     assert isinstance(following, Batch)
     assert (following.size, len(following.wallpapers)) == (2, 2)

@@ -8,28 +8,30 @@ import re
 import sqlite3
 import threading
 from collections import deque
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
-from uuid import uuid4
 
-from wallpapi import decisions, similarity, storage
+from wallpapi import batches, decisions, similarity, storage
 from wallpapi import pool as pool_module
 from wallpapi import settings as settings_module
-from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
+from wallpapi.allocation import ScoredWallpaper as ScoredWallpaper
 from wallpapi.background import BackgroundLoop
+from wallpapi.batches import Batch as Batch
+from wallpapi.batches import BatchUnavailable as BatchUnavailable
+from wallpapi.batches import SubmissionRefused as SubmissionRefused
+from wallpapi.batches import Submitted as Submitted
 from wallpapi.clock import Clock
 from wallpapi.decisions import ResolvedVerdict
 from wallpapi.files import write_atomically
 from wallpapi.library import LibraryWriter
-from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper, Zone
+from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper
 from wallpapi.pool import wallpaper_from_row
 from wallpapi.rng import SeededRandom
-from wallpapi.scoring import classify
 
 # Re-exported (`X as X`) for the tests that still import them from here, until #64 and #68 move them.
 from wallpapi.settings import EXPLORE_MIX as EXPLORE_MIX
@@ -68,49 +70,6 @@ THUMBNAIL_JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
 
 BYTES_IN_A_MEGABYTE = 1024 * 1024
 """Mebibytes, because matching what Explorer shows matters more than matching SI."""
-
-
-@dataclass(frozen=True, slots=True)
-class Batch:
-    """The **Wallpapers** shown at once, with the identity the submission quotes back.
-
-    `drafts` holds only marked **Wallpapers**: absence is an **Ignore**. `zones` is the **Zone** each was
-    drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones** existed.
-    """
-
-    id: str
-    size: int
-    created_at: dt.datetime
-    wallpapers: tuple[Wallpaper, ...]
-    drafts: Mapping[str, Verdict]
-    zones: Mapping[str, Zone]
-
-
-@dataclass(frozen=True)
-class BatchUnavailable:
-    """No **Batch** could be built: the **Pool** is empty, and the page needs to say whether that is waiting
-    or Wallhaven being unreachable.
-    """
-
-    class Reason(StrEnum):
-        POOL_EMPTY = "pool_empty"
-        """The **Pool** holds nothing the user has not **Banned**, and the refill has not failed."""
-
-        WALLHAVEN_UNREACHABLE = "wallhaven_unreachable"
-        """The **Pool** is empty and the last refill attempt failed. `error` says how."""
-
-    reason: Reason
-    error: str | None = None
-    error_at: dt.datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ScoredWallpaper:
-    """One **Pool** **Wallpaper**, its **Score** and its **Zone**. Derived on every call, never stored."""
-
-    wallpaper: Wallpaper
-    score: float
-    zone: Zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,17 +154,6 @@ class _CachedThumbnail:
     modified_at: float
 
 
-@dataclass(frozen=True)
-class SubmissionRefused:
-    """The submission did not happen, and this is why. Never a silent no-op — two tabs is a real case."""
-
-    class Reason(StrEnum):
-        UNKNOWN_BATCH = "unknown_batch"
-        ALREADY_SUBMITTED = "already_submitted"
-
-    reason: Reason
-
-
 class CoreService:
     def __init__(
         self,
@@ -222,7 +170,6 @@ class CoreService:
         self._wallhaven = wallhaven
         self._library = library
         self._similarity = similarity
-        self._random = random_source
         self._clock = clock
         self._connections = storage.ThreadConnections(db_path)
 
@@ -243,6 +190,8 @@ class CoreService:
         storage.migrate(self._connect())
         self.refill = pool_module.Refill(self._connect, wallhaven, clock, refill_random_source)
         """The background search that keeps the **Pool** stocked: the thread drives it, the page reads it."""
+        self.batches = batches.Batches(similarity, self.refill.status, clock, random_source)
+        """Minting and submitting **Batches**, with the draw's own random source."""
 
     # -- storage ---------------------------------------------------------------------------------------
 
@@ -300,155 +249,12 @@ class CoreService:
     # -- batches ---------------------------------------------------------------------------------------
 
     def get_next_batch(self) -> Batch | BatchUnavailable:
-        """The **Batch** waiting to be decided on, sampling the **Pool** only if there isn't one. No **API
-        call**.
-
-        The **Zone** recorded per **Wallpaper** is where it was drawn from, never the slot's: after a
-        shortfall the two differ, and the tile says where the **Wallpaper** came from.
-
-        Pre-marking: a chosen **Wallpaper** whose resolved **Verdict** is explicit gets a **Draft Batch** row,
-        so leaving it alone records it again (ADR 0015). Dormant while nothing decided is in the **Pool** (ADR
-        0016).
-        """
-        live = self._live_batch()
-        if live is not None:
-            return live
-
-        size = self.get_settings().batch_size
-        classified = self.classify_pool()
-        if not classified:
-            return self._nothing_to_show()
-
-        chosen = self._choose(classified, size)
-        created_at = self._clock.now()
-        batch_id = uuid4().hex
-
-        with self._write() as write:
-            # Re-read under the write lock (ADR 0002): two tabs opened at once must not each mint a **Batch**.
-            contended = _load_live_batch(write)
-            if contended is not None:
-                return contended
-            write.execute(
-                "INSERT INTO batches (id, created_at, size) VALUES (?, ?, ?)",
-                (batch_id, created_at.isoformat(), len(chosen)),
-            )
-            write.executemany(
-                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone) VALUES (?, ?, ?, ?)",
-                [
-                    (batch_id, scored.wallpaper.id, position, scored.zone.value)
-                    for position, scored in enumerate(chosen)
-                ],
-            )
-            # Resolved under the write lock, so a **History** edit cannot land between reading a **Verdict**
-            # and pre-filling it.
-            resolved = decisions.resolve(write, [scored.wallpaper.id for scored in chosen])
-            explicit = decisions.explicitly_decided(write)
-            drafts = {
-                wallpaper_id: standing.verdict
-                for wallpaper_id, standing in resolved.items()
-                if standing.verdict is not None and wallpaper_id in explicit
-            }
-            write.executemany(
-                "INSERT INTO draft_batch (batch_id, wallpaper_id, verdict) VALUES (?, ?, ?)",
-                [(batch_id, wallpaper_id, verdict.value) for wallpaper_id, verdict in drafts.items()],
-            )
-
-        return Batch(
-            id=batch_id,
-            size=len(chosen),
-            created_at=created_at,
-            wallpapers=tuple(scored.wallpaper for scored in chosen),
-            drafts=drafts,
-            zones={scored.wallpaper.id: scored.zone for scored in chosen},
-        )
-
-    def _choose(self, classified: Sequence[ScoredWallpaper], size: int) -> list[ScoredWallpaper]:
-        """Which of the classified **Pool** a **Batch** shows: slots by **Mix**, each **Zone** in its draw
-        order, and any shortfall refilled in `ZONE_ORDER`.
-
-        Shuffled at the end, so a tile's **Zone** cannot be read from its position.
-        """
-        slots = allocate(self.active_mix(), size, self._random)
-        orders = {zone: self._draw_order(zone, classified, slots[zone]) for zone in ZONE_ORDER}
-        taken = dict.fromkeys(ZONE_ORDER, 0)
-        chosen: list[ScoredWallpaper] = []
-
-        def take(zone: Zone, count: int) -> int:
-            """Up to `count` more from `zone`, in its draw order. Returns how many there were."""
-            available = orders[zone][taken[zone] : taken[zone] + count]
-            taken[zone] += len(available)
-            chosen.extend(available)
-            return len(available)
-
-        shortfall = sum(slots[zone] - take(zone, slots[zone]) for zone in ZONE_ORDER)
-        # One pass is enough: after it every **Zone** is exhausted or the shortfall is met.
-        for zone in ZONE_ORDER:
-            if shortfall <= 0:
-                break
-            shortfall -= take(zone, shortfall)
-        return self._random.sample(chosen, len(chosen))
-
-    def _draw_order(
-        self, zone: Zone, classified: Sequence[ScoredWallpaper], slots: int
-    ) -> list[ScoredWallpaper]:
-        """The order one **Zone** gives its **Wallpapers** up in, best first.
-
-        **Bangers** by **Score** over a random order, so ties break by the seed. **Duds** stay random.
-        **Unknowns** one per look-alike group first (ADR 0018), or random while nothing has an **Embedding**.
-        """
-        members = [scored for scored in classified if scored.zone is zone]
-        ordered = self._random.sample(members, len(members))
-        if zone is Zone.BANGER:
-            ordered.sort(key=lambda scored: scored.score, reverse=True)
-        if zone is Zone.UNKNOWN:
-            vectors = self._similarity.vectors([scored.wallpaper for scored in ordered])
-            favourites = [scored.wallpaper.favourites for scored in ordered]
-            ordered = [ordered[i] for i in varied_order(vectors, favourites, slots, self._random)]
-        return ordered
-
-    # -- scoring and zones -----------------------------------------------------------------------------
+        """The live **Batch**, or a new one: `Batches.next`."""
+        return self.batches.next(self._connect())
 
     def classify_pool(self) -> tuple[ScoredWallpaper, ...]:
-        """Every **Pool** **Wallpaper** that is not **Banned**, with its **Score** and **Zone**, in one call.
-
-        The decided columns are every **Wallpaper** with a non-zero resolved value, in the **Pool** or not; a
-        **Ban** is a column like any other, but never a row.
-        """
-        pool = pool_module.members(self._connect())
-        if not pool:
-            return ()
-        judged = [wallpaper_from_row(row) for row in self._connect().execute(_SELECT_DECIDED_WALLPAPERS)]
-        resolved = decisions.resolve(self._connect(), [w.id for w in pool] + [w.id for w in judged])
-
-        candidates = [w for w in pool if resolved[w.id].verdict is not Verdict.BAN]
-        decided = [w for w in judged if resolved[w.id].value != 0]
-        if not candidates:
-            return ()
-
-        settings = self.get_settings()
-        classification = classify(
-            self._similarity.similarities(candidates, decided),
-            [resolved[w.id].value for w in decided],
-            radius=settings.similarity_radius,
-            decay=settings.similarity_decay,
-        )
-        return tuple(
-            ScoredWallpaper(wallpaper=wallpaper, score=float(score), zone=zone)
-            for wallpaper, score, zone in zip(
-                candidates, classification.scores, classification.zones, strict=True
-            )
-        )
-
-    def _nothing_to_show(self) -> BatchUnavailable:
-        """Why the **Pool** had nothing. A recorded refill failure outranks "nothing yet"."""
-        status = self.refill.status()
-        if status.last_error is not None:
-            return BatchUnavailable(
-                reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE,
-                error=status.last_error,
-                error_at=status.last_error_at,
-            )
-        return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
+        """The classified **Pool**: `Batches.classify`."""
+        return self.batches.classify(self._connect())
 
     # -- the Similarity provider's own upkeep ------------------------------------------------------------
 
@@ -491,101 +297,31 @@ class CoreService:
             ),
         )
 
-    def _live_batch(self) -> Batch | None:
-        """The unsubmitted **Batch**, if there is one."""
-        return _load_live_batch(self._connect())
-
     def set_draft_verdict(
         self, batch_id: str, wallpaper_id: str, verdict: Verdict | None
-    ) -> SubmissionRefused | None:
-        """Mark one tile of the **Draft Batch**, or clear it with `None`.
-
-        Sets rather than toggles, so a replayed click cannot flip the state; clearing deletes the row, because
-        absence is an **Ignore**. Refused for an unknown or submitted **Batch**.
-        """
-        refusal: SubmissionRefused | None = None
+    ) -> Batch | SubmissionRefused:
+        """Mark one tile, or clear it: `batches.set_draft` in its own transaction."""
         with self._write() as write:
-            batch = write.execute("SELECT submitted_at FROM batches WHERE id = ?", (batch_id,)).fetchone()
-            if batch is None:
-                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
-            elif batch["submitted_at"] is not None:
-                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
-            elif verdict is None:
-                write.execute(
-                    "DELETE FROM draft_batch WHERE batch_id = ? AND wallpaper_id = ?",
-                    (batch_id, wallpaper_id),
-                )
-            else:
-                write.execute(
-                    "INSERT INTO draft_batch (batch_id, wallpaper_id, verdict) VALUES (?, ?, ?)"
-                    " ON CONFLICT (batch_id, wallpaper_id) DO UPDATE SET verdict = excluded.verdict",
-                    (batch_id, wallpaper_id, verdict.value),
-                )
-        return refusal
+            return batches.set_draft(write, batch_id, wallpaper_id, verdict)
 
-    def set_all_draft_verdicts(self, batch_id: str, verdict: Verdict | None) -> SubmissionRefused | None:
-        """Rewrite the whole **Draft Batch** in one transaction: select-all, or select-none with `None`.
-
-        One transaction rather than one post per tile, so nothing can read the **Batch** half-marked. "All" is
-        every tile shown, marked or not.
-        """
-        refusal: SubmissionRefused | None = None
+    def set_all_draft_verdicts(self, batch_id: str, verdict: Verdict | None) -> Batch | SubmissionRefused:
+        """Select-all or select-none: `batches.set_all_drafts` in its own transaction."""
         with self._write() as write:
-            batch = write.execute("SELECT submitted_at FROM batches WHERE id = ?", (batch_id,)).fetchone()
-            if batch is None:
-                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
-            elif batch["submitted_at"] is not None:
-                refusal = SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
-            else:
-                # Scoped to this **Batch**. An unscoped delete reads the same on a database holding one
-                # **Draft Batch** and is a silent data loss on any that holds two.
-                write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
-                if verdict is not None:
-                    write.execute(_MARK_WHOLE_BATCH, (verdict.value, batch_id))
-        return refusal
+            return batches.set_all_drafts(write, batch_id, verdict)
 
-    def submit_batch(self, batch_id: str) -> Batch | BatchUnavailable | SubmissionRefused:
-        """Append the **Batch**'s **Verdicts** to the **Decision log**, then hand back the next **Batch**.
-
-        One transaction: claim the **Batch**, append the **Explicit Verdicts** and an **Ignore** for every
-        unmarked tile, retire everything shown from the **Pool** (ADR 0016), clear the **Draft Batch**. `BEGIN
-        IMMEDIATE` takes the write lock before the claim is read, so a second tab cannot split them.
-        """
-        recorded_at = self._clock.now()
+    def submit_batch(self, batch_id: str) -> Submitted | SubmissionRefused:
+        """Submit the **Batch** in one transaction, then reconcile the **Library** and evict thumbnails."""
         with self._write() as write:
-            batch = write.execute("SELECT submitted_at FROM batches WHERE id = ?", (batch_id,)).fetchone()
-            if batch is None:
-                return SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
-            if batch["submitted_at"] is not None:
-                return SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
-
-            shown = write.execute(
-                "SELECT wallpaper_id FROM batch_wallpapers WHERE batch_id = ? ORDER BY position",
-                (batch_id,),
-            ).fetchall()
-            drafted = _load_drafts(write, batch_id)
-            shown_ids = [str(row["wallpaper_id"]) for row in shown]
-            decisions.append(
-                write,
-                {wallpaper_id: drafted.get(wallpaper_id, Verdict.IGNORE) for wallpaper_id in shown_ids},
-                batch_id=batch_id,
-                at=recorded_at,
-            )
-            # Decided once (ADR 0016): everything shown leaves the **Pool** in this transaction.
-            write.executemany(
-                "DELETE FROM pool WHERE wallpaper_id = ?", [(row["wallpaper_id"],) for row in shown]
-            )
-            write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
-            write.execute(
-                "UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at.isoformat(), batch_id)
-            )
+            submitted = self.batches.submit(write, batch_id)
+        if isinstance(submitted, SubmissionRefused):
+            return submitted
 
         # Outside the transaction, deliberately: a download is a network call, and nothing the **Library**
         # does may roll the **Decision log** back. Idempotent, so a failure is picked up next time.
         self.reconcile_library()
-        # Before `get_next_batch`, so nothing about to be drawn is being counted as evictable.
+        # Before the next **Batch** is drawn, so nothing about to be drawn is being counted as evictable.
         self.evict_thumbnails()
-        return self.get_next_batch()
+        return submitted
 
     # -- library ---------------------------------------------------------------------------------------
 
@@ -1047,33 +783,6 @@ _NOTHING_EVICTED = ThumbnailEviction(evicted=(), remaining_bytes=0, over_cap=Fal
 """An empty or absent **Thumbnail cache**: nothing to delete and nothing taking up room."""
 
 
-def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
-    """The most recent unsubmitted **Batch**, rebuilt from storage, or `None`."""
-    batch = connection.execute(
-        "SELECT id, created_at, size FROM batches WHERE submitted_at IS NULL ORDER BY rowid DESC LIMIT 1"
-    ).fetchone()
-    if batch is None:
-        return None
-    rows = connection.execute(_SELECT_BATCH_WALLPAPERS, (batch["id"],)).fetchall()
-    return Batch(
-        id=str(batch["id"]),
-        size=int(batch["size"]),
-        created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
-        wallpapers=tuple(wallpaper_from_row(row) for row in rows),
-        drafts=_load_drafts(connection, str(batch["id"])),
-        # A **Batch** minted before migration 6 has NULL here, and its tiles go unlabelled.
-        zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
-    )
-
-
-def _load_drafts(connection: sqlite3.Connection, batch_id: str) -> dict[str, Verdict]:
-    """The **Draft Batch**: only the **Wallpapers** actually marked, because absence means **Ignore**."""
-    rows = connection.execute(
-        "SELECT wallpaper_id, verdict FROM draft_batch WHERE batch_id = ?", (batch_id,)
-    ).fetchall()
-    return {str(row["wallpaper_id"]): Verdict(str(row["verdict"])) for row in rows}
-
-
 def _url_suffix(url: str, *, default: str = ".jpg") -> str:
     """The file extension of a URL's path, ignoring any query string."""
     return PurePosixPath(urlsplit(url).path).suffix or default
@@ -1086,34 +795,6 @@ JOIN wallpapers AS w ON w.id = pool.wallpaper_id
 ORDER BY pool.wallpaper_id
 """
 """Every **Pool** member's thumbnail URL, in the order the downloader fetches them."""
-
-_SELECT_DECIDED_WALLPAPERS = f"""
-SELECT w.*
-FROM wallpapers AS w
-WHERE w.id IN ({decisions.MENTIONED})
-ORDER BY w.id
-"""
-"""Every **Wallpaper** the **Decision log** mentions, as whole rows, in a fixed order.
-
-Whole rows because the **Similarity provider** is handed **Wallpapers**; ordered so the matrix's columns, and
-so every **Score**, are reproducible.
-"""
-
-_SELECT_BATCH_WALLPAPERS = """
-SELECT w.*, bw.zone AS zone
-FROM batch_wallpapers AS bw
-JOIN wallpapers AS w ON w.id = bw.wallpaper_id
-WHERE bw.batch_id = ?
-ORDER BY bw.position
-"""
-
-_MARK_WHOLE_BATCH = """
-INSERT INTO draft_batch (batch_id, wallpaper_id, verdict)
-SELECT batch_id, wallpaper_id, ?
-FROM batch_wallpapers
-WHERE batch_id = ?
-"""
-"""Select-all as one statement, read inside the same transaction as the delete."""
 
 
 def gap_needed(last_fetch: float | None, *, now: float, gap: float = THUMBNAIL_GAP_SECONDS) -> float:

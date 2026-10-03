@@ -44,18 +44,20 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _drafted_verdict(posted: str) -> Verdict | None:
-    """The **Verdict** a tile control posted, or `None` for a clear; **Ignore** is derived at submit and
-    refused.
-    """
+    """The **Verdict** a tile control posted, or `None` for a clear. `batches` refuses an **Ignore**."""
     if not posted:
         return None
     try:
-        chosen = Verdict(posted)
+        return Verdict(posted)
     except ValueError:
         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
-    if chosen is Verdict.IGNORE:
-        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="an ignore is derived, not drafted")
-    return chosen
+
+
+_UNDRAFTABLE: dict[SubmissionRefused.Reason, tuple[HTTPStatus, str]] = {
+    SubmissionRefused.Reason.IGNORE_DRAFTED: (HTTPStatus.BAD_REQUEST, "an ignore is derived, not drafted"),
+    SubmissionRefused.Reason.NOT_IN_BATCH: (HTTPStatus.NOT_FOUND, "unknown wallpaper"),
+}
+"""Refusals no control can provoke, so a bare status rather than the banner a stale tab gets."""
 
 
 def _chosen_verdict(posted: str) -> Verdict:
@@ -168,6 +170,9 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     def render(request: Request, result: Batch | BatchUnavailable | SubmissionRefused) -> HTMLResponse:
         """One fragment and one status code per outcome."""
         if isinstance(result, SubmissionRefused):
+            if result.reason in _UNDRAFTABLE:
+                status, detail = _UNDRAFTABLE[result.reason]
+                raise HTTPException(status_code=status, detail=detail)
             already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
             return templates.TemplateResponse(
                 request,
@@ -209,14 +214,12 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         too).
         """
         result = core.submit_batch(batch_id)
-        if not isinstance(result, Batch):
+        if isinstance(result, SubmissionRefused):
             response = render(request, result)
         else:
-            # Counted from the Decision log, not the form.
-            appended = core.list_history(batch_id=batch_id)
-            ignored = sum(1 for entry in appended if entry.entry is Verdict.IGNORE)
+            # Counted from what was appended, not from the form.
             response = templates.TemplateResponse(
-                request, "banner.html", {"recorded": len(appended), "ignored": ignored}
+                request, "banner.html", {"recorded": result.recorded, "ignored": result.ignored}
             )
         response.headers["HX-Trigger"] = "batch-submitted"
         return response
@@ -229,16 +232,11 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         verdict: Annotated[str, Form()] = "",
     ) -> HTMLResponse:
         """Mark one tile, or clear it, and swap that tile back."""
-        refused = core.set_draft_verdict(batch_id, wallpaper_id, _drafted_verdict(verdict))
-        if refused is not None:
-            return render(request, refused)
-
-        live = core.get_next_batch()
-        if not isinstance(live, Batch):
+        live = core.set_draft_verdict(batch_id, wallpaper_id, _drafted_verdict(verdict))
+        if isinstance(live, SubmissionRefused):
             return render(request, live)
-        marked = next((w for w in live.wallpapers if w.id == wallpaper_id), None)
-        if marked is None:
-            raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="unknown wallpaper")
+        # Refused above unless the **Batch** shows it.
+        marked = next(w for w in live.wallpapers if w.id == wallpaper_id)
         return templates.TemplateResponse(
             request,
             "tile.html",
@@ -259,12 +257,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction (ADR
         0002).
         """
-        refused = core.set_all_draft_verdicts(batch_id, _drafted_verdict(verdict))
-        if refused is not None:
-            return render(request, refused)
-
-        live = core.get_next_batch()
-        if not isinstance(live, Batch):
+        live = core.set_all_draft_verdicts(batch_id, _drafted_verdict(verdict))
+        if isinstance(live, SubmissionRefused):
             return render(request, live)
         return templates.TemplateResponse(request, "grid.html", {"batch": live})
 
