@@ -8,16 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import judge, make_harness
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import HISTORY_PAGE_SIZE, Batch
 from wallpapi.model import Verdict
-
-
-def judge(harness: Harness, **marks: Verdict) -> None:
-    """Give each named **Wallpaper** a **Verdict** from **History**, in the order given."""
-    for wallpaper_id, verdict in marks.items():
-        assert harness.core.edit_verdict(wallpaper_id, verdict) is None
 
 
 def test_a_wallpaper_with_no_entries_has_no_row(db_path: Path) -> None:

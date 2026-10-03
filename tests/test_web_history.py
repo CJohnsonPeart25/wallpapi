@@ -12,17 +12,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import judge, make_harness
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import HISTORY_PAGE_SIZE, Batch
 from wallpapi.model import Verdict
 from wallpapi.web.app import create_app
-
-
-def judge(harness: Harness, **marks: Verdict) -> None:
-    """Give each named **Wallpaper** a **Verdict**, in the order given."""
-    for wallpaper_id, verdict in marks.items():
-        assert harness.core.edit_verdict(wallpaper_id, verdict) is None
 
 
 def test_the_page_lists_a_row_per_judged_wallpaper_with_its_thumbnail_and_verdict(db_path: Path) -> None:

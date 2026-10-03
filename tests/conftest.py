@@ -205,3 +205,9 @@ def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
         harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
     harness.core.submit_batch(batch.id)
     return batch
+
+
+def judge(harness: Harness, **marks: Verdict) -> None:
+    """Give each named **Wallpaper** a **Verdict** from **History**, in the order given."""
+    for wallpaper_id, verdict in marks.items():
+        assert harness.core.edit_verdict(wallpaper_id, verdict) is None
