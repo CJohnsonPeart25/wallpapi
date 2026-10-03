@@ -1,11 +1,9 @@
-"""The real Wallhaven client, driven against a recorded response rather than the network.
+"""The real Wallhaven client against recorded responses over a mock transport, and the socket guard.
 
-`tests/fixtures/wallhaven_search.json` is a genuine `GET /api/v1/search?sorting=random&purity=100` response,
-captured on 2026-09-24 with `data` trimmed to three entries for legibility and `meta` left verbatim. Every
-expected value below is read from Wallhaven's own field names — `favorites`, `colors`, `dimension_x` — so the
-test disagrees with the mapping if the mapping is wrong, rather than recomputing it.
-
-No network: `httpx2.MockTransport` answers from the fixture.
+`fixtures/wallhaven_search.json` is a genuine `GET /api/v1/search` response captured on 2026-09-24 with
+`data` trimmed to three entries; `fixtures/wallhaven_wallpaper.json` is `GET /api/v1/w/oxkzwm` from
+2026-09-27 with `tags` trimmed to three. Expected values are read off Wallhaven's own field names, so a wrong
+mapping disagrees with them rather than being recomputed.
 """
 
 from __future__ import annotations
@@ -14,6 +12,7 @@ import contextlib
 import json
 import socket
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,62 +21,48 @@ import pytest
 
 from wallpapi.wallhaven import RateLimited, ThumbnailUnavailable, WallhavenClient
 
-FIXTURE = Path(__file__).parent / "fixtures" / "wallhaven_search.json"
-RECORDED: dict[str, Any] = json.loads(FIXTURE.read_text(encoding="utf-8"))
+FIXTURES = Path(__file__).parent / "fixtures"
+RECORDED: dict[str, Any] = json.loads((FIXTURES / "wallhaven_search.json").read_text(encoding="utf-8"))
+WALLPAPER_RECORDED: dict[str, Any] = json.loads(
+    (FIXTURES / "wallhaven_wallpaper.json").read_text(encoding="utf-8")
+)
+THUMBNAIL = "https://th.wallhaven.cc/small/ox/oxkzwm.jpg"
 
-WALLPAPER_FIXTURE = Path(__file__).parent / "fixtures" / "wallhaven_wallpaper.json"
-WALLPAPER_RECORDED: dict[str, Any] = json.loads(WALLPAPER_FIXTURE.read_text(encoding="utf-8"))
 
-
-def test_search_parses_a_recorded_wallhaven_response() -> None:
-    """The client maps Wallhaven's spelling onto the domain's, and carries `meta.seed` through."""
+def answering(response: httpx2.Response) -> tuple[WallhavenClient, list[httpx2.Request]]:
+    """A client whose every request gets `response`, and the requests it made."""
     seen: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append(request)
-        return httpx2.Response(200, json=RECORDED)
+        return response
 
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    return WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler))), seen
+
+
+def test_search_parses_a_recorded_wallhaven_response() -> None:
+    client, seen = answering(httpx2.Response(200, json=RECORDED))
 
     page = client.search(sorting="random", purity="100")
 
-    request = seen[0]
-    assert request.url.path == "/api/v1/search"
-    assert dict(request.url.params) == {"sorting": "random", "purity": "100", "page": "1"}
-
+    assert seen[0].url.path == "/api/v1/search"
+    assert dict(seen[0].url.params) == {"sorting": "random", "purity": "100", "page": "1"}
     assert page.seed == "j1MDms"
     assert [w.id for w in page.wallpapers] == ["oxkzwm", "m3eyj9", "4vzxy5"]
-
     first = page.wallpapers[0]
-    assert first.width == 5120
-    assert first.height == 2880
-    assert first.ratio == "1.78"
-    assert first.category == "general"
-    assert first.purity == "sfw"
-    assert first.favourites == 13
+    assert (first.width, first.height, first.ratio) == (5120, 2880, "1.78")
+    assert (first.category, first.purity, first.favourites) == ("general", "sfw", 13)
     assert first.colours == ("#424153", "#996633", "#000000", "#999999", "#663300")
     assert first.thumbnail_url == "https://th.wallhaven.cc/small/ox/oxkzwm.jpg"
     assert first.full_url == "https://w.wallhaven.cc/full/ox/wallhaven-oxkzwm.jpg"
     assert first.page_url == "https://wallhaven.cc/w/oxkzwm"
 
 
-def test_search_sends_the_filters_it_is_given() -> None:
-    """Acceptance criteria: minimum resolution and allowed ratios go into the query, purity is SFW.
-
-    `atleast` and never `resolutions`: `atleast` is a minimum, `resolutions` is an exact-match list, and the
-    **Filters** call for a minimum. `ratios` does take a comma-separated list.
-
-    The masks arrive as parameters rather than being decided here. The client is thin on purpose — the
-    policy that purity is always SFW and every category is on belongs with the **Filters**, in the Core
-    service, where a test can reach it.
-    """
-    seen: list[httpx2.Request] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        seen.append(request)
-        return httpx2.Response(200, json=RECORDED)
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+def test_search_sends_the_filters_it_is_given_and_leaves_out_the_rest() -> None:
+    """`atleast`, the minimum, never `resolutions`, the exact-match list. The masks are parameters: the
+    policy that purity is SFW belongs with the **Filters** in the Core service. An omitted **Filter** is
+    absent, not sent empty, since `atleast=` is not the same request as no `atleast`."""
+    client, seen = answering(httpx2.Response(200, json=RECORDED))
 
     client.search(
         sorting="random",
@@ -88,6 +73,7 @@ def test_search_sends_the_filters_it_is_given() -> None:
         atleast="2560x1440",
         ratios="16x9,16x10,21x9",
     )
+    client.search(sorting="random", purity="100", categories="111")
 
     assert dict(seen[0].url.params) == {
         "sorting": "random",
@@ -98,96 +84,69 @@ def test_search_sends_the_filters_it_is_given() -> None:
         "atleast": "2560x1440",
         "ratios": "16x9,16x10,21x9",
     }
+    assert dict(seen[1].url.params) == {
+        "sorting": "random",
+        "purity": "100",
+        "categories": "111",
+        "page": "1",
+    }
 
 
-def test_filters_that_were_not_asked_for_are_left_out_of_the_query() -> None:
-    """An omitted **Filter** must be absent, not sent empty.
-
-    `atleast=` with no value is not the same request as no `atleast` at all, and guessing which way
-    Wallhaven reads it is not a bet worth taking.
-    """
-    seen: list[httpx2.Request] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        seen.append(request)
-        return httpx2.Response(200, json=RECORDED)
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
-
-    client.search(sorting="random", purity="100", categories="111")
-
-    assert "atleast" not in dict(seen[0].url.params)
-    assert "ratios" not in dict(seen[0].url.params)
-    assert "seed" not in dict(seen[0].url.params)
+def _search(client: WallhavenClient) -> object:
+    return client.search(sorting="random", purity="100")
 
 
-def test_a_429_is_raised_as_rate_limited_carrying_retry_after() -> None:
-    """Acceptance criterion: the client recovers from a 429 — which starts with recognising one.
-
-    A typed exception rather than a bare `HTTPStatusError`, because the caller has to tell "wait the number
-    of seconds Wallhaven named" apart from every other failure, and picking that apart from a status code
-    on the far side of the seam would put Wallhaven's spelling in the Core service.
-    """
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(429, headers={"Retry-After": "17"}, json={"error": "too many requests"})
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
-
-    with pytest.raises(RateLimited) as raised:
-        client.search(sorting="random", purity="100", categories="111")
-
-    assert raised.value.retry_after == 17.0
+def _tags(client: WallhavenClient) -> object:
+    return client.fetch_tags("oxkzwm")
 
 
-def test_a_429_without_a_usable_retry_after_carries_none() -> None:
-    """The header is optional, and may be an HTTP date rather than a count of seconds.
+def _thumbnail(client: WallhavenClient) -> object:
+    return client.fetch_thumbnail(THUMBNAIL)
 
-    `None` rather than a guess: the caller's own back-off is the answer to "Wallhaven did not say", and
-    parsing a date format to save it a constant would be the client knowing more than it needs to.
-    """
 
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, json={})
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+@pytest.mark.parametrize(
+    ("call", "retry_after", "expected"),
+    [
+        pytest.param(_search, "17", 17.0, id="search"),
+        # An HTTP date is not parsed: the caller's own back-off answers "Wallhaven did not say".
+        pytest.param(_search, "Wed, 21 Oct 2026 07:28:00 GMT", None, id="search, a date"),
+        # On wallhaven.cc/api too, so inside the same 45 a minute as the refill's searches.
+        pytest.param(_tags, "9", 9.0, id="tags"),
+        pytest.param(_thumbnail, "90", 90.0, id="thumbnail"),
+    ],
+)
+def test_a_429_is_raised_as_rate_limited_carrying_retry_after(
+    call: Callable[[WallhavenClient], object], retry_after: str, expected: float | None
+) -> None:
+    """The one failure the caller treats differently, so it is typed rather than left as a status code
+    for the Core service to pick apart in Wallhaven's spelling."""
+    client, _ = answering(httpx2.Response(429, headers={"Retry-After": retry_after}, json={}))
 
     with pytest.raises(RateLimited) as raised:
-        client.search(sorting="random", purity="100", categories="111")
+        call(client)
 
-    assert raised.value.retry_after is None
+    assert raised.value.retry_after == expected
 
 
 def test_any_other_non_200_still_raises() -> None:
-    """A 500 from Wallhaven is a failure, not a rate limit, and must not be mistaken for one."""
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(503, json={})
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    client, _ = answering(httpx2.Response(503, json={}))
 
     with pytest.raises(httpx2.HTTPStatusError):
         client.search(sorting="random", purity="100", categories="111")
 
 
+def test_a_thumbnail_the_host_refuses_is_unavailable() -> None:
+    """About that one file, so the downloader skips it rather than backing off."""
+    client, _ = answering(httpx2.Response(404))
+
+    with pytest.raises(ThumbnailUnavailable) as raised:
+        client.fetch_thumbnail(THUMBNAIL)
+
+    assert raised.value.status == 404
+
+
 def test_fetch_tags_reads_the_single_wallpaper_endpoint() -> None:
-    """#14: tags come only from `GET /api/v1/w/{id}`, one **API call** per **Wallpaper**.
-
-    `tests/fixtures/wallhaven_wallpaper.json` is a genuine response for `oxkzwm` — the same **Wallpaper**
-    the search fixture's first entry is — captured on 2026-09-27 with `tags` trimmed to three entries. The
-    ids and names below are read off Wallhaven's own payload, so the test disagrees with the mapping if
-    the mapping is wrong rather than recomputing it.
-    """
-    seen: list[httpx2.Request] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        seen.append(request)
-        return httpx2.Response(200, json=WALLPAPER_RECORDED)
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    client, seen = answering(httpx2.Response(200, json=WALLPAPER_RECORDED))
 
     tags = client.fetch_tags("oxkzwm")
 
@@ -200,60 +159,10 @@ def test_fetch_tags_reads_the_single_wallpaper_endpoint() -> None:
 
 
 def test_fetch_tags_tolerates_a_wallpaper_with_no_tags() -> None:
-    """Wallhaven has plenty. An empty tuple rather than a failure, because the cache's whole job is to be
-    able to say "asked, and there were none" (#14)."""
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(200, json={"data": {"id": "oxkzwm", "tags": []}})
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    """Empty rather than a failure: the cache has to be able to say "asked, and there were none"."""
+    client, _ = answering(httpx2.Response(200, json={"data": {"id": "oxkzwm", "tags": []}}))
 
     assert client.fetch_tags("oxkzwm") == ()
-
-
-def test_fetch_tags_raises_rate_limited_on_a_429() -> None:
-    """The tags endpoint is on `wallhaven.cc/api` and so is inside the same 45-a-minute budget: a fill
-    step that ignored a 429 here would spend the **Pool** refill's allowance for it."""
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(429, headers={"Retry-After": "9"}, json={})
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
-
-    with pytest.raises(RateLimited) as raised:
-        client.fetch_tags("oxkzwm")
-
-    assert raised.value.retry_after == 9.0
-
-
-def test_a_thumbnail_429_is_rate_limited() -> None:
-    """#44: the background downloader backs off a minute on a 429, so it has to be told one apart."""
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(429, headers={"Retry-After": "90"})
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
-
-    with pytest.raises(RateLimited) as raised:
-        client.fetch_thumbnail("https://th.wallhaven.cc/small/ox/oxkzwm.jpg")
-    assert raised.value.retry_after == 90.0
-
-
-def test_a_thumbnail_the_host_refuses_is_unavailable() -> None:
-    """Any other non-2xx is about that one file, and the downloader skips it rather than backing off."""
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(404)
-
-    client = WallhavenClient(client=httpx2.Client(transport=httpx2.MockTransport(handler)))
-
-    with pytest.raises(ThumbnailUnavailable) as raised:
-        client.fetch_thumbnail("https://th.wallhaven.cc/small/ox/oxkzwm.jpg")
-    assert raised.value.status == 404
 
 
 def test_a_test_that_reaches_for_the_network_fails(no_network: list[str]) -> None:

@@ -1,8 +1,5 @@
-"""Fakes for the Core service's injected dependencies.
-
-Four of the five dependencies are faked here. The fifth, the random source, is not: the spec calls for
-"a seeded random source", so tests use the real implementation with a fixed seed rather than a fake.
-"""
+"""Fakes for four of the Core service's five injected dependencies. The fifth, the random source, is the
+real `SeededRandom` with a fixed seed, as the spec asks for a seeded source."""
 
 from __future__ import annotations
 
@@ -56,40 +53,18 @@ THUMBNAIL_BYTES = b"\xff\xd8\xff\xe0 fake thumbnail"
 
 
 class WallhavenUnreachable(RuntimeError):
-    """What the fake raises to stand in for a transport failure.
-
-    The protocol names one error and one only — `RateLimited`, because a 429 is the one failure the caller
-    treats differently. Everything else is "the call did not happen", and this exists so a test can arrange
-    that without reaching for `httpx2` on the far side of the seam.
-    """
+    """A transport failure. The protocol names only `RateLimited`; anything else did not happen."""
 
 
 class FakeWallhavenClient:
-    """An in-memory catalogue, served a page at a time.
+    """An in-memory catalogue served a page at a time, recording every search and thumbnail fetch.
 
-    Records the search parameters and the thumbnail URLs it was called with. `page_size` defaults to
-    Wallhaven's listing size of 24; tests that care about a walk turn it down so a page boundary is a
-    couple of **Wallpapers** away rather than two dozen.
-
-    `seed` is what this fake returns as `meta.seed`. It ignores the seed it is *given* when choosing what to
-    serve, which is the one place it is deliberately less than faithful: Wallhaven reshuffles, and a fake
-    that did would make every refill test depend on a shuffle nobody chose. What the seed is actually for —
-    being carried across the pages of one walk and not across walks — is asserted from `searches` instead.
-
-    `rate_limited_calls` makes the first N searches answer 429, as the real client's `RateLimited`.
-    `fail_from_call` makes every call from the Nth onwards a transport failure. Together they cover both
-    halves of the refill's error handling.
-
-    `hold_thumbnails` keeps every thumbnail fetch in flight until a test releases it, which is how a
-    shutdown mid-fetch is arranged without a socket or a sleep.
-
-    `failing_thumbnails` maps a thumbnail URL to what fetching it raises — a `ThumbnailUnavailable` for a
-    host that refused that one file, a `RateLimited` for a 429, a `WallhavenUnreachable` for a connection
-    that failed. Mutable, so a test can make a fetch fail, then remove the entry and watch it be retried.
-
-    `like_results` is the second catalogue: what a `q=like:<wallhaven id>` search answers, keyed by that
-    ID (#13). A **Favourite** with no entry answers an empty page, which is also how a real like: search
-    ends — Wallhaven has only so many lookalikes to offer for any one **Wallpaper**.
+    `seed` is returned as `meta.seed`, and the seed it is given is ignored: Wallhaven reshuffles, and a fake
+    that did would make every refill test depend on a shuffle nobody chose. `rate_limited_calls` answers
+    the first N searches 429; `fail_from_call` fails every call from the Nth. `like_results` answers
+    `q=like:<id>`, keyed by that ID, an unnamed one with an empty page. `failing_thumbnails` maps a URL to
+    what fetching it raises and is mutable, so a test can watch a retry. `hold_thumbnails` keeps every
+    fetch in flight until a test sets it.
     """
 
     def __init__(
@@ -118,14 +93,11 @@ class FakeWallhavenClient:
         self.thumbnail_fetches: list[str] = []
         self.failing_thumbnails: dict[str, Exception] = {}
         self.thumbnail_threads: list[str] = []
-        """The name of the thread each thumbnail fetch was made on, so a test can pin which one it was."""
+        """The name of the thread each thumbnail fetch was made on."""
         self.thumbnail_fetched = threading.Event()
-        """Set by every thumbnail fetch as it starts: `searched`'s counterpart for the downloader."""
         self.hold_thumbnails: threading.Event | None = None
-        """When set to an event, every thumbnail fetch waits for it: a fetch held in flight."""
         self.searched = threading.Event()
-        """Set by every search. The one thread test waits on this rather than guessing how long the
-        refill thread needs, so it is deterministic without sleeping."""
+        """Set by every search, so a thread test waits on an event rather than a guess."""
 
     def search(
         self,
@@ -161,11 +133,7 @@ class FakeWallhavenClient:
         return SearchPage(wallpapers=tuple(results[start : start + self.page_size]), seed=self.seed)
 
     def _results_for(self, query: str | None) -> list[Wallpaper]:
-        """Which catalogue answers this search: the lookalikes of one **Wallpaper**, or everything.
-
-        Only `like:` is understood, because it is the only expression wallpapi sends. Anything else would
-        be a search this fake has been asked to answer without having been told how to.
-        """
+        """Only `like:` is understood, because it is the only expression wallpapi sends."""
         if query is None:
             return self.catalogue
         if not query.startswith(LIKE_QUERY_PREFIX):
@@ -186,11 +154,7 @@ class FakeWallhavenClient:
 
 @dataclass(frozen=True, slots=True)
 class LibraryWrite:
-    """One call the **Library** writer was asked to make.
-
-    Carries the source URL as well as the destination, so a test can pin that a **Favourite** downloads the
-    full-resolution image rather than the thumbnail.
-    """
+    """One call the **Library** writer was asked to make, source URL included."""
 
     wallpaper_id: str
     source_url: str
@@ -198,19 +162,12 @@ class LibraryWrite:
 
 
 class LibraryUnwritable(RuntimeError):
-    """What the fake raises to stand in for a failed download or a failed disk write.
-
-    The **Library** protocol declares no error type — the real writer can fail with anything `httpx2` or the
-    filesystem raises — so this exists to let a test make a write fail without reaching for either.
-    """
+    """A failed download or disk write. The protocol declares no error type of its own."""
 
 
 class FakeLibraryWriter:
-    """Records writes and deletions, and can be told to fail for particular **Wallpapers**.
-
-    `fail_for` is a mutable set so that one test can make a write fail, assert the **Decision log** survived
-    it, then empty the set and prove the next reconciliation retries rather than having given up.
-    """
+    """Records writes and deletions. `fail_for` is mutable, so a test can make a write fail and then
+    watch the next reconciliation retry it."""
 
     def __init__(self, *, fail_for: set[str] | None = None) -> None:
         self.written: list[LibraryWrite] = []
@@ -230,15 +187,9 @@ class FakeLibraryWriter:
 
 
 class FakeSimilarityProvider:
-    """Hand-defined similarities, keyed by `(pool wallpaper id, decided wallpaper id)`.
-
-    Takes whole **Wallpapers**, as the protocol does — the real provider reads their colours and category —
-    but keys on the IDs, so arranging a similarity in a test is still a pair of strings and a number.
-
-    A **Wallpaper** against itself is 1.0 unless a test says otherwise, because that is what the protocol
-    promises and because "a **Favourite** still in the **Pool** scores its own value at distance 0" should
-    not have to be arranged. Everything not named is 0.0: nothing in common.
-    """
+    """Hand-defined similarities keyed by `(pool id, decided id)`: a **Wallpaper** against itself 1.0, as
+    the protocol promises, and everything unnamed 0.0. `notice` and `vectors` are `None`, a provider at
+    full strength with no positions, unless a test arranges them; an unnamed ID has no **Embedding**."""
 
     def __init__(
         self,
@@ -250,14 +201,9 @@ class FakeSimilarityProvider:
     ) -> None:
         self.similarity_by_pair = similarities or {}
         self.vector_by_id = None if vectors is None else dict(vectors)
-        """What `vectors()` answers from, keyed by ID. `None` — a provider with no positions, as the
-        baseline is — unless a test arranges some (#45); a **Wallpaper** not named has no **Embedding**."""
         self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         self.notice_text = notice
-        """What `notice()` answers. `None` — a provider working at full strength — unless a test says
-        otherwise, because every test that is not about the notice wants no extra line on the page."""
         self.notice_pools: list[tuple[str, ...]] = []
-        """The **Pool** each `notice` was asked about, as IDs."""
         self.catch_up_calls: list[Path] = []
         self._caught_up = threading.Condition()
         self._catch_up_waits = list(catch_up_waits)
@@ -269,11 +215,7 @@ class FakeSimilarityProvider:
         ).reshape(len(pool), len(decided))
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
-        """Record the call and hand back the next arranged wait, then `NOTHING_TO_CATCH_UP` for ever.
-
-        A list of waits rather than one number, so a test can arrange "more to do, then done" and watch
-        the loop come straight back before it settles.
-        """
+        """Record the call and hand back the next arranged wait, then `NOTHING_TO_CATCH_UP` for ever."""
         del stop_event
         with self._caught_up:
             self.catch_up_calls.append(thumbnails)
