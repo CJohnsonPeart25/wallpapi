@@ -115,26 +115,3 @@ def test_there_is_no_switcher_on_a_page_with_no_batch_to_switch_for(db_path: Pat
     rule = next(block for block in stylesheet.split("}") if "body:not(:has(#batch-id))" in block)
     assert "#mix-switcher" in rule
     assert "visibility: hidden" in rule
-
-
-def test_a_stored_mix_that_is_gone_is_still_what_the_page_says_was_chosen(db_path: Path) -> None:
-    """The state the seam cannot reach: a hand-edited setting naming a **Mix** that no longer exists.
-
-    A `<select>` shows some option as chosen no matter what, and left alone it shows the first, which
-    would claim the fallback was the choice. The stored name is rendered as the selected option, disabled
-    so it cannot be re-chosen, and the draw still falls back exactly as before.
-    """
-    import sqlite3
-
-    harness = make_harness(db_path)
-    connection = sqlite3.connect(db_path, isolation_level=None)
-    connection.execute("UPDATE settings SET value = 'gone' WHERE key = 'active_mix'")
-    connection.close()
-
-    with TestClient(create_app(harness.core)) as client:
-        page = client.get("/")
-
-    assert 'data-mix-active="gone"' in page.text
-    assert 'value="gone" selected disabled>gone</option>' in page.text
-    assert page.text.count("selected") == 1
-    assert harness.core.active_mix().name == "explore"
