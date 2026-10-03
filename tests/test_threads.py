@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import SOURCE, Harness, make_harness
 from tests.fakes import catalogue_of
-from wallpapi import core, pool, similarity
+from wallpapi import pool, similarity, thumbnails
 from wallpapi.background import BackgroundLoop
 from wallpapi.pool import JOIN_TIMEOUT
 from wallpapi.similarity import CAUGHT_UP
@@ -75,8 +75,8 @@ def test_the_upkeep_embeds_the_thumbnail_cache(db_path: Path) -> None:
     """The images wallpapi holds are the **Thumbnail cache** (ADR 0009); a **Wallpaper** with no
     thumbnail there is simply not embedded and falls back to the baseline."""
     harness = make_harness(db_path)
-    harness.core.thumbnail_dir.mkdir(parents=True, exist_ok=True)
-    (harness.core.thumbnail_dir / "wp0003.jpg").write_bytes(b"thumbnail")
+    harness.core.thumbnails.directory.mkdir(parents=True, exist_ok=True)
+    (harness.core.thumbnails.directory / "wp0003.jpg").write_bytes(b"thumbnail")
 
     harness.core.similarity_step(threading.Event())
 
@@ -87,9 +87,9 @@ def test_a_backlog_is_worked_through_without_waiting(db_path: Path) -> None:
     """A step that leaves more to do asks to come straight back, so three thumbnails one at a time are
     embedded well inside `CAUGHT_UP`, the wait the loop settles into after."""
     harness = make_harness(db_path, embed_batch=1)
-    harness.core.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    harness.core.thumbnails.directory.mkdir(parents=True, exist_ok=True)
     for name in ("wp0001", "wp0002", "wp0003"):
-        (harness.core.thumbnail_dir / f"{name}.jpg").write_bytes(b"thumbnail")
+        (harness.core.thumbnails.directory / f"{name}.jpg").write_bytes(b"thumbnail")
     upkeep = _loop_named(harness, similarity.THREAD_NAME)
 
     upkeep.start()
@@ -110,11 +110,11 @@ def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_
 
     with TestClient(app):
         assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "the downloader should have fetched"
-        assert _running(core.THUMBNAIL_THREAD_NAME)
+        assert _running(thumbnails.THREAD_NAME)
 
     assert harness.wallhaven.thumbnail_threads
     assert set(harness.wallhaven.thumbnail_threads) == {"wallpapi-thumbnails"}
-    assert not _running(core.THUMBNAIL_THREAD_NAME), "shutdown should have joined the downloader"
+    assert not _running(thumbnails.THREAD_NAME), "shutdown should have joined the downloader"
 
 
 def test_without_the_refill_flag_no_downloader_starts(db_path: Path) -> None:
@@ -123,7 +123,7 @@ def test_without_the_refill_flag_no_downloader_starts(db_path: Path) -> None:
 
     with TestClient(app) as client:
         client.get("/batch")
-        assert not _running(core.THUMBNAIL_THREAD_NAME)
+        assert not _running(thumbnails.THREAD_NAME)
 
     assert harness.wallhaven.thumbnail_fetches == []
 
@@ -134,10 +134,10 @@ def test_a_stop_during_a_fetch_ends_the_downloader_once_the_fetch_returns(db_pat
     harness = make_harness(db_path, catalogue=catalogue_of(3))
     release = threading.Event()
     harness.wallhaven.hold_thumbnails = release
-    downloader = _loop_named(harness, core.THUMBNAIL_THREAD_NAME)
+    downloader = _loop_named(harness, thumbnails.THREAD_NAME)
     downloader.start()
     assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "a fetch should be in flight"
-    (thread,) = [t for t in threading.enumerate() if t.name == core.THUMBNAIL_THREAD_NAME]
+    (thread,) = [t for t in threading.enumerate() if t.name == thumbnails.THREAD_NAME]
 
     downloader.stop(timeout=0.0)
     release.set()
@@ -147,7 +147,7 @@ def test_a_stop_during_a_fetch_ends_the_downloader_once_the_fetch_returns(db_pat
     assert len(harness.wallhaven.thumbnail_fetches) == 1
 
 
-@pytest.mark.parametrize("name", [pool.THREAD_NAME, similarity.THREAD_NAME, core.THUMBNAIL_THREAD_NAME])
+@pytest.mark.parametrize("name", [pool.THREAD_NAME, similarity.THREAD_NAME, thumbnails.THREAD_NAME])
 def test_starting_and_stopping_twice_is_harmless(name: str, db_path: Path) -> None:
     """A stop without a start, and a second stop, must not raise: shutdown paths get run twice."""
     harness = make_harness(db_path, fill_pool=0)
@@ -188,8 +188,8 @@ def test_the_lifespan_starts_the_loops_in_order_and_stops_them_in_reverse(
     assert events == [
         ("start", pool.THREAD_NAME),
         ("start", similarity.THREAD_NAME),
-        ("start", core.THUMBNAIL_THREAD_NAME),
-        ("stop", core.THUMBNAIL_THREAD_NAME),
+        ("start", thumbnails.THREAD_NAME),
+        ("stop", thumbnails.THREAD_NAME),
         ("stop", similarity.THREAD_NAME),
         ("stop", pool.THREAD_NAME),
     ]

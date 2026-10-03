@@ -48,6 +48,7 @@ def build_core(home: Path | None = None) -> CoreService:
     seed = int(pinned) if pinned else secrets.randbits(64)
     return CoreService(
         db_path=root / "wallpapi.db",
+        thumbnail_dir=root / "thumbnails",
         wallhaven=WallhavenClient(),
         library=DownloadingLibraryWriter(),
         similarity=build_similarity(root),

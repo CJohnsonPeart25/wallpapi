@@ -155,6 +155,7 @@ def make_harness(
     clock = FakeClock(now)
     core = CoreService(
         db_path=db_path,
+        thumbnail_dir=db_path.parent / "thumbnails",
         wallhaven=wallhaven,
         library=fake_library if library is None else library,
         similarity=embeddings,
