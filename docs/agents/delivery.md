@@ -1,6 +1,6 @@
 # Delivery conventions
 
-How a ticket goes from `ready-for-agent` to merged. Written down after the #1 epic was delivered this way on
+How a ticket goes from `ready-for-agent` to merged. Written down after the first epic was delivered this way on
 2026-09-27, so the next round does not have to rediscover it.
 
 ## One agent, one issue, one worktree
@@ -10,8 +10,8 @@ How a ticket goes from `ready-for-agent` to merged. Written down after the #1 ep
 - The agent reads, in order: `AGENTS.md`, `CONTEXT.md`, `docs/adr/`, the issue with all its comments (the
   "Agent Brief" and "Note from triaging" comments refine the body), the two most recent merged PRs for house
   style, then the code nearest the ticket.
-- Tests first, through the **Core service** seam with the five fakes. No test touches the network or loads
-  the model.
+- Tests first, one module at a time: a real in-memory database and a fake only for the external collaborator
+  it talks to (`AGENTS.md` invariant 1). No test touches the network or loads the model.
 
 ## Numbers are assigned up front
 
