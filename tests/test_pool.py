@@ -247,6 +247,18 @@ def test_changing_the_filters_prunes_the_members_that_no_longer_pass(connection:
     assert decisions.resolve(connection, ["judged"])["judged"].verdict is Verdict.LIKE
 
 
+def test_retiring_drops_only_the_named_members_and_keeps_their_rows(connection: sqlite3.Connection) -> None:
+    """What a submitted **Batch** showed leaves the **Pool** (ADR 0016); the `wallpapers` row stays, since
+    **History** and the **Library** still show it, and a name not in the **Pool** is no error."""
+    rig = rig_over(connection, catalogue=catalogue_of(4), steps=1)
+
+    with storage.write(connection) as write:
+        pool.retire(write, ["wp0001", "wp0003", "never-admitted"])
+
+    assert rig.members() == ["wp0000", "wp0002"]
+    assert connection.execute("SELECT COUNT(*) FROM wallpapers").fetchone()[0] == 4
+
+
 def test_a_settings_change_that_touches_no_filter_prunes_nothing(rig: Rig) -> None:
     before = rig.members()
 

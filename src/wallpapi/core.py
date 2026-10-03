@@ -572,9 +572,7 @@ class CoreService:
                 at=recorded_at,
             )
             # Decided once (ADR 0016): everything shown leaves the **Pool** in this transaction.
-            write.executemany(
-                "DELETE FROM pool WHERE wallpaper_id = ?", [(row["wallpaper_id"],) for row in shown]
-            )
+            pool_module.retire(write, shown_ids)
             write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
             write.execute(
                 "UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at.isoformat(), batch_id)
