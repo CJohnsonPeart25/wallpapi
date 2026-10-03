@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import SOURCE, Harness, make_harness
 from tests.fakes import catalogue_of
-from wallpapi import pool, similarity, thumbnails
+from wallpapi import compose, pool, similarity, thumbnails, workflows
 from wallpapi.background import BackgroundLoop
 from wallpapi.pool import JOIN_TIMEOUT
 from wallpapi.similarity import CAUGHT_UP
@@ -29,7 +29,7 @@ def _running(name: str) -> bool:
 
 
 def _loop_named(harness: Harness, name: str) -> BackgroundLoop:
-    (loop,) = [loop for loop in harness.core.background_loops() if loop.name == name]
+    (loop,) = [loop for loop in compose.background_loops(harness.modules) if loop.name == name]
     return loop
 
 
@@ -37,34 +37,34 @@ def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> N
     """The **Pool** is already at its target, so the loop's first act is a long cancellable wait: what is
     checked is that the thread starts, the wait is cancellable and the join returns."""
     harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=1)
-    harness.core.update_settings(pool_target_size=1)
+    workflows.save_settings(harness.modules, pool_target_size=1)
     app = create_app(harness.modules, refill=True)
 
     with TestClient(app) as client:
         response = client.get("/batch")
         assert response.status_code == 200
-        assert harness.core.refill.status().running, "the lifespan should have started the thread"
+        assert harness.modules.refill.status().running, "the lifespan should have started the thread"
         assert "Refill idle" in response.text
 
-    assert not harness.core.refill.status().running, "shutdown should have joined the thread"
+    assert not harness.modules.refill.status().running, "shutdown should have joined the thread"
 
 
 def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> None:
     harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=0)
-    harness.core.update_settings(pool_target_size=1)
+    workflows.save_settings(harness.modules, pool_target_size=1)
     app = create_app(harness.modules, refill=True)
 
     with TestClient(app) as client:
         client.get("/batch")
         assert harness.wallhaven.searched.wait(JOIN_TIMEOUT), "the thread should have searched"
 
-    assert harness.core.refill.status().pool_size == 24
+    assert harness.modules.refill.status().pool_size == 24
 
 
 def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Path) -> None:
     """The model is fetched off the request path, and shutdown is clean."""
     harness = make_harness(db_path, catalogue=catalogue_of(24))
-    harness.core.update_settings(pool_target_size=1)
+    workflows.save_settings(harness.modules, pool_target_size=1)
     app = create_app(harness.modules, refill=True)
 
     with TestClient(app):
@@ -75,10 +75,10 @@ def test_the_upkeep_embeds_the_thumbnail_cache(db_path: Path) -> None:
     """The images wallpapi holds are the **Thumbnail cache** (`thumbnails.py`); a **Wallpaper** with no
     thumbnail there is simply not embedded and falls back to the baseline."""
     harness = make_harness(db_path)
-    harness.core.thumbnails.directory.mkdir(parents=True, exist_ok=True)
-    (harness.core.thumbnails.directory / "wp0003.jpg").write_bytes(b"thumbnail")
+    harness.modules.thumbnails.directory.mkdir(parents=True, exist_ok=True)
+    (harness.modules.thumbnails.directory / "wp0003.jpg").write_bytes(b"thumbnail")
 
-    harness.core.similarity_step(threading.Event())
+    harness.modules.similarity.catch_up(harness.modules.thumbnails.directory, threading.Event())
 
     assert harness.embed.seen == ["wp0003"]
 
@@ -87,9 +87,9 @@ def test_a_backlog_is_worked_through_without_waiting(db_path: Path) -> None:
     """A step that leaves more to do asks to come straight back, so three thumbnails one at a time are
     embedded well inside `CAUGHT_UP`, the wait the loop settles into after."""
     harness = make_harness(db_path, embed_batch=1)
-    harness.core.thumbnails.directory.mkdir(parents=True, exist_ok=True)
+    harness.modules.thumbnails.directory.mkdir(parents=True, exist_ok=True)
     for name in ("wp0001", "wp0002", "wp0003"):
-        (harness.core.thumbnails.directory / f"{name}.jpg").write_bytes(b"thumbnail")
+        (harness.modules.thumbnails.directory / f"{name}.jpg").write_bytes(b"thumbnail")
     upkeep = _loop_named(harness, similarity.THREAD_NAME)
 
     upkeep.start()
@@ -105,7 +105,7 @@ def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_
     """Thumbnail fetching for the **Pool** never runs on a request thread, inside `refill_loop` or on the
     similarity thread, and it starts through the `refill` flag."""
     harness = make_harness(db_path, catalogue=catalogue_of(3))
-    harness.core.update_settings(pool_target_size=1)
+    workflows.save_settings(harness.modules, pool_target_size=1)
     app = create_app(harness.modules, refill=True)
 
     with TestClient(app):
@@ -151,7 +151,7 @@ def test_a_stop_during_a_fetch_ends_the_downloader_once_the_fetch_returns(db_pat
 def test_starting_and_stopping_twice_is_harmless(name: str, db_path: Path) -> None:
     """A stop without a start, and a second stop, must not raise: shutdown paths get run twice."""
     harness = make_harness(db_path, fill_pool=0)
-    harness.core.update_settings(pool_target_size=1)
+    workflows.save_settings(harness.modules, pool_target_size=1)
     thread = _loop_named(harness, name)
 
     thread.stop()
@@ -180,7 +180,7 @@ def test_the_lifespan_starts_the_loops_in_order_and_stops_them_in_reverse(
     monkeypatch.setattr(BackgroundLoop, "start", recording_start)
     monkeypatch.setattr(BackgroundLoop, "stop", recording_stop)
     harness = make_harness(db_path, catalogue=catalogue_of(3))
-    harness.core.update_settings(pool_target_size=1)
+    workflows.save_settings(harness.modules, pool_target_size=1)
 
     with TestClient(create_app(harness.modules, refill=True)):
         pass
