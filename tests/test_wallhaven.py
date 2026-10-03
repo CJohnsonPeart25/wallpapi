@@ -56,7 +56,7 @@ def test_search_parses_a_recorded_wallhaven_response() -> None:
 
 def test_search_sends_the_filters_it_is_given_and_leaves_out_the_rest() -> None:
     """`atleast`, the minimum, never `resolutions`, the exact-match list. The masks are parameters: the
-    policy that purity is SFW belongs with the **Filters** in `settings`. An omitted **Filter** is
+    policy that purity is SFW belongs with the **Filters** in `pool`. An omitted **Filter** is
     absent, not sent empty, since `atleast=` is not the same request as no `atleast`."""
     client, seen = answering(httpx2.Response(200, json=RECORDED))
 
