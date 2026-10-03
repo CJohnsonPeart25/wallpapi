@@ -42,16 +42,16 @@ that boots the app and hits `/`. No test touches the network.
 ## Invariants
 
 Design intent no test can hold. Numbers are stable and never reused, because ADRs cite them. Retired:
-1 -> 14 (ADR 0019); 3 -> `storage.py`; 8 -> ADRs 0003 and 0009; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
+1 -> 14 (ADR 0019); 3 -> `storage.py`; 5 -> `decisions.py`; 8 -> ADRs 0003 and 0009; 11 -> ADR 0005 and
+Traps; 13 -> ADR 0013.
 
 - **2. Scores are never stored.** Always derived from the **Decision log** in one array operation over the
   whole **Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never
   **Pool** x **Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. ADR 0007.
 - **4. The Decision log is append-only and resolves by sequence.** One transaction's rows, or two **History**
   clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence.
-  The rule is one SQL fragment, `_RESOLUTION_CTE`; build on it. A submitted **Batch** is never retracted.
+  The rule is one SQL fragment in `decisions.py`; build on it. A submitted **Batch** is never retracted.
   ADR 0015.
-- **5. Timestamps are ISO 8601 UTC strings** from the injected clock.
 - **6. A Draft Batch is not the Decision log**: a tile post sets its entry, never toggles; submit appends.
 - **7. A Batch is submitted once**: resubmitting, or drafting against it, is refused with a reason.
 - **9. The Library is confined.** Every write and deletion goes through `confined_to_library` and uses the
