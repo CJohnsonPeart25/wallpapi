@@ -40,7 +40,7 @@ ONE_A_SECOND = [float(n) for n in range(50)]
         ),
     ],
 )
-def test_the_api_call_window(calls: Sequence[float], now: float, wait: float) -> None:
+def test_the_minute_window(calls: Sequence[float], now: float, wait: float) -> None:
     assert wait_needed(calls, now=now) == wait
 
 

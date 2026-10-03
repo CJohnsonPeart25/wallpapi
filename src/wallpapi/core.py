@@ -970,26 +970,6 @@ class CoreService:
                 last_strategy=self._last_strategy,
             )
 
-    def pool_sources(self) -> dict[str, int]:
-        """How many **Pool** members each refill strategy put there, keyed by `source`.
-
-        A read of its own rather than a field on `RefillStatus`, for the reason `api_call_window` is one:
-        nothing on a page wants the breakdown, and the tests that pin which strategy admitted what need it
-        to come through the seam rather than out of storage (invariant 1).
-        """
-        rows = self._connect().execute("SELECT source, COUNT(*) AS members FROM pool GROUP BY source")
-        return {str(row["source"]): int(row["members"]) for row in rows.fetchall()}
-
-    def api_call_window(self) -> list[float]:
-        """The **API call** timestamps the limiter is currently counting, oldest first.
-
-        A copy, and a read rather than a field on `RefillStatus`: nothing on a page wants it, and the only
-        caller is the test that pins the window staying bounded over a long run. It is here rather than
-        being read off the attribute so that even that test enters through the seam (invariant 1).
-        """
-        with self._refill_lock:
-            return list(self._api_call_times)
-
     def refill_wait(self) -> float:
         """Seconds before the next `refill_step`: the longest of idling at target, the rate limiter and a
         back-off.
