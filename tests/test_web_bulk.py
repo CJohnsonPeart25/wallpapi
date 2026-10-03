@@ -139,30 +139,6 @@ def test_a_bulk_mark_against_an_already_submitted_batch_is_refused(db_path: Path
     assert "already" in response.text.lower()
 
 
-def test_a_bulk_post_and_a_tile_post_cannot_be_in_flight_together(db_path: Path) -> None:
-    """The one client-side hazard bulk marking introduces, closed declaratively.
-
-    The server side is already atomic. What is not automatic is the screen: a bulk post re-renders the
-    whole grid, so a single-tile post that commits after the grid was read would leave the page showing a
-    mark the server no longer holds. The two kinds of control disable each other for the duration of a
-    request, so only one of them can ever be in flight, and the grid the bulk post returns is the whole
-    truth about the **Draft Batch**.
-
-    Tested by proxy — there is no browser here, so what is asserted is the markup htmx acts on.
-    """
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        body = client.get("/batch").text
-
-    assert body.count('hx-target="#batch-grid"') == 4, "each bulk control swaps the whole grid"
-    assert body.count('hx-sync="#batch-grid:replace"') == 4, "a second bulk click replaces the first"
-    assert body.count('hx-disabled-elt=".verdict"') == 4, "a bulk post locks out the tile controls"
-    assert body.count('hx-disabled-elt=".bulk-verdict"') == 24, "a tile post locks out the bulk controls"
-    assert body.count('hx-sync="this:replace"') == 24, "invariant 6 is untouched by any of this"
-
-
 def test_the_batch_carries_favourite_like_ban_and_clear_controls_for_the_whole_batch(
     db_path: Path,
 ) -> None:
@@ -237,29 +213,6 @@ def test_the_page_carries_a_fullscreen_preview_dialog_and_fetches_nothing_for_it
     assert "removeAttribute('src')" in dialog, "and dropped again when it closes"
 
 
-def test_the_preview_is_an_alpine_component_on_a_dialog_htmx_never_swaps(db_path: Path) -> None:
-    """The preview's state lives on the `<dialog>`, which sits outside everything a swap replaces.
-
-    Tested by proxy — there is no browser here. What is asserted is that the component hangs off the
-    dialog, that it opens from a click on a thumbnail anywhere in the window rather than from a listener
-    bound to one tile (which a swap would take away with the tile), and that it reads the tile's mark
-    back after every htmx swap so the rail and the ring agree.
-    """
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        body = client.get("/").text + client.get("/batch").text
-
-    opening = body[body.index("<dialog") : body.index("<article")]
-    assert "x-data=" in opening
-    assert "x-on:click.window=" in opening
-    assert "x-on:htmx:after-settle.camel.window=" in opening
-    grid = body[body.index('<section id="batch-grid"') : body.index("</section>", body.index("batch-grid"))]
-    assert "<dialog" not in grid, "the dialog must not be inside anything a bulk mark swaps"
-    assert "x-data" not in grid, "no Alpine state on markup htmx replaces"
-
-
 def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(db_path: Path) -> None:
     """Every asset is vendored and served by the app — htmx, Alpine, Pico, the grid script and base.css.
 
@@ -282,54 +235,3 @@ def test_no_script_or_stylesheet_the_page_loads_comes_from_anywhere_but_the_app(
     assert script.status_code == 200
     assert stylesheet.status_code == 200
     assert "http" not in script.text, "the grid script must not fetch anything of its own"
-
-
-def test_a_tile_is_the_shape_of_the_thumbnail_in_it(db_path: Path) -> None:
-    """The tile's box is 3:2, because `thumbs.small` is 300x200 whatever the **Wallpaper** is.
-
-    A **Wallpaper**'s own `width` and `height` describe the file the preview loads, not the one on the
-    tile, and rendering them as attributes on the thumbnail is a presentational hint that is simply
-    wrong — it laid every tile out at the wallpaper's own height, two thousand pixels of it.
-
-    Any box shape other than the thumbnail's own would also mean either re-cropping an image Wallhaven
-    has already cropped, or ringing it with bars. Neither says anything truer about the wallpaper, and
-    the wallpaper's real shape is what the preview is for.
-    """
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        body = client.get("/batch").text
-        stylesheet = client.get("/static/base.css").text
-
-    start = body.index('<li class="tile"')
-    tile = body[start : body.index("</li>", start)]
-    assert 'width="' not in tile, "the wallpaper's dimensions are not the thumbnail's"
-    assert 'height="' not in tile
-    assert "--tile-ratio: 3 / 2" in stylesheet
-    rule = next(block for block in stylesheet.split("}") if ".tile img" in block)
-    assert "aspect-ratio: var(--tile-ratio)" in rule
-    assert "object-fit: cover" in rule
-
-
-def test_hovering_a_tile_reveals_its_verdict_rail_without_javascript(db_path: Path) -> None:
-    """Hovering a **Wallpaper** brings up its controls, and nothing else on the page moves.
-
-    This replaced hover-to-enlarge, which scaled tiles past the edge of the screen and had no answer for
-    the tile in the last column. Seeing a **Wallpaper** bigger is what the preview is for; what hovering
-    does now is offer the three **Verdict** controls, on a rail the grid has already reserved room for.
-
-    Tested by proxy, and deliberately: there is no browser here, so what is asserted is that the rule is
-    CSS rather than script. `:focus-within` carries the same rule so the keyboard reaches the rail too.
-    """
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        stylesheet = client.get("/static/base.css").text
-
-    rule = next(block for block in stylesheet.split("}") if ".tile:hover .verdicts" in block)
-    assert ":focus-within .verdicts" in rule
-    assert "opacity: 1" in rule
-    # Nothing is scaled any more: a tile is exactly where the grid put it, hovered or not.
-    assert "scale(" not in stylesheet

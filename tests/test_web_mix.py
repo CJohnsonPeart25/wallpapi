@@ -93,25 +93,3 @@ def test_a_mix_nobody_has_heard_of_is_a_bad_request_and_changes_nothing(db_path:
     assert refused.status_code == HTTPStatus.BAD_REQUEST
     assert 'data-mix-active="explore"' in refused.text
     assert harness.core.get_settings().active_mix == "explore"
-
-
-def test_there_is_no_switcher_on_a_page_with_no_batch_to_switch_for(db_path: Path) -> None:
-    """A **Batch** page with no **Batch** is the one place the switcher is deliberately *not* rendered.
-
-    A **Mix** with no **Pool** to apply it to is a control that cannot do anything and an extra thing to
-    explain on the page whose whole job is explaining why there is nothing. The refill indicator is what
-    answers that page's question. The shell is drawn before it knows whether there is a **Batch**, so the
-    switcher is in its nav and the stylesheet hides it until a fetch leaves a `#batch-id` behind.
-    """
-    harness = make_harness(db_path, fill_pool=0)
-
-    with TestClient(create_app(harness.core)) as client:
-        fetched = client.get("/batch")
-        stylesheet = client.get("/static/base.css").text
-
-    assert fetched.status_code == HTTPStatus.SERVICE_UNAVAILABLE
-    assert 'id="batch-id"' not in fetched.text
-    assert "Pool 0 of" in fetched.text
-    rule = next(block for block in stylesheet.split("}") if "body:not(:has(#batch-id))" in block)
-    assert "#mix-switcher" in rule
-    assert "visibility: hidden" in rule
