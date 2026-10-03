@@ -4,8 +4,8 @@ Date: 2026-10-02
 
 ## Status
 
-Accepted. Supersedes the resolution rule and the **Clearance** of ADR 0008; its other decisions — resolution
-lives in one SQL fragment, edits carry `batch_id = NULL` — stand.
+Superseded by ADR 0016, under which nothing decided is shown again, so pre-marking is dormant. The resolution
+rule — the latest entry decides — stands, as does its supersession of ADR 0008.
 
 ## Context
 

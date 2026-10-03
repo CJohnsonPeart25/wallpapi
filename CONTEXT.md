@@ -61,7 +61,7 @@ A weaker positive verdict, recorded in history but never downloaded.
 _Avoid_: maybe, shortlist, upvote
 
 **Ignore**:
-The mildly negative verdict given to every wallpaper in a submitted batch left unmarked — including one that came up marked with an earlier verdict and was unmarked. Seen once, done: like every verdict it retires the wallpaper from the pool, so it is not shown again. Unlike a ban it spreads only an ignore's weight, and history can overturn it. Ignores do not stack: passing a wallpaper over twice, once in a batch and once from history, counts the same as once.
+The mildly negative verdict given to every wallpaper in a submitted batch left unmarked. Seen once, done: like every verdict it retires the wallpaper from the pool, so it is not shown again. Unlike a ban it spreads only an ignore's weight, and history can overturn it. Ignores do not stack: passing a wallpaper over twice, once in a batch and once from history, counts the same as once.
 _Avoid_: skip, pass, no-op
 
 **Ban**:
@@ -69,7 +69,7 @@ The strongest negative verdict. The wallpaper is never shown again, and its weig
 _Avoid_: block, hide, reject, dislike
 
 **Draft Batch**:
-The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log. A batch's draft starts with every wallpaper whose latest decision is an explicit verdict already marked with it, so leaving a tile alone records the same verdict again and only a change has to be made. Dormant while nothing shows a decided wallpaper again, and kept for when something does.
+The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log.
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:
@@ -80,8 +80,8 @@ _Avoid_: aggregation, tallying
 The append-only record of every verdict and history edit. It is the single source of truth.
 _Avoid_: history table, audit log, events
 
-**Clearance**:
-A decision log entry that withdrew a wallpaper's explicit verdict, leaving it as if never seen. No longer made: withdrawing a verdict is now an ignore, from history as from a batch. A wallpaper whose latest entry is a clearance still resolves to nothing.
+**Clearance** (legacy):
+A decision log entry that withdrew a wallpaper's explicit verdict, leaving it as if never seen. No longer made — withdrawing a verdict is an ignore — but old ones remain in the log, and a wallpaper whose latest entry is a clearance resolves to nothing.
 _Avoid_: undo, reset, delete, revert
 
 **History**:
@@ -95,15 +95,15 @@ A wallpaper's derived value, calculated from the decision log with each resolved
 _Avoid_: rating, weight, rank, affinity
 
 **Similarity provider**:
-The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. Its method was deliberately left open until #14; it is now a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded. Two others remain selectable. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
+The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
 _Avoid_: embedder, model, comparator, CLIP
 
 **Embedding**:
 The few hundred numbers a CLIP image encoder turns one thumbnail into, standing for what is in the picture. Cached permanently, computed in the background, and never stored in the decision log's database. Two wallpapers of the same thing have close embeddings whatever their colours, which is the whole reason the provider changed.
 _Avoid_: vector, feature, encoding, latent
 
-**Tag**:
-One of Wallhaven's own labels on a wallpaper, applied by its users. Only available from the single-wallpaper endpoint, one API call each, so a pool costs thousands of calls to tag. The tag similarity provider uses them; nothing else does.
+**Tag** (legacy):
+One of Wallhaven's own labels on a wallpaper, applied by its users. Only used by an opt-in similarity provider that lost to embeddings and is due to go; nothing else reads them.
 _Avoid_: label, keyword, category
 
 **Similarity radius**:
@@ -183,7 +183,7 @@ The locally stored thumbnails wallpapi serves to its own pages, so batches never
 _Avoid_: image cache, thumbs, local store, static files
 
 **Core service**:
-The single interface between the UI and everything else, and the only seam tests enter through.
+The single interface between the UI and everything else, today. It is being split into modules with seams of their own, and tests enter through those, not through it.
 _Avoid_: engine, manager, API, backend
 
 ### Configuration

@@ -10,16 +10,13 @@ now 500 rather than 2000. The rest stands.
 
 ## Context
 
-Until now a **Batch** was a live Wallhaven search on the page load path. #2 made it one **API call** per
-**Batch** minted rather than per page load; #3 made it up to four, walking pages carrying `meta.seed` when
-past **Bans** left a page short. Both were scaffolding with an expiry date written into them.
+Until now a **Batch** was a live Wallhaven search on the page load path, of up to four **API calls**.
 
 Three things come due at once here.
 
 **The page load path must stop calling Wallhaven.** A user waits for it, it is capped at four calls because
-of that, and — issue #15 — a transport failure on the first call propagates out of the **Core service** and
-the browser gets a 500. The #3 rescue deliberately did not widen to cover it, because widening it would
-have closed #15 by accident with a page nobody had designed.
+of that, and a transport failure on the first call propagates out of the **Core service** and the browser
+gets a 500.
 
 **The Filters need somewhere to be applied.** Minimum resolution and allowed ratios are query parameters;
 minimum **Favourites** is not, because Wallhaven's search has no parameter for it. Purity is fixed to SFW
@@ -44,25 +41,21 @@ an evening, and the refill is at full speed for as long as it takes to build one
 
 The alternative — budget-driven with no ceiling, pulling for as long as the **Filters** yield anything new —
 was rejected. Invariant 2 sizes the **Similarity provider**'s matrix off the **Pool**, and every
-whole-**Pool** operation (the **Scoring** at #9, the **Filter** prune here) is linear in it. Unbounded
+whole-**Pool** operation (the **Scoring**, the **Filter** prune) is linear in it. Unbounded
 growth is a system that gets slower every day and never says why. `MAX_POOL_TARGET_SIZE` is 20,000 for the
 same reason; the person who wants a bigger backlog turns one number up and can see what it costs.
 
-**Foreground priority is moot.** The question the issue raised — does a **Batch** mint outrank the
-background thread for the budget in one minute — has no answer to give, because after this ticket a
-**Batch** mint costs nothing. The #3 walk is therefore deleted whole rather than left dormant behind the
-**Pool**: `_gather_candidates`, `MAX_SEARCHES_PER_BATCH`, the mid-walk rescue and their tests are gone. The
-`seed` parameter on the client stays — the refill is what uses it now.
+**Foreground priority is moot.** A **Batch** mint costs no **API call**, so it never competes with the
+background thread for the budget, and the page-load search is deleted rather than left behind the **Pool**.
 
 **Pool membership is its own table**, `pool(wallpaper_id, fetched_at, source)`, never a column on
 `wallpapers`. A **Wallpaper** leaves the **Pool** while the **Decision log** goes on referring to its row
 for ever, so "is it in the **Pool**" and "does this row exist" must not be the same question. `source` is
-`'random'` or, since #13, `'like'` — see the extension below.
+`'random'` or `'like'` — see the extension below.
 
 **Batch building is a uniform random sample of the Pool, minus anything whose resolved Verdict is Ban.**
 Other **Verdicts** may reappear: an **Ignore** that removed a **Wallpaper** for ever would be an
-undocumented second **Ban**. The revisit weight at #11 tunes how often; **Zones** and **Mixes** at #9 and
-#10 replace the uniform draw outright. ADR 0002's re-read-under-the-write-lock rule stands, and is cheaper
+undocumented second **Ban**. **Zones** and **Mixes** (ADR 0010) replace the uniform draw. ADR 0002's re-read-under-the-write-lock rule stands, and is cheaper
 now that what precedes it is local reads rather than a network call.
 
 **Filters are settings, and every Wallpaper entering the Pool is checked locally against all of them.**
@@ -78,7 +71,7 @@ decided or not. **Pool** membership governs one thing — what may be *shown* �
 an **Ignored** one certainly must. A **Verdict** is not an exemption from the **Filters**.
 
 Nothing is lost by it, because only the membership row goes. The `wallpapers` row and every **Decision
-log** entry stay — the log is append-only, **History** at #7 renders a thumbnail for each of them, and a
+log** entry stay — the log is append-only, **History** renders a thumbnail for each of them, and a
 **Clearance** there works on the log rather than on **Pool** membership. The live unsubmitted **Batch** is
 untouched for free, because a **Batch** holds `batch_wallpapers` rows rather than **Pool** membership, so
 nobody loses the **Draft Batch** they are part way through.
@@ -100,8 +93,7 @@ on shutdown with a timeout greater than the client's 10-second request timeout (
 inside it is `stop_event.wait(n)`.
 
 **`refill_step` never raises.** A transport error, a non-200, anything the client throws: it is recorded as
-the refill's last error with the clock's time, it becomes a back-off, and the loop goes on. That is what
-closes #15 from the other end. On a 429 the client raises `RateLimited` and Wallhaven's `Retry-After` is
+the refill's last error with the clock's time, it becomes a back-off, and the loop goes on. On a 429 the client raises `RateLimited` and Wallhaven's `Retry-After` is
 honoured if it sent one; otherwise the back-off is 60 seconds, which is the window the budget is counted
 over.
 
@@ -120,7 +112,7 @@ reaches target or a page comes back empty. `meta.last_page` is returned by Wallh
 on the captured random SFW search it was 14,055, which is not a stop condition, and an empty page is the
 real end of a walk.
 
-### Extended at issue #13 — like: searches
+### Extended — like: searches
 
 **Two strategies, taking strict turns, inside the one `refill_step`.** The random walk above feeds the
 **Unknown** **Zone**; a like: walk searches `q=like:<wallhaven id>` on a **Favourite** and feeds the
@@ -139,7 +131,7 @@ when all of them have been, the cycle restarts. Without that rule a seeded draw 
 like: step on one **Wallpaper** while the rest of the user's taste goes unasked about.
 
 Which **Wallpapers** are **Favourites** is resolved from the **Decision log** on every step rather than
-kept in a list of subjects. A **Favourite** replaced by a **Like** or a **Ban**, or **Cleared** at #7,
+kept in a list of subjects. A **Favourite** replaced by a **Like** or a **Ban**, or **Cleared**,
 therefore leaves the rotation by itself — mid-walk if need be — and there is no second copy of the truth
 to drift out of step.
 
@@ -158,7 +150,7 @@ has the seed trap, and `like:<id>` answers the same way whenever it is asked.
 **Wallpaper** the random walk already found keeps the `source` and `fetched_at` it arrived with — meeting
 it again is not a second arrival — which the membership insert's `DO NOTHING` gives for free.
 
-**A failed like: call is a failed call and nothing more:** recorded, backed off, never raised (#15), and
+**A failed like: call is a failed call and nothing more:** recorded, backed off, never raised, and
 the page it failed on is retried rather than skipped. The turn is spent either way, so the step after the
 back-off belongs to the other strategy; a strategy that could retry its way through the whole budget would
 be exactly the starvation the alternation exists to prevent.
@@ -171,9 +163,6 @@ down is now a page that says so and a **Pool** that drains rather than an error.
 The refill spends real API budget in the background from the moment the app starts. That is the intent, and
 it is the reason the app must stay single-worker: `uvicorn --workers N` would be N threads each spending 45
 calls a minute against one SQLite file.
-
-Everything downstream that needs "the **Pool**" now has one. #9 scores it, #10 allocates **Batches** across
-its **Zones**, #11 weights revisits within it, #13 adds a second `source`.
 
 The first run of a fresh install shows the unavailable page until the refill has fetched a page. That is
 correct and it is why the reason and the indicator exist; a first **Batch** is a few seconds away.
@@ -192,14 +181,13 @@ setting and two states produce the same behaviour anybody would notice.
 `fetched_at` and `source` nowhere to live that is about the image itself, and makes "everything in the
 **Pool**" a scan of every **Wallpaper** ever seen rather than of the **Pool**.
 
-**Leaving the #3 walk in place as a fallback for an empty Pool.** Tempting, because it would make the first
-page load after a fresh install work. Rejected: it is a second, untested **Batch**-building path that only
-ever runs in the situation where Wallhaven is least likely to answer, and it would quietly restore the 500
-that #15 is about.
+**Leaving the page-load search in place as a fallback for an empty Pool.** Tempting, because it would make
+the first page load after a fresh install work. Rejected: it is a second, untested **Batch**-building path
+that only ever runs when Wallhaven is least likely to answer, and it would quietly restore the 500.
 
-**Pruning only the undecided members on a Filter change.** Built first, and rejected on review. The
-argument for it was that a tightened **Filter** should not undo a decision, and that a **Clearance** at #7
-would want the **Wallpaper** still in the **Pool**. Neither holds: nothing about a decision is touched
+**Pruning only the undecided members on a Filter change.** The argument for it was that a tightened
+**Filter** should not undo a decision, and that a **Clearance** would want the **Wallpaper** still in the
+**Pool**. Neither holds: nothing about a decision is touched
 either way — only the membership row goes, and the **Decision log** is where a **Clearance** does its work
 — while the cost is real, because it would leave a **Liked** 1080p **Wallpaper** reappearing in **Batches**
 after the minimum was raised to 1440p, which is precisely what the **Filter** was changed to stop.

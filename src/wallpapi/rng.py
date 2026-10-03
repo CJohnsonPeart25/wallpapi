@@ -1,9 +1,4 @@
-"""The seeded random source.
-
-The spec asks for "a seeded random source", not a fake one, so the tests inject this with a fixed seed
-rather than a stand-in. It is a class rather than a bare `random.Random` so the Core service depends on the
-handful of operations it actually needs.
-"""
+"""The seeded random source: tests inject this with a fixed seed rather than a stand-in."""
 
 from __future__ import annotations
 
@@ -22,10 +17,5 @@ class SeededRandom:
         return self._random.sample(population, k)
 
     def fraction(self) -> float:
-        """One number in `[0, 1)`.
-
-        The primitive **Allocation** is built on: the leftover-slot roll needs a raw uniform, and it is
-        not a `sample`. Kept as narrow as the rest of this class — no
-        `randrange`, no `choices`, because nothing needs them.
-        """
+        """One number in `[0, 1)`, the primitive the leftover-slot roll is built on."""
         return self._random.random()

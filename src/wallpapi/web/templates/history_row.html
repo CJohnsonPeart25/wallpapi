@@ -4,17 +4,12 @@
   swap for an edit — a `<tr>` either way, because anything else swapped into a `<tbody>` is dropped by the
   parser and the edit would seem to do nothing.
 
-  Each **Verdict** control posts the **Verdict** the row should *end up* with, exactly as a tile does
-  (invariant 6): a replayed or duplicated click lands on the same state. **Ignore** is one of them (#37):
-  it is how **History** withdraws a **Verdict**, the same entry unmarking a tile writes, and the latest
-  entry decides, so it overturns whatever stood.
+  Each **Verdict** control posts the **Verdict** the row should *end up* with, as a tile does (ADR 0002), and
+  **Ignore** is one of them: it is how **History** withdraws a **Verdict**. `hx-sync="this:replace"` stops a
+  late response swapping a stale row back in.
 
-  `hx-sync="this:replace"` for the same reason the tiles carry it: a late response must not swap a stale
-  row back in over a newer one.
-
-  The controls are Pico buttons with the rail's glyphs, and deliberately not the rail's classes: the rail
-  is laid over a thumbnail and hidden until hovered, which is right for a tile and wrong for a row. The
-  standing **Verdict** is the filled button; the others are outlines.
+  Pico buttons with the rail's glyphs but not its classes: the rail is hidden until hovered, which suits a
+  tile and not a row. The standing **Verdict** is the filled button.
 #}
 {%- set standing = row.resolved.verdict.value if row.resolved.verdict else "" %}
 <tr
@@ -32,7 +27,7 @@
     {% if standing %}
       {{ standing }}
     {% else %}
-      {# Reachable only from a database written before #37, whose latest entry is a legacy Clearance. #}
+      {# Reachable only where the latest entry is a legacy **Clearance**. #}
       no verdict
     {% endif %}
   </td>

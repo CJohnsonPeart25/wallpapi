@@ -4,9 +4,8 @@ Date: 2026-09-27
 
 ## Status
 
-Accepted. The resolution rule and the **Clearance** are superseded by ADR 0015 — the latest entry decides,
-**Ignores** no longer stack, and **History** withdraws a **Verdict** with an **Ignore**. Resolution living
-in one SQL fragment, and edits carrying `batch_id = NULL`, stand.
+Superseded by ADR 0015, which replaces the resolution rule and the **Clearance**: the latest entry decides.
+Resolution living in one SQL fragment, and edits carrying `batch_id = NULL`, stand.
 
 ## Context
 

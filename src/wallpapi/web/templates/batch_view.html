@@ -11,9 +11,8 @@
   {# One include, because the grid is also what a bulk mark swaps back in on its own. #}
   {% include "grid.html" %}
 {% else %}
-  {# Never a 500, and never a bare reason code (#15). An empty pool because nothing has arrived yet
-     and an empty pool because Wallhaven is unreachable look identical from here, and they are not
-     the same problem: one is a matter of waiting and the other is not. #}
+  {# Never a bare reason code: an empty pool because nothing has arrived yet and one because Wallhaven is
+     unreachable look alike from here, and one is a matter of waiting. #}
   {% if unavailable.reason.value == "wallhaven_unreachable" %}
     <p>Nothing to show: wallpapi cannot reach Wallhaven, so the pool has not filled.</p>
     <p><small>
