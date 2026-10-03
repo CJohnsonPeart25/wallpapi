@@ -573,3 +573,15 @@ def test_submitting_retires_everything_shown_and_clears_the_draft(rig: Rig) -> N
     assert pool.members(rig.connection) == [w for w in catalogue_of(24) if w not in batch.wallpapers]
     assert rig.drafted_rows() == 0
     assert not set(batch.wallpapers) & set(rig.next().wallpapers)
+
+
+def test_showing_is_the_live_batch_until_it_is_submitted(rig: Rig) -> None:
+    """What eviction keeps besides the **Pool**: a tile on screen, pruned from the **Pool** or not."""
+    assert batches.showing(rig.connection) == set()
+    batch = rig.next()
+
+    assert batches.showing(rig.connection) == {w.id for w in batch.wallpapers}
+
+    rig.submit(batch.id)
+
+    assert batches.showing(rig.connection) == set()
