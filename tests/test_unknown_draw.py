@@ -184,3 +184,14 @@ def test_no_vectors_and_too_few_vectors_both_give_todays_draw(tmp_path: Path) ->
 
     assert batches[1] == batches[0]
     assert batches[2] == batches[0]
+
+
+def test_a_pool_with_no_embeddings_draws_exactly_the_seeded_shuffle(tmp_path: Path) -> None:
+    """ADR 0018: with no positions the draw is the one it was before the varied draw existed. Recorded
+    from the code before `vectors` stopped being optional, under the same seed."""
+    batch = drawn(harness(tmp_path / "w.db", catalogue_of(40), None, seed=9), 16)
+
+    assert [w.id for w in batch.wallpapers] == [
+        "wp0005", "wp0021", "wp0022", "wp0023", "wp0011", "wp0001", "wp0032", "wp0038",
+        "wp0010", "wp0029", "wp0019", "wp0017", "wp0012", "wp0039", "wp0000", "wp0008",
+    ]  # fmt: skip

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import SOURCE, make_harness
 from tests.fakes import catalogue_of
 from wallpapi.refill import JOIN_TIMEOUT, RefillThread
+from wallpapi.similarity import CAUGHT_UP
 from wallpapi.similarity_thread import SimilarityThread
 from wallpapi.thumbnail_thread import THREAD_NAME, ThumbnailThread
 from wallpapi.web.app import create_app
@@ -61,34 +62,37 @@ def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Pa
     app = create_app(harness.core, refill=True)
 
     with TestClient(app):
-        assert harness.similarity.wait_for_catch_ups(1, JOIN_TIMEOUT), "the thread should have caught up"
+        assert harness.model.asked.wait(JOIN_TIMEOUT), "the thread should have fetched the model"
 
 
-def test_the_upkeep_is_handed_the_thumbnail_cache(db_path: Path) -> None:
+def test_the_upkeep_embeds_the_thumbnail_cache(db_path: Path) -> None:
     """The images wallpapi holds are the **Thumbnail cache** (ADR 0009); a **Wallpaper** with no
     thumbnail there is simply not embedded and falls back to the baseline."""
     harness = make_harness(db_path)
+    harness.core.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    (harness.core.thumbnail_dir / "wp0003.jpg").write_bytes(b"thumbnail")
 
     harness.core.similarity_step(threading.Event())
 
-    assert harness.similarity.catch_up_calls == [harness.core.thumbnail_dir]
+    assert harness.embed.seen == ["wp0003"]
 
 
-def test_a_provider_with_more_to_do_is_called_again_without_waiting(db_path: Path) -> None:
-    """A 0.0 means "come straight back", so a backlog is worked through without the loop sleeping. Two
-    0.0s then `NOTHING_TO_CATCH_UP` is exactly three calls before the loop settles into its wait."""
-    harness = make_harness(db_path, catch_up_waits=[0.0, 0.0])
+def test_a_backlog_is_worked_through_without_waiting(db_path: Path) -> None:
+    """A step that leaves more to do asks to come straight back, so three thumbnails one at a time are
+    embedded well inside `CAUGHT_UP`, the wait the loop settles into after."""
+    harness = make_harness(db_path, embed_batch=1)
+    harness.core.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("wp0001", "wp0002", "wp0003"):
+        (harness.core.thumbnail_dir / f"{name}.jpg").write_bytes(b"thumbnail")
     upkeep = SimilarityThread(harness.core)
 
     upkeep.start()
     try:
-        assert harness.similarity.wait_for_catch_ups(3, JOIN_TIMEOUT), (
-            "the 0.0s should be followed straight up"
-        )
+        assert harness.embed.wait_for(3, CAUGHT_UP / 2), "a 0.0 should be followed straight up"
     finally:
         upkeep.stop()
 
-    assert len(harness.similarity.catch_up_calls) == 3
+    assert harness.embed.batches == [1, 1, 1]
 
 
 def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_path: Path) -> None:

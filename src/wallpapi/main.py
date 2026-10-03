@@ -15,20 +15,12 @@ from wallpapi.clock import SystemClock
 from wallpapi.core import CoreService
 from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.rng import SeededRandom
-from wallpapi.similarity import MetadataSimilarityProvider, SimilarityProvider
-from wallpapi.similarity_embedding import (
-    DownloadedModel,
-    EmbeddingCache,
-    EmbeddingSimilarityProvider,
-)
+from wallpapi.similarity import DownloadedModel, EmbeddingCache, Embeddings, OnnxClipEmbedder
 from wallpapi.wallhaven import WallhavenClient
 from wallpapi.web.app import create_app
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
-
-DEFAULT_SIMILARITY = "embedding"
-"""The **Similarity provider** wired in unless `WALLPAPI_SIMILARITY` says otherwise (ADR 0013)."""
 
 MODEL_FILENAME = "clip-vit-b32-vision-quantized.onnx"
 """The image tower's name on disk, under `models/` in the wallpapi home."""
@@ -40,17 +32,10 @@ def wallpapi_home() -> Path:
     return Path(configured) if configured else Path.home() / ".wallpapi"
 
 
-def build_similarity(root: Path) -> SimilarityProvider:
-    """Which **Similarity provider** to wire in, from `WALLPAPI_SIMILARITY`; an unrecognised name raises."""
-    choice = os.environ.get("WALLPAPI_SIMILARITY", DEFAULT_SIMILARITY).strip().lower()
-    if choice == "metadata":
-        return MetadataSimilarityProvider()
-    if choice == "embedding":
-        return EmbeddingSimilarityProvider(
-            EmbeddingCache(root / "embeddings.db"),
-            model=DownloadedModel(root / "models" / MODEL_FILENAME),
-        )
-    raise ValueError(f"WALLPAPI_SIMILARITY must be metadata or embedding — not {choice!r}")
+def build_similarity(root: Path) -> Embeddings:
+    """The **Similarity provider** (ADR 0013): nothing opened, imported or fetched until its thread asks."""
+    model = root / "models" / MODEL_FILENAME
+    return Embeddings(EmbeddingCache(root / "embeddings.db"), OnnxClipEmbedder(model), DownloadedModel(model))
 
 
 def build_core(home: Path | None = None) -> CoreService:

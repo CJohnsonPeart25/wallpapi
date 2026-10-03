@@ -7,7 +7,7 @@ from __future__ import annotations
 import threading
 
 from wallpapi.core import CoreService
-from wallpapi.similarity_embedding import DOWNLOAD_TIMEOUT
+from wallpapi.similarity import DOWNLOAD_TIMEOUT
 
 JOIN_TIMEOUT = DOWNLOAD_TIMEOUT + 5.0
 """Seconds shutdown waits for the thread: greater than the model download's read timeout (invariant 12)."""
