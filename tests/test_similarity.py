@@ -432,9 +432,9 @@ def test_the_page_is_told_how_much_of_the_pool_is_embedded(tmp_path: Path) -> No
 def test_the_core_service_asks_about_the_whole_pool(db_path: Path) -> None:
     harness = make_harness(db_path, catalogue=catalogue_of(24))
     harness.store.vector_by_id["wp0000"] = STUB_DIRECTION
-    harness.core.similarity_step(threading.Event())
+    harness.modules.similarity.catch_up(harness.modules.thumbnails.directory, threading.Event())
 
-    notice = harness.core.similarity_notice()
+    notice = harness.modules.similarity.notice(harness.modules.thumbnails.obtainable(harness.connect()))
 
     assert notice is not None
     assert "1 of 24 Pool wallpapers" in notice
