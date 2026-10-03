@@ -12,7 +12,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from tests.conftest import FIXED_NOW, Harness, make_harness
+from tests.conftest import FIXED_NOW, Harness, force_remigration, make_harness
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import IDLE_RECHECK_SECONDS, SUPERSEDED_POOL_TARGET_SIZE, Batch
 from wallpapi.model import Clearance, Verdict, Zone
@@ -84,7 +84,7 @@ def test_the_new_target_reaches_a_database_that_still_held_the_old_one(db_path: 
     in, and the state migration 10 has to recognise."""
     before = make_harness(db_path, fill_pool=0)
     before.core.update_settings(pool_target_size=SUPERSEDED_POOL_TARGET_SIZE)
-    _force_remigration(db_path)
+    force_remigration(db_path, to_version=9)
 
     after = make_harness(db_path, fill_pool=0)
 
@@ -95,7 +95,7 @@ def test_a_target_the_user_chose_is_left_exactly_as_they_set_it(db_path: Path) -
     """A migration never undoes a setting: 3000 is not the old default, so it stays."""
     chosen = make_harness(db_path, fill_pool=0)
     chosen.core.update_settings(pool_target_size=3000)
-    _force_remigration(db_path)
+    force_remigration(db_path, to_version=9)
 
     after = make_harness(db_path, fill_pool=0)
 
@@ -118,7 +118,7 @@ def test_migration_retires_every_pool_member_the_decision_log_already_mentions(d
             ("wp0002", Clearance.CLEARED.value, FIXED_NOW.isoformat()),
         )
     assert before.core.refill_status().pool_size == 12
-    _force_remigration(db_path)
+    force_remigration(db_path, to_version=9)
 
     after = make_harness(db_path, fill_pool=0)
 
@@ -134,22 +134,12 @@ def test_migration_deletes_the_revisit_weight_row(db_path: Path) -> None:
     make_harness(db_path, fill_pool=0)
     with _connection(db_path) as connection:
         connection.execute("INSERT INTO settings (key, value) VALUES ('revisit_weight', '0.2')")
-    _force_remigration(db_path)
+    force_remigration(db_path, to_version=9)
 
     make_harness(db_path, fill_pool=0)
 
     with _connection(db_path) as connection:
         assert connection.execute("SELECT * FROM settings WHERE key = 'revisit_weight'").fetchall() == []
-
-
-def _force_remigration(db_path: Path) -> None:
-    """Wind `user_version` back to 9 so the next Core service over this file applies migration 10 again.
-
-    A reach past the seam for the reason `test_settings.py` gives: a migration only runs against a database
-    that has not had it, and the Core service migrates in its constructor.
-    """
-    with _connection(db_path) as connection:
-        connection.execute("PRAGMA user_version = 9")
 
 
 @contextmanager

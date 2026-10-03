@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import sqlite3
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -211,3 +212,18 @@ def judge(harness: Harness, **marks: Verdict) -> None:
     """Give each named **Wallpaper** a **Verdict** from **History**, in the order given."""
     for wallpaper_id, verdict in marks.items():
         assert harness.core.edit_verdict(wallpaper_id, verdict) is None
+
+
+def force_remigration(db_path: Path, *, to_version: int) -> None:
+    """Wind `user_version` back to `to_version` so the next Core service over this file applies the
+    migration after it again.
+
+    The one place a test reaches past the seam, and it is unavoidable: what is being checked is a
+    *migration*, and a migration only runs against a database that has not had it. There is no way to ask
+    the Core service for an un-migrated database, because the Core service migrates in its constructor.
+    """
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        connection.execute(f"PRAGMA user_version = {to_version}")
+    finally:
+        connection.close()

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import Harness, force_remigration, make_harness
 from wallpapi.core import (
     DEFAULT_SIMILARITY_RADIUS,
     MAX_BATCH_SIZE,
@@ -209,7 +209,7 @@ def test_the_new_default_reaches_a_database_that_still_held_the_old_one(db_path:
     """
     before = make_harness(db_path, fill_pool=0)
     before.core.update_settings(similarity_radius=SUPERSEDED_SIMILARITY_RADIUS)
-    _force_remigration(db_path)
+    force_remigration(db_path, to_version=8)
 
     after = make_harness(db_path, fill_pool=0)
 
@@ -224,24 +224,8 @@ def test_a_radius_the_user_chose_is_left_exactly_as_they_set_it(db_path: Path) -
     """
     chosen = make_harness(db_path, fill_pool=0)
     chosen.core.update_settings(similarity_radius=0.42)
-    _force_remigration(db_path)
+    force_remigration(db_path, to_version=8)
 
     after = make_harness(db_path, fill_pool=0)
 
     assert after.core.get_settings().similarity_radius == 0.42
-
-
-def _force_remigration(db_path: Path) -> None:
-    """Wind `user_version` back so the next Core service over this file applies migration 9 again.
-
-    The one place a test reaches past the seam, and it is unavoidable: what is being checked is a
-    *migration*, and a migration only runs against a database that has not had it. There is no way to ask
-    the Core service for an un-migrated database, because the Core service migrates in its constructor.
-    """
-    import sqlite3
-
-    connection = sqlite3.connect(db_path, isolation_level=None)
-    try:
-        connection.execute("PRAGMA user_version = 8")
-    finally:
-        connection.close()
