@@ -38,7 +38,7 @@ def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> N
     checked is that the thread starts, the wait is cancellable and the join returns."""
     harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=1)
     harness.core.update_settings(pool_target_size=1)
-    app = create_app(harness.core, refill=True)
+    app = create_app(harness.modules, refill=True)
 
     with TestClient(app) as client:
         response = client.get("/batch")
@@ -52,7 +52,7 @@ def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> N
 def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> None:
     harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=0)
     harness.core.update_settings(pool_target_size=1)
-    app = create_app(harness.core, refill=True)
+    app = create_app(harness.modules, refill=True)
 
     with TestClient(app) as client:
         client.get("/batch")
@@ -65,7 +65,7 @@ def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Pa
     """The model is fetched off the request path, and shutdown is clean."""
     harness = make_harness(db_path, catalogue=catalogue_of(24))
     harness.core.update_settings(pool_target_size=1)
-    app = create_app(harness.core, refill=True)
+    app = create_app(harness.modules, refill=True)
 
     with TestClient(app):
         assert harness.model.asked.wait(JOIN_TIMEOUT), "the thread should have fetched the model"
@@ -106,7 +106,7 @@ def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_
     similarity thread, and it starts through the `refill` flag."""
     harness = make_harness(db_path, catalogue=catalogue_of(3))
     harness.core.update_settings(pool_target_size=1)
-    app = create_app(harness.core, refill=True)
+    app = create_app(harness.modules, refill=True)
 
     with TestClient(app):
         assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "the downloader should have fetched"
@@ -119,7 +119,7 @@ def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_
 
 def test_without_the_refill_flag_no_downloader_starts(db_path: Path) -> None:
     harness = make_harness(db_path, catalogue=catalogue_of(3))
-    app = create_app(harness.core)
+    app = create_app(harness.modules)
 
     with TestClient(app) as client:
         client.get("/batch")
@@ -182,7 +182,7 @@ def test_the_lifespan_starts_the_loops_in_order_and_stops_them_in_reverse(
     harness = make_harness(db_path, catalogue=catalogue_of(3))
     harness.core.update_settings(pool_target_size=1)
 
-    with TestClient(create_app(harness.core, refill=True)):
+    with TestClient(create_app(harness.modules, refill=True)):
         pass
 
     assert events == [

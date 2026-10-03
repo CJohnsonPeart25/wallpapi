@@ -3,13 +3,7 @@
   nothing. Nothing stores it, so a refresh — a fresh shell — drops it.
 #}
 {% if refused %}
-  <p>
-    {% if refused.reason.value == "already_submitted" %}
-      That batch has already been submitted — nothing was recorded a second time.
-    {% else %}
-      That batch is not one this instance knows about.
-    {% endif %}
-  </p>
+  <p>{{ refused }}</p>
 {% else %}
   {# Said as it was recorded: calling three Favourites "ignores" because most of the Batch was
      unmarked would be a plain lie about what went into the Decision log. #}

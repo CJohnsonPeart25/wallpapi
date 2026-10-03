@@ -35,6 +35,7 @@ from tests.fakes import (
     catalogue_of,
 )
 from wallpapi import decisions, pool, settings, storage
+from wallpapi.compose import Modules
 from wallpapi.core import Batch, CoreService
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
@@ -92,6 +93,7 @@ class Harness:
     """A Core service plus the fakes behind it, so tests can assert on both sides of the seam."""
 
     core: CoreService
+    modules: Modules
     wallhaven: FakeWallhavenClient
     library: FakeLibraryWriter
     """The fake the Core service writes through, unless `make_harness` was handed a real writer."""
@@ -165,6 +167,7 @@ def make_harness(
     )
     harness = Harness(
         core=core,
+        modules=core.modules,
         wallhaven=wallhaven,
         library=fake_library,
         similarity=similarity,
@@ -191,7 +194,7 @@ def harness(db_path: Path) -> Harness:
 @contextmanager
 def serving(harness: Harness) -> Generator[TestClient]:
     """The app over `harness`, lifespan and all, with no background threads."""
-    with TestClient(create_app(harness.core)) as client:
+    with TestClient(create_app(harness.modules)) as client:
         yield client
 
 

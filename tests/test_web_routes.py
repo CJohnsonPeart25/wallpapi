@@ -178,32 +178,59 @@ def test_posting_the_same_batch_twice_is_refused_and_still_refetches(web: Web) -
     assert len(harness.core.list_history()) == 8
 
 
-HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus]] = [
+HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus, str]] = [
     # Ignore is derived on submit and never stored as a mark: a stored one would be a second shape of
     # nothing for Verdict resolution to tell apart from an absent row.
     (
         "/draft",
         lambda batch: {"batch_id": batch, "wallpaper_id": "wp0001", "verdict": "ignore"},
         HTTPStatus.BAD_REQUEST,
+        "an ignore is derived, not drafted",
     ),
     (
         "/draft",
         lambda batch: {"batch_id": batch, "wallpaper_id": "nope", "verdict": "like"},
         HTTPStatus.NOT_FOUND,
+        "unknown wallpaper",
     ),
-    ("/draft/all", lambda batch: {"batch_id": batch, "verdict": "ignore"}, HTTPStatus.BAD_REQUEST),
-    ("/draft/all", lambda batch: {"batch_id": batch, "verdict": "adore"}, HTTPStatus.BAD_REQUEST),
-    ("/history/verdict", lambda _: {"wallpaper_id": "wp0000", "verdict": ""}, HTTPStatus.BAD_REQUEST),
-    ("/history/verdict", lambda _: {"wallpaper_id": "wp0000", "verdict": "sideways"}, HTTPStatus.BAD_REQUEST),
-    ("/history/verdict", lambda _: {"wallpaper_id": "nope", "verdict": "like"}, HTTPStatus.NOT_FOUND),
-    # A Mix deleted in another tab gives the same answer.
-    ("/mix", lambda _: {"mix": "nope"}, HTTPStatus.BAD_REQUEST),
+    (
+        "/draft/all",
+        lambda batch: {"batch_id": batch, "verdict": "ignore"},
+        HTTPStatus.BAD_REQUEST,
+        "an ignore is derived, not drafted",
+    ),
+    (
+        "/draft/all",
+        lambda batch: {"batch_id": batch, "verdict": "adore"},
+        HTTPStatus.BAD_REQUEST,
+        "unknown verdict",
+    ),
+    (
+        "/history/verdict",
+        lambda _: {"wallpaper_id": "wp0000", "verdict": ""},
+        HTTPStatus.BAD_REQUEST,
+        "a verdict is required",
+    ),
+    (
+        "/history/verdict",
+        lambda _: {"wallpaper_id": "wp0000", "verdict": "sideways"},
+        HTTPStatus.BAD_REQUEST,
+        "unknown verdict",
+    ),
+    (
+        "/history/verdict",
+        lambda _: {"wallpaper_id": "nope", "verdict": "like"},
+        HTTPStatus.NOT_FOUND,
+        "unknown wallpaper",
+    ),
+    # A Mix deleted in another tab gives the same answer: the switcher, showing what is stored.
+    ("/mix", lambda _: {"mix": "nope"}, HTTPStatus.BAD_REQUEST, 'id="mix-switcher"'),
 ]
 
 
-@pytest.mark.parametrize(("path", "data", "status"), HAND_MADE_POSTS)
+@pytest.mark.parametrize(("path", "data", "status", "said"), HAND_MADE_POSTS)
 def test_a_post_no_control_sends_is_refused_and_changes_nothing(
-    web: Web, path: str, data: Callable[[str], dict[str, str]], status: HTTPStatus
+    web: Web, path: str, data: Callable[[str], dict[str, str]], status: HTTPStatus, said: str
 ) -> None:
     harness, client = web
     judge(harness, wp0000=Verdict.LIKE)
@@ -213,7 +240,23 @@ def test_a_post_no_control_sends_is_refused_and_changes_nothing(
     response = client.post(path, data=data(batch_id))
 
     assert response.status_code == status
+    assert said in response.text
     assert (harness.core.list_history(), live(harness).drafts, harness.core.get_settings()) == before
+
+
+def test_a_stale_tab_is_told_in_words_which_batch_it_is_on(web: Web) -> None:
+    """The banner a second tab gets, unlike the bare statuses above: a real case, so a sentence."""
+    _, client = web
+    shown = batch_id_of(client.get("/batch").text)
+    client.post("/submit", data={"batch_id": shown})
+
+    again = client.post("/submit", data={"batch_id": shown})
+    unknown = client.post("/draft/all", data={"batch_id": "nope", "verdict": "like"})
+
+    assert again.status_code == HTTPStatus.CONFLICT
+    assert "That batch has already been submitted" in again.text
+    assert unknown.status_code == HTTPStatus.NOT_FOUND
+    assert "That batch is not one this instance knows about." in unknown.text
 
 
 def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
