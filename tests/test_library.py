@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import Harness, favourite_the_whole_batch, make_harness
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import Batch
@@ -50,16 +52,20 @@ def test_likes_bans_and_ignores_never_write(db_path: Path, tmp_path: Path) -> No
     assert harness.library.removed == []
 
 
-def test_replacing_a_favourite_removes_the_file_wallpapi_wrote(db_path: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("replacement", [Verdict.LIKE, Verdict.IGNORE])
+def test_replacing_a_favourite_removes_the_file_wallpapi_wrote(
+    db_path: Path, tmp_path: Path, replacement: Verdict
+) -> None:
+    """Nothing is downloaded again for it, either."""
     harness = library_harness(db_path, tmp_path / "Library", 1)
     shown = favourite_the_whole_batch(harness).wallpapers[0].id
     written = harness.library.written[0].destination
 
-    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
+    assert harness.core.edit_verdict(shown, replacement) is None
 
     assert harness.library.removed == [written]
     assert len(harness.library.written) == 1
-    assert harness.core.resolve_verdicts([shown])[shown].verdict is Verdict.LIKE
+    assert harness.core.resolve_verdicts([shown])[shown].verdict is replacement
 
 
 def test_a_ban_removes_that_file_from_its_recorded_path_and_nothing_else(
