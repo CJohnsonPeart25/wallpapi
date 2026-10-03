@@ -19,7 +19,6 @@ Environment variables:
 | --- | --- |
 | `WALLPAPI_PORT` | Port to listen on (default `8000`) |
 | `WALLPAPI_HOME` | Data folder for the **Decision log**, **Thumbnail cache** and models (default `~/.wallpapi`) |
-| `WALLPAPI_SIMILARITY` | **Similarity provider**: `embedding` (default), `metadata` or `tags` |
 | `WALLPAPI_SEED` | Pin the random source for a reproducible session |
 
 To run under uvicorn directly, use the factory. Never pass `--workers`: more than one process means several

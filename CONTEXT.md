@@ -102,10 +102,6 @@ _Avoid_: embedder, model, comparator, CLIP
 The few hundred numbers a CLIP image encoder turns one thumbnail into, standing for what is in the picture. Cached permanently, computed in the background, and never stored in the decision log's database. Two wallpapers of the same thing have close embeddings whatever their colours, which is the whole reason the provider changed.
 _Avoid_: vector, feature, encoding, latent
 
-**Tag** (legacy):
-One of Wallhaven's own labels on a wallpaper, applied by its users. Only used by an opt-in similarity provider that lost to embeddings and is due to go; nothing else reads them.
-_Avoid_: label, keyword, category
-
 **Similarity radius**:
 How far a verdict reaches, as a distance from 0 to 1. Beyond it a decided wallpaper counts for nothing at all, which is what makes a wallpaper with nothing decided nearby an unknown. A setting.
 _Avoid_: threshold, cutoff, neighbourhood
