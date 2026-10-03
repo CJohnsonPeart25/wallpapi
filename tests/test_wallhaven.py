@@ -56,7 +56,7 @@ def test_search_parses_a_recorded_wallhaven_response() -> None:
 
 def test_search_sends_the_filters_it_is_given_and_leaves_out_the_rest() -> None:
     """`atleast`, the minimum, never `resolutions`, the exact-match list. The masks are parameters: the
-    policy that purity is SFW belongs with the **Filters** in the Core service. An omitted **Filter** is
+    policy that purity is SFW belongs with the **Filters** in `pool`. An omitted **Filter** is
     absent, not sent empty, since `atleast=` is not the same request as no `atleast`."""
     client, seen = answering(httpx2.Response(200, json=RECORDED))
 
@@ -109,7 +109,7 @@ def test_a_429_is_raised_as_rate_limited_carrying_retry_after(
     call: Callable[[WallhavenClient], object], retry_after: str, expected: float | None
 ) -> None:
     """The one failure the caller treats differently, so it is typed rather than left as a status code
-    for the Core service to pick apart in Wallhaven's spelling."""
+    for its callers to pick apart in Wallhaven's spelling."""
     client, _ = answering(httpx2.Response(429, headers={"Retry-After": retry_after}, json={}))
 
     with pytest.raises(RateLimited) as raised:

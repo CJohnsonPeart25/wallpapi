@@ -1,31 +1,82 @@
-"""The web layer: Jinja templates over an already-constructed Core service (ADR 0001)."""
+"""The web layer: Jinja templates over the modules the composition root built (ADR 0001).
+
+Every route that writes calls one workflow; a route that only reads asks the modules. Nothing here decides
+anything about the data: a refusal arrives from a module and leaves through `REFUSALS`.
+"""
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
+import datetime as dt
+import sqlite3
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from http import HTTPStatus
 from mimetypes import guess_type
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, overload
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import Lifespan
 
-from wallpapi.core import Batch, BatchUnavailable, CoreService, HistoryRefused, SubmissionRefused
-from wallpapi.model import Verdict
-from wallpapi.settings import (
-    FORM_FIELDS,
-    MAX_MIX_NAME_LENGTH,
-    MIX_TOTAL,
-    MixListing,
-    SettingsRefused,
-    form_values,
-)
+from wallpapi import decisions, pool, settings, workflows
+from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
+from wallpapi.compose import Modules, background_loops
+from wallpapi.decisions import HistoryEntry, ResolvedVerdict
+from wallpapi.model import Verdict, Wallpaper
+from wallpapi.settings import FORM_FIELDS, MAX_MIX_NAME_LENGTH, MIX_TOTAL, SettingsRefused, form_values
+from wallpapi.workflows import HistoryRefused
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+STATIC_DIR = Path(__file__).parent / "static"
+"""Vendored htmx, stylesheet and preview script: no third-party asset in any template."""
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+router = APIRouter()
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    status: HTTPStatus
+    message: str
+    banner: bool = False
+    """A stale tab can provoke it, so the page says it in the banner. Otherwise only a hand-made post can,
+    and it is a bare status: htmx skips a 4xx."""
+
+
+REFUSALS: dict[StrEnum, Refusal] = {
+    SubmissionRefused.Reason.ALREADY_SUBMITTED: Refusal(
+        HTTPStatus.CONFLICT,
+        "That batch has already been submitted — nothing was recorded a second time.",
+        banner=True,
+    ),
+    SubmissionRefused.Reason.UNKNOWN_BATCH: Refusal(
+        HTTPStatus.NOT_FOUND, "That batch is not one this instance knows about.", banner=True
+    ),
+    SubmissionRefused.Reason.IGNORE_DRAFTED: Refusal(
+        HTTPStatus.BAD_REQUEST, "an ignore is derived, not drafted"
+    ),
+    SubmissionRefused.Reason.NOT_IN_BATCH: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
+    HistoryRefused.Reason.UNKNOWN_WALLPAPER: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
+}
+"""Every refusal a module can return, as the page answers it. A settings refusal is always a 400 in the
+settings module's own words, which differ by field."""
+
+_FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
+"""The **History** filter's choices, written out so **Ignore**, the commonest, is last."""
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRow:
+    """One line of **History** with its **Wallpaper**, as the row template shows it."""
+
+    wallpaper: Wallpaper
+    resolved: ResolvedVerdict
+    latest_at: dt.datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,76 +89,132 @@ class _DownloadCounts:
     failed: int
 
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-STATIC_DIR = Path(__file__).parent / "static"
-"""Vendored htmx, stylesheet and preview script: no third-party asset in any template."""
+def _modules(request: Request) -> Modules:
+    modules: Modules = request.app.state.modules
+    return modules
 
 
-def _drafted_verdict(posted: str) -> Verdict | None:
-    """The **Verdict** a tile control posted, or `None` for a clear. `batches` refuses an **Ignore**."""
-    if not posted:
-        return None
-    try:
-        return Verdict(posted)
-    except ValueError:
-        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
+Wired = Annotated[Modules, Depends(_modules)]
 
 
-_UNDRAFTABLE: dict[SubmissionRefused.Reason, tuple[HTTPStatus, str]] = {
-    SubmissionRefused.Reason.IGNORE_DRAFTED: (HTTPStatus.BAD_REQUEST, "an ignore is derived, not drafted"),
-    SubmissionRefused.Reason.NOT_IN_BATCH: (HTTPStatus.NOT_FOUND, "unknown wallpaper"),
-}
-"""Refusals no control can provoke, so a bare status rather than the banner a stale tab gets."""
-
-
-def _chosen_verdict(posted: str) -> Verdict:
-    """The **Verdict** a **History** control posted: required, **Ignore** included."""
-    if not posted:
-        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="a verdict is required")
-    try:
-        return Verdict(posted)
-    except ValueError:
-        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
-
-
-def _history_filter(posted: str) -> Verdict | None:
-    """The resolved **Verdict** the **History** listing is narrowed to, or `None`; **Ignore** is accepted."""
-    if not posted:
-        return None
-    try:
-        return Verdict(posted)
-    except ValueError:
-        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
-
-
-_HISTORY_REFUSAL_STATUS = {
-    HistoryRefused.Reason.UNKNOWN_WALLPAPER: HTTPStatus.NOT_FOUND,
-}
-"""A **History** refusal is a status code: only a hand-made post can produce one, and htmx skips a 4xx."""
-
-_FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
-"""The **History** filter's choices, written out so **Ignore**, the commonest, is last."""
-
-
-def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
-    """Start the background threads with the app and join them on the way out; a test's Core service must
-    not.
+@overload
+def parse_verdict(posted: str, *, required: Literal[True]) -> Verdict: ...
+@overload
+def parse_verdict(posted: str, *, required: Literal[False]) -> Verdict | None: ...
+def parse_verdict(posted: str, *, required: bool) -> Verdict | None:
+    """The **Verdict** a control posted; empty is `None` unless one is `required`. An **Ignore** parses like
+    any other: whether it may be drafted is `batches`' rule.
     """
+    if not posted:
+        if required:
+            raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="a verdict is required")
+        return None
+    try:
+        return Verdict(posted)
+    except ValueError:
+        raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-        del app
 
-        loops = core.background_loops()
-        for loop in loops:
-            loop.start()
-        try:
-            yield
-        finally:
-            for loop in reversed(loops):
-                loop.stop()
+def _refuse(request: Request, reason: StrEnum) -> HTMLResponse:
+    """The banner for a refusal a stale tab can provoke; a bare status for any other."""
+    refusal = REFUSALS[reason]
+    if not refusal.banner:
+        raise HTTPException(status_code=refusal.status, detail=refusal.message)
+    return templates.TemplateResponse(
+        request, "banner.html", {"refused": refusal.message}, status_code=refusal.status
+    )
 
-    return lifespan
+
+def _batch_view(request: Request, modules: Modules, result: Batch | BatchUnavailable) -> HTMLResponse:
+    """The **Batch** fragment, or the words for why there is none."""
+    context: dict[str, object] = {
+        "status": modules.refill.status(),
+        "similarity_notice": modules.similarity.notice(modules.thumbnails.obtainable(modules.connect())),
+    }
+    if isinstance(result, Batch):
+        return templates.TemplateResponse(request, "batch_view.html", {**context, "batch": result})
+    # 503 and never a 500: nothing failed, the **Pool** is empty and the refill may fix it.
+    return templates.TemplateResponse(
+        request,
+        "batch_view.html",
+        {**context, "unavailable": result},
+        status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+    )
+
+
+def _history_rows(connection: sqlite3.Connection, entries: Sequence[HistoryEntry]) -> tuple[HistoryRow, ...]:
+    """Each line with its **Wallpaper** joined on, the page's in one query."""
+    wallpapers = pool.wallpapers(connection, [entry.wallpaper_id for entry in entries])
+    return tuple(HistoryRow(wallpapers[e.wallpaper_id], e.resolved, e.decided_at) for e in entries)
+
+
+def _mix_context(connection: sqlite3.Connection) -> dict[str, object]:
+    """What the switcher needs. The stored active name, so a deleted **Mix** still shows as chosen."""
+    return {
+        "mixes": tuple(listed.mix for listed in settings.list_mixes(connection)),
+        "active_mix": settings.get(connection).active_mix,
+    }
+
+
+def _mix_section(connection: sqlite3.Connection, posted: Mapping[str, str] | None) -> dict[str, object]:
+    """The **Mixes** section of the settings page: a row per **Mix**, plus the add row. `posted` is a refused
+    save put back.
+    """
+    typed = dict(posted or {})
+    typed_name = typed.get("name", "").strip()
+    stored = settings.list_mixes(connection)
+    active = settings.get(connection).active_mix
+    rows: list[dict[str, object]] = []
+    for listed in stored:
+        mix = listed.mix
+        edited = typed if typed_name == mix.name else {}
+        rows.append(
+            {
+                "name": mix.name,
+                "unknown": edited.get("unknown", str(mix.unknown)),
+                "banger": edited.get("banger", str(mix.banger)),
+                "dud": edited.get("dud", str(mix.dud)),
+                "active": mix.name == active,
+                "deletable": listed.deletable,
+            }
+        )
+    added = typed if typed_name not in {listed.mix.name for listed in stored} else {}
+    return {
+        "mix_rows": rows,
+        "new_mix": {field: added.get(field, "") for field in ("name", "unknown", "banger", "dud")},
+        "mix_total": MIX_TOTAL,
+        "max_mix_name_length": MAX_MIX_NAME_LENGTH,
+    }
+
+
+def _settings_page(
+    request: Request,
+    modules: Modules,
+    *,
+    posted: Mapping[str, str] | None = None,
+    posted_mix: Mapping[str, str] | None = None,
+    refused: SettingsRefused | None = None,
+    download: _DownloadCounts | None = None,
+    saved: bool = False,
+    deleted: bool = False,
+) -> HTMLResponse:
+    """The settings form, filled with what was typed over what is stored, so a refused save keeps it."""
+    connection = modules.connect()
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            **form_values(settings.get(connection)),
+            **(posted or {}),
+            **_mix_section(connection, posted_mix),
+            "refused": refused,
+            "saved": saved,
+            "deleted": deleted,
+            "download": download,
+            "fields": {field.key: field for field in FORM_FIELDS},
+        },
+        status_code=HTTPStatus.OK if refused is None else HTTPStatus.BAD_REQUEST,
+    )
 
 
 async def _posted_settings(request: Request) -> dict[str, str]:
@@ -126,305 +233,230 @@ async def _posted_settings(request: Request) -> dict[str, str]:
     }
 
 
-def _mix_context(core: CoreService) -> dict[str, object]:
-    """What the switcher needs. The stored active name, so a deleted **Mix** still shows as chosen."""
-    return {"mixes": core.list_mixes(), "active_mix": core.get_settings().active_mix}
+@router.get("/", response_class=HTMLResponse)
+def batch_page(request: Request, modules: Wired) -> HTMLResponse:
+    """The **Batch** page's shell, which fetches its **Batch** from `/batch`. It mints nothing."""
+    connection = modules.connect()
+    return templates.TemplateResponse(
+        request,
+        "batch.html",
+        {"batch_size": settings.get(connection).batch_size, **_mix_context(connection)},
+    )
 
 
-def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> dict[str, object]:
-    """The **Mixes** section of the settings page: a row per **Mix**, plus the add row. `posted` is a refused
-    save put back.
+@router.get("/batch", response_class=HTMLResponse)
+def batch_view(request: Request, modules: Wired) -> HTMLResponse:
+    """The live **Batch** as the fragment the shell swaps in."""
+    return _batch_view(request, modules, modules.batches.next(modules.connect()))
+
+
+@router.post("/submit", response_class=HTMLResponse)
+def submit(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -> HTMLResponse:
+    """Submit the **Batch**, answer with the banner, and have the page fetch the next one, refused or not."""
+    result = workflows.submit(modules, batch_id)
+    if isinstance(result, SubmissionRefused):
+        response = _refuse(request, result.reason)
+    else:
+        response = templates.TemplateResponse(
+            request, "banner.html", {"recorded": result.recorded, "ignored": result.ignored}
+        )
+    response.headers["HX-Trigger"] = "batch-submitted"
+    return response
+
+
+@router.post("/draft", response_class=HTMLResponse)
+def draft(
+    request: Request,
+    modules: Wired,
+    batch_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()],
+    verdict: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Mark one tile, or clear it, and swap that tile back."""
+    live = workflows.set_draft(modules, batch_id, wallpaper_id, parse_verdict(verdict, required=False))
+    if isinstance(live, SubmissionRefused):
+        return _refuse(request, live.reason)
+    # Refused above unless the **Batch** shows it.
+    marked = next(w for w in live.wallpapers if w.id == wallpaper_id)
+    return templates.TemplateResponse(
+        request,
+        "tile.html",
+        {
+            "batch": live,
+            "wallpaper": marked,
+            "draft": live.drafts.get(wallpaper_id),
+            "zone": live.zones.get(wallpaper_id),
+        },
+    )
+
+
+@router.post("/draft/all", response_class=HTMLResponse)
+def draft_all(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], verdict: Annotated[str, Form()] = ""
+) -> HTMLResponse:
+    """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction (ADR 0002)."""
+    live = workflows.set_all_drafts(modules, batch_id, parse_verdict(verdict, required=False))
+    if isinstance(live, SubmissionRefused):
+        return _refuse(request, live.reason)
+    return templates.TemplateResponse(request, "grid.html", {"batch": live})
+
+
+@router.get("/history", response_class=HTMLResponse)
+def history_page(request: Request, modules: Wired, verdict: str = "", page: int = 1) -> HTMLResponse:
+    """**History**, filtered by resolved **Verdict** and paged; a page out of range is clamped."""
+    connection = modules.connect()
+    chosen = parse_verdict(verdict, required=False)
+    listing = decisions.history(connection, chosen, page)
+    return templates.TemplateResponse(
+        request,
+        "history.html",
+        {
+            "history": listing,
+            "rows": _history_rows(connection, listing.entries),
+            "verdict": chosen,
+            "verdicts": _FILTERABLE_VERDICTS,
+        },
+    )
+
+
+@router.post("/history/verdict", response_class=HTMLResponse)
+def history_verdict(
+    request: Request,
+    modules: Wired,
+    wallpaper_id: Annotated[str, Form()],
+    verdict: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Change a **Wallpaper**'s **Verdict** from **History**, and swap back its row as the log resolves."""
+    refused = workflows.edit_verdict(modules, wallpaper_id, parse_verdict(verdict, required=True))
+    if refused is not None:
+        return _refuse(request, refused.reason)
+    connection = modules.connect()
+    entry = decisions.history_entry(connection, wallpaper_id)
+    if entry is None:
+        return _refuse(request, HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+    return templates.TemplateResponse(
+        request, "history_row.html", {"row": _history_rows(connection, [entry])[0]}
+    )
+
+
+@router.post("/mix", response_class=HTMLResponse)
+def choose_mix(request: Request, modules: Wired, mix: Annotated[str, Form()]) -> HTMLResponse:
+    """Switch the active **Mix**. The live **Batch** is untouched, so its **Draft Batch** survives."""
+    refused = isinstance(workflows.save_settings(modules, active_mix=mix), SettingsRefused)
+    return templates.TemplateResponse(
+        request,
+        "mix.html",
+        _mix_context(modules.connect()),
+        status_code=HTTPStatus.BAD_REQUEST if refused else HTTPStatus.OK,
+    )
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(
+    request: Request,
+    modules: Wired,
+    saved: bool = False,
+    deleted: bool = False,
+    downloaded: bool = False,
+    written: int = 0,
+    skipped: int = 0,
+    failed: int = 0,
+) -> HTMLResponse:
+    """The settings page; the download counts are query parameters because it is the download's redirect
+    target.
     """
-    typed = dict(posted or {})
-    typed_name = typed.get("name", "").strip()
-    stored = core.mix_listings()
-    active = core.get_settings().active_mix
-
-    def fields(listed: MixListing) -> dict[str, object]:
-        mix = listed.mix
-        edited = typed if typed_name == mix.name else {}
-        return {
-            "name": mix.name,
-            "unknown": edited.get("unknown", str(mix.unknown)),
-            "banger": edited.get("banger", str(mix.banger)),
-            "dud": edited.get("dud", str(mix.dud)),
-            "active": mix.name == active,
-            "deletable": listed.deletable,
-        }
-
-    added = typed if typed_name not in {listed.mix.name for listed in stored} else {}
-    return {
-        "mix_rows": [fields(listed) for listed in stored],
-        "new_mix": {field: added.get(field, "") for field in ("name", "unknown", "banger", "dud")},
-        "mix_total": MIX_TOTAL,
-        "max_mix_name_length": MAX_MIX_NAME_LENGTH,
-    }
+    return _settings_page(
+        request,
+        modules,
+        saved=saved,
+        deleted=deleted,
+        download=_DownloadCounts(downloaded, written, skipped, failed),
+    )
 
 
-def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
-    """The app over a Core service; `refill` starts the background threads and only `main.py` turns it on."""
-    app = FastAPI(title="wallpapi", lifespan=_lifespan(core) if refill else None)
+@router.post("/settings")
+def save_settings(
+    request: Request, modules: Wired, posted: Annotated[dict[str, str], Depends(_posted_settings)]
+) -> Response:
+    """Save the settings, or come back with the reason. Fields are `str`, coerced by the settings module."""
+    result = workflows.save_settings(modules, **posted)
+    if isinstance(result, SettingsRefused):
+        return _settings_page(request, modules, posted=posted, refused=result)
+    return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
+
+
+@router.post("/settings/library/download")
+def download_favourites(modules: Wired) -> Response:
+    """Pull every **Favourite** whose **Library** file is missing, redirecting with the counts. It never
+    deletes.
+    """
+    pulled = workflows.download_favourites(modules)
+    return RedirectResponse(
+        f"/settings?downloaded=1&written={len(pulled.written)}"
+        f"&skipped={len(pulled.skipped)}&failed={len(pulled.failed)}",
+        status_code=HTTPStatus.SEE_OTHER,
+    )
+
+
+@router.post("/settings/mixes")
+def save_mix(
+    request: Request,
+    modules: Wired,
+    name: Annotated[str, Form()] = "",
+    unknown: Annotated[str, Form()] = "",
+    banger: Annotated[str, Form()] = "",
+    dud: Annotated[str, Form()] = "",
+) -> Response:
+    """Create a **Mix** or edit one: one route, as the add row and every edit row post the same fields."""
+    result = workflows.save_mix(modules, name, unknown=unknown, banger=banger, dud=dud)
+    if isinstance(result, SettingsRefused):
+        typed = {"name": name, "unknown": unknown, "banger": banger, "dud": dud}
+        return _settings_page(request, modules, posted_mix=typed, refused=result)
+    return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
+
+
+@router.post("/settings/mixes/delete")
+def delete_mix(request: Request, modules: Wired, name: Annotated[str, Form()] = "") -> Response:
+    """Remove a **Mix**, or re-render with the reason it stays."""
+    refused = workflows.delete_mix(modules, name)
+    if refused is not None:
+        return _settings_page(request, modules, refused=refused)
+    return RedirectResponse("/settings?deleted=1", status_code=HTTPStatus.SEE_OTHER)
+
+
+@router.get("/thumb/{wallpaper_id}")
+def thumbnail(modules: Wired, wallpaper_id: str) -> FileResponse:
+    """One tile, off the **Thumbnail cache**."""
+    cached = modules.thumbnails.get(modules.connect(), wallpaper_id)
+    if cached is None:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="unknown wallpaper")
+    return FileResponse(cached, media_type=guess_type(cached.name)[0] or "application/octet-stream")
+
+
+def _lifespan(modules: Modules) -> Lifespan[FastAPI]:
+    """Start the background loops with the app and stop them in reverse on the way out."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        del app
+        loops = background_loops(modules)
+        for loop in loops:
+            loop.start()
+        try:
+            yield
+        finally:
+            for loop in reversed(loops):
+                loop.stop()
+
+    return lifespan
+
+
+def create_app(modules: Modules, *, refill: bool = False) -> FastAPI:
+    """The app over the composed modules; `refill` starts the background loops and only `main.py` turns it
+    on.
+    """
+    app = FastAPI(title="wallpapi", lifespan=_lifespan(modules) if refill else None)
+    app.state.modules = modules
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-    def render(request: Request, result: Batch | BatchUnavailable | SubmissionRefused) -> HTMLResponse:
-        """One fragment and one status code per outcome."""
-        if isinstance(result, SubmissionRefused):
-            if result.reason in _UNDRAFTABLE:
-                status, detail = _UNDRAFTABLE[result.reason]
-                raise HTTPException(status_code=status, detail=detail)
-            already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
-            return templates.TemplateResponse(
-                request,
-                "banner.html",
-                {"refused": result},
-                status_code=HTTPStatus.CONFLICT if already else HTTPStatus.NOT_FOUND,
-            )
-        context: dict[str, object] = {
-            "status": core.refill.status(),
-            "similarity_notice": core.similarity_notice(),
-        }
-        if isinstance(result, Batch):
-            return templates.TemplateResponse(request, "batch_view.html", {**context, "batch": result})
-        # 503 and never a 500: nothing failed, the **Pool** is empty and the refill may fix it.
-        return templates.TemplateResponse(
-            request,
-            "batch_view.html",
-            {**context, "unavailable": result},
-            status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-        )
-
-    @app.get("/", response_class=HTMLResponse)
-    def batch_page(request: Request) -> HTMLResponse:
-        """The **Batch** page's shell, which fetches its **Batch** from `/batch`. It mints nothing."""
-        return templates.TemplateResponse(
-            request,
-            "batch.html",
-            {"batch_size": core.get_settings().batch_size, **_mix_context(core)},
-        )
-
-    @app.get("/batch", response_class=HTMLResponse)
-    def batch_view(request: Request) -> HTMLResponse:
-        """The live **Batch** as the fragment the shell swaps in."""
-        return render(request, core.get_next_batch())
-
-    @app.post("/submit", response_class=HTMLResponse)
-    def submit(request: Request, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-        """Submit the **Batch**, answer with the banner, and tell the page to fetch the next one (a refusal
-        too).
-        """
-        result = core.submit_batch(batch_id)
-        if isinstance(result, SubmissionRefused):
-            response = render(request, result)
-        else:
-            # Counted from what was appended, not from the form.
-            response = templates.TemplateResponse(
-                request, "banner.html", {"recorded": result.recorded, "ignored": result.ignored}
-            )
-        response.headers["HX-Trigger"] = "batch-submitted"
-        return response
-
-    @app.post("/draft", response_class=HTMLResponse)
-    def draft(
-        request: Request,
-        batch_id: Annotated[str, Form()],
-        wallpaper_id: Annotated[str, Form()],
-        verdict: Annotated[str, Form()] = "",
-    ) -> HTMLResponse:
-        """Mark one tile, or clear it, and swap that tile back."""
-        live = core.set_draft_verdict(batch_id, wallpaper_id, _drafted_verdict(verdict))
-        if isinstance(live, SubmissionRefused):
-            return render(request, live)
-        # Refused above unless the **Batch** shows it.
-        marked = next(w for w in live.wallpapers if w.id == wallpaper_id)
-        return templates.TemplateResponse(
-            request,
-            "tile.html",
-            {
-                "batch": live,
-                "wallpaper": marked,
-                "draft": live.drafts.get(wallpaper_id),
-                "zone": live.zones.get(wallpaper_id),
-            },
-        )
-
-    @app.post("/draft/all", response_class=HTMLResponse)
-    def draft_all(
-        request: Request,
-        batch_id: Annotated[str, Form()],
-        verdict: Annotated[str, Form()] = "",
-    ) -> HTMLResponse:
-        """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction (ADR
-        0002).
-        """
-        live = core.set_all_draft_verdicts(batch_id, _drafted_verdict(verdict))
-        if isinstance(live, SubmissionRefused):
-            return render(request, live)
-        return templates.TemplateResponse(request, "grid.html", {"batch": live})
-
-    def render_history_row(request: Request, wallpaper_id: str) -> HTMLResponse:
-        """The one row an edit changed, read back so the screen shows what the **Decision log** resolves
-        to.
-        """
-        row = core.get_history_row(wallpaper_id)
-        if row is None:
-            raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="unknown wallpaper")
-        return templates.TemplateResponse(request, "history_row.html", {"row": row})
-
-    def refuse_history(refused: HistoryRefused) -> HTTPException:
-        return HTTPException(status_code=_HISTORY_REFUSAL_STATUS[refused.reason], detail=refused.reason.value)
-
-    @app.get("/history", response_class=HTMLResponse)
-    def history_page(request: Request, verdict: str = "", page: int = 1) -> HTMLResponse:
-        """**History**, filtered by resolved **Verdict** and paged; a page out of range is clamped."""
-        listing = core.list_history_rows(verdict=_history_filter(verdict), page=page)
-        return templates.TemplateResponse(
-            request, "history.html", {"history": listing, "verdicts": _FILTERABLE_VERDICTS}
-        )
-
-    @app.post("/history/verdict", response_class=HTMLResponse)
-    def history_verdict(
-        request: Request,
-        wallpaper_id: Annotated[str, Form()],
-        verdict: Annotated[str, Form()] = "",
-    ) -> HTMLResponse:
-        """Change a **Wallpaper**'s **Verdict** from **History**, and swap its row back."""
-        refused = core.edit_verdict(wallpaper_id, _chosen_verdict(verdict))
-        if refused is not None:
-            raise refuse_history(refused)
-        return render_history_row(request, wallpaper_id)
-
-    @app.post("/mix", response_class=HTMLResponse)
-    def choose_mix(request: Request, mix: Annotated[str, Form()]) -> HTMLResponse:
-        """Switch the active **Mix**. The live **Batch** is untouched, so its **Draft Batch** survives; an
-        unknown **Mix** is a 400.
-        """
-        refused = core.update_settings(active_mix=mix)
-        status_code = HTTPStatus.BAD_REQUEST if isinstance(refused, SettingsRefused) else HTTPStatus.OK
-
-        return templates.TemplateResponse(request, "mix.html", _mix_context(core), status_code=status_code)
-
-    def render_settings(
-        request: Request,
-        *,
-        posted: Mapping[str, str],
-        posted_mix: Mapping[str, str] | None = None,
-        refused: SettingsRefused | None = None,
-        saved: bool = False,
-        deleted: bool = False,
-        download: _DownloadCounts | None = None,
-        status_code: int = HTTPStatus.OK,
-    ) -> HTMLResponse:
-        """The settings form, filled with the values given rather than those stored, so a refused save keeps
-        what was typed.
-        """
-        return templates.TemplateResponse(
-            request,
-            "settings.html",
-            {
-                **posted,
-                **_mix_section(core, posted_mix),
-                "refused": refused,
-                "saved": saved,
-                "deleted": deleted,
-                "download": download,
-                "fields": {field.key: field for field in FORM_FIELDS},
-            },
-            status_code=status_code,
-        )
-
-    @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(
-        request: Request,
-        saved: bool = False,
-        deleted: bool = False,
-        downloaded: bool = False,
-        written: int = 0,
-        skipped: int = 0,
-        failed: int = 0,
-    ) -> HTMLResponse:
-        """The settings page; the download counts are query parameters because it is the download's redirect
-        target.
-        """
-        return render_settings(
-            request,
-            posted=form_values(core.get_settings()),
-            saved=saved,
-            deleted=deleted,
-            download=_DownloadCounts(downloaded, written, skipped, failed),
-        )
-
-    @app.post("/settings")
-    def save_settings(
-        request: Request, posted: Annotated[dict[str, str], Depends(_posted_settings)]
-    ) -> Response:
-        """Save the settings, or come back with the reason. Fields are `str` and coerced by the settings
-        module; one not posted is left alone.
-        """
-        result = core.update_settings(**posted)
-        if isinstance(result, SettingsRefused):
-            # What was typed, over what is stored.
-            return render_settings(
-                request,
-                posted={**form_values(core.get_settings()), **posted},
-                refused=result,
-                status_code=HTTPStatus.BAD_REQUEST,
-            )
-        return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
-
-    @app.post("/settings/library/download")
-    def download_favourites() -> Response:
-        """Pull every **Favourite** whose **Library** file is missing, redirecting with the counts. It never
-        deletes.
-        """
-        pulled = core.download_favourites()
-        return RedirectResponse(
-            "/settings?downloaded=1"
-            f"&written={len(pulled.written)}"
-            f"&skipped={len(pulled.skipped)}"
-            f"&failed={len(pulled.failed)}",
-            status_code=HTTPStatus.SEE_OTHER,
-        )
-
-    @app.post("/settings/mixes")
-    def save_mix(
-        request: Request,
-        name: Annotated[str, Form()] = "",
-        unknown: Annotated[str, Form()] = "",
-        banger: Annotated[str, Form()] = "",
-        dud: Annotated[str, Form()] = "",
-    ) -> Response:
-        """Create a **Mix** or edit one: one route, as the add row and every edit row post the same fields."""
-        result = core.save_mix(name, unknown=unknown, banger=banger, dud=dud)
-        if isinstance(result, SettingsRefused):
-            return render_settings(
-                request,
-                posted=form_values(core.get_settings()),
-                posted_mix={"name": name, "unknown": unknown, "banger": banger, "dud": dud},
-                refused=result,
-                status_code=HTTPStatus.BAD_REQUEST,
-            )
-        return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
-
-    @app.post("/settings/mixes/delete")
-    def delete_mix(request: Request, name: Annotated[str, Form()] = "") -> Response:
-        """Remove a **Mix**, or re-render with the reason it stays."""
-        refused = core.delete_mix(name)
-        if refused is not None:
-            return render_settings(
-                request,
-                posted=form_values(core.get_settings()),
-                refused=refused,
-                status_code=HTTPStatus.BAD_REQUEST,
-            )
-        return RedirectResponse("/settings?deleted=1", status_code=HTTPStatus.SEE_OTHER)
-
-    @app.get("/thumb/{wallpaper_id}")
-    def thumbnail(wallpaper_id: str) -> FileResponse:
-        """One tile, off the **Thumbnail cache**."""
-        cached = core.get_thumbnail(wallpaper_id)
-        if cached is None:
-            raise HTTPException(status_code=404, detail="unknown wallpaper")
-        return FileResponse(cached, media_type=guess_type(cached.name)[0] or "application/octet-stream")
-
+    app.include_router(router)
     return app

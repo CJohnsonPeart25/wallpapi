@@ -12,19 +12,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import Harness, batch_id_of, judge, make_harness, serving
+from tests.conftest import Harness, batch_id_of, judge, live, make_harness, serving
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi.core import Batch
+from wallpapi import workflows
 from wallpapi.model import Verdict
 
 Web = tuple[Harness, TestClient]
 ASSETS = re.compile(r'<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"')
-
-
-def live(harness: Harness) -> Batch:
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    return batch
 
 
 def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(web: Web) -> None:
@@ -150,7 +144,7 @@ def test_the_switcher_offers_every_mix_with_its_percentages_and_marks_the_active
     """The names say nothing about which way round they are, so the options carry the numbers; a **Mix**
     made on the settings page is selectable where it is used."""
     harness = make_harness(db_path)
-    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
+    workflows.save_mix(harness.modules, "duds only", unknown=0, banger=0, dud=100)
 
     with serving(harness) as client:
         page = client.get("/").text
@@ -168,8 +162,8 @@ def test_the_settings_page_shows_what_is_stored_and_offers_what_can_be_done(
     a custom **Mix** offers delete, and the active one is marked so the missing button explains itself."""
     harness = make_harness(db_path)
     chosen = tmp_path / "Wallpapers"
-    harness.core.update_settings(batch_size=12, library_path=chosen)
-    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
+    workflows.save_settings(harness.modules, batch_size=12, library_path=chosen)
+    workflows.save_mix(harness.modules, "duds only", unknown=0, banger=0, dud=100)
 
     with serving(harness) as client:
         page = client.get("/settings").text

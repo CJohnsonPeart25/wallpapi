@@ -12,7 +12,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from wallpapi.clock import SystemClock
-from wallpapi.core import CoreService
+from wallpapi.compose import Modules, compose
 from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import DownloadedModel, EmbeddingCache, Embeddings, OnnxClipEmbedder
@@ -38,32 +38,31 @@ def build_similarity(root: Path) -> Embeddings:
     return Embeddings(EmbeddingCache(root / "embeddings.db"), OnnxClipEmbedder(model), DownloadedModel(model))
 
 
-def build_core(home: Path | None = None) -> CoreService:
-    """The real Core service. The seed is fresh per boot unless `WALLPAPI_SEED` pins it; the Refill draws its
-    own stream from the one after it.
+def build_modules(home: Path | None = None) -> Modules:
+    """The real modules over the real collaborators. The seed is fresh per boot unless `WALLPAPI_SEED` pins
+    it; the Refill draws its own stream from the one after it.
     """
     root = wallpapi_home() if home is None else home
     root.mkdir(parents=True, exist_ok=True)
     pinned = os.environ.get("WALLPAPI_SEED")
     seed = int(pinned) if pinned else secrets.randbits(64)
-    return CoreService(
+    return compose(
         db_path=root / "wallpapi.db",
         thumbnail_dir=root / "thumbnails",
         wallhaven=WallhavenClient(),
-        library=DownloadingLibraryWriter(),
+        library_writer=DownloadingLibraryWriter(),
         similarity=build_similarity(root),
         random_source=SeededRandom(seed),
-        # Its own stream, so a refill step never changes which **Batch** a seed draws.
         refill_random_source=SeededRandom(seed + 1),
         clock=SystemClock(),
     )
 
 
 def build_app() -> FastAPI:
-    """The real app with its background threads. `refill=True` appears here and nowhere else, and nothing
+    """The real app with its background loops. `refill=True` appears here and nowhere else, and nothing
     tests it: lose that line and nothing fills.
     """
-    return create_app(build_core(), refill=True)
+    return create_app(build_modules(), refill=True)
 
 
 def main() -> None:

@@ -61,7 +61,9 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
   the shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
 - **14. Modules have their own seams.** Every module exposes a small interface taking a connection and its
   collaborators. Tests build one module with a real in-memory database and fake only the external
-  collaborator it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder. ADR 0019.
+  collaborator it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder.
+  `compose.py` is the only place that knows the whole graph; `workflows.py` owns every write transaction and
+  its post-commit tail and decides nothing about the data. ADR 0019.
 
 ## Traps
 
@@ -74,8 +76,9 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 - **45 API calls a minute is counted across the machine.** `wait_needed` sees one process, so anything calling
   outside the refill must pace itself evenly. Image hosts have no published limit; throttle them modestly.
 - No API key: purity is fixed to SFW.
-- `create_app(refill=True)` starts the background threads, off by default so no test starts one. `build_app`
-  in `main.py` is the only caller that turns it on, and is untested: lose that line and nothing fills.
+- `create_app(modules, refill=True)` starts the three background loops (`compose.background_loops`), off by
+  default so no test starts one. `build_app` in `main.py` is the only caller that turns it on, and is
+  untested: lose that line and nothing fills.
 
 ## Deferred decisions
 

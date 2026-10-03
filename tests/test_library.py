@@ -3,7 +3,7 @@
 The **Library** is derived from the **Decision log**: a **Favourite** with no file gets one, and a file whose
 **Wallpaper** is no longer a **Favourite** loses it. That makes `reconcile` idempotent, which is what lets a
 failed download simply be retried. A real in-memory database; **Wallpapers** are admitted and **Verdicts**
-appended as `pool` and `decisions` do. The last section is the Core service calling it at the right moments.
+appended as `pool` and `decisions` do. The last section is the workflows calling it at the right moments.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, make_harness
+from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, live, make_harness
 from tests.fakes import FakeLibraryWriter, catalogue_of, wallpaper
-from wallpapi.core import Batch
+from wallpapi import decisions, settings, workflows
 from wallpapi.library import Library
 from wallpapi.model import Verdict
 
@@ -264,12 +264,12 @@ def test_a_download_that_fails_is_reported_and_retried_by_the_next_run(
     assert sorted(second.written) == [ONE, TWO]
 
 
-# -- the Core service calls it after the Decision log commits ------------------------------------------
+# -- the workflows call it after the Decision log commits ----------------------------------------------
 
 
 def library_harness(db_path: Path, library_path: Path, count: int) -> Harness:
     harness = make_harness(db_path, catalogue=catalogue_of(count))
-    harness.core.update_settings(batch_size=count, library_path=library_path)
+    workflows.save_settings(harness.modules, batch_size=count, library_path=library_path)
     return harness
 
 
@@ -279,30 +279,32 @@ def test_a_submitted_favourite_is_written_after_the_decision_log_commits(
     """A failed download cannot roll the **Decision log** back; the next submission's reconciliation picks
     the **Favourite** up."""
     harness = library_harness(db_path, tmp_path / "Library", 2)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    batch = live(harness)
     failing, written = (w.id for w in batch.wallpapers)
     harness.library.fail_for.add(failing)
-    harness.core.set_all_draft_verdicts(batch.id, Verdict.FAVOURITE)
+    workflows.set_all_drafts(harness.modules, batch.id, Verdict.FAVOURITE)
 
-    harness.core.submit_batch(batch.id)
+    workflows.submit(harness.modules, batch.id)
 
     assert [w.wallpaper_id for w in harness.library.written] == [written]
-    assert [e.entry for e in harness.core.list_history(batch_id=batch.id)] == [Verdict.FAVOURITE] * 2
+    assert [e.entry for e in decisions.entries(harness.connect(), batch_id=batch.id)] == [
+        Verdict.FAVOURITE
+    ] * 2
 
     harness.library.fail_for.clear()
 
-    assert harness.core.reconcile_library().written == (failing,)
+    assert harness.modules.library.reconcile(
+        harness.connect(), settings.get(harness.connect()).library_path
+    ).written == (failing,)
 
 
 def test_a_history_edit_takes_the_file_away(db_path: Path, tmp_path: Path) -> None:
     harness = library_harness(db_path, tmp_path / "Library", 1)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.set_all_draft_verdicts(batch.id, Verdict.FAVOURITE)
-    harness.core.submit_batch(batch.id)
+    batch = live(harness)
+    workflows.set_all_drafts(harness.modules, batch.id, Verdict.FAVOURITE)
+    workflows.submit(harness.modules, batch.id)
     shown = batch.wallpapers[0].id
 
-    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
+    assert workflows.edit_verdict(harness.modules, shown, Verdict.LIKE) is None
 
     assert harness.library.removed == [harness.library.written[0].destination]

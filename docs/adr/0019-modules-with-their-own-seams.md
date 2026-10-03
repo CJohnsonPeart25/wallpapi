@@ -5,7 +5,10 @@ Date: 2026-10-03
 ## Status
 
 Accepted. Retires invariant 1 of `AGENTS.md`, one seam and five fakes, and the testing half of ADR 0001's
-context that rests on it.
+context that rests on it. Amended 2026-10-03: the plan to construct `batches` with `library` and `thumbnails`
+is superseded by `workflows.py`, stateless functions over `compose.Modules` that own every write transaction
+and run the post-commit tail after it. The **Core service** is gone: `compose.py` is the composition root, and
+each route that writes calls one workflow.
 
 ## Context
 

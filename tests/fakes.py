@@ -1,4 +1,4 @@
-"""Fakes for four of the Core service's five injected dependencies. The fifth, the random source, is the
+"""Fakes for four of `compose`'s five injected dependencies. The fifth, the random source, is the
 real `SeededRandom` with a fixed seed, as the spec asks for a seeded source."""
 
 from __future__ import annotations

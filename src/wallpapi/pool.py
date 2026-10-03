@@ -406,8 +406,16 @@ def members(connection: sqlite3.Connection) -> list[Wallpaper]:
     return [wallpaper_from_row(row) for row in connection.execute(_SELECT_POOL_WALLPAPERS)]
 
 
+def wallpapers(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dict[str, Wallpaper]:
+    """Every **Wallpaper** named that this database has recorded, in the **Pool** or not, by id."""
+    placeholders = ",".join("?" * len(wallpaper_ids))
+    rows = connection.execute(f"SELECT * FROM wallpapers WHERE id IN ({placeholders})", list(wallpaper_ids))
+    return {str(row["id"]): wallpaper_from_row(row) for row in rows}
+
+
 def wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
-    """A `wallpapers` row as a **Wallpaper**; the row may carry extra columns."""
+    """A `wallpapers` row as a **Wallpaper**; the row may carry extra columns. `pool` writes that table, so
+    this is where it is read back, for `batches` and **History** too."""
     return Wallpaper(
         id=str(row["id"]),
         width=int(row["width"]),

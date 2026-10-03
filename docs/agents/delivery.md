@@ -39,7 +39,7 @@ numbers must stay contiguous because `storage.migrate` applies its steps by numb
 - When `main` moves under a running agent, tell it what moved and have it rebase itself before opening the
   PR; it has the context to resolve its own conflicts. The lead resolves only conflicts left after that.
 - Dispatch order follows the dependency graph and the shared-file conflict surface: tickets that touch the
-  same sections of `core.py` run in sequence, tickets on different surfaces run in parallel.
+  same module run in sequence, tickets on different surfaces run in parallel.
 
 ## Definition of done
 

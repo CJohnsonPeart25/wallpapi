@@ -1,6 +1,6 @@
 """The route layer: status codes, redirects, `HX-Trigger`, fragment versus page, and refusals in words.
 
-What a write means is tested through the Core service elsewhere; here it is only checked that the route
+What a write means is tested through the workflows elsewhere; here it is only checked that the route
 reached it. `TestClient` runs the app in process over the fakes, with no background threads.
 """
 
@@ -15,19 +15,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import Harness, batch_id_of, favourite, judge, make_harness, serving
+from tests.conftest import Harness, batch_id_of, favourite, judge, live, make_harness, serving
 from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
-from wallpapi.core import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, Batch, SettingsRefused
+from wallpapi import decisions, settings, workflows
 from wallpapi.decisions import HISTORY_PAGE_SIZE
 from wallpapi.model import Mix, Verdict
+from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
 
 Web = tuple[Harness, TestClient]
-
-
-def live(harness: Harness) -> Batch:
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    return batch
 
 
 def test_every_page_boots_on_the_shell_and_tiles_come_from_the_cache(web: Web) -> None:
@@ -175,45 +170,92 @@ def test_posting_the_same_batch_twice_is_refused_and_still_refetches(web: Web) -
     assert second.status_code == HTTPStatus.CONFLICT
     assert "already" in second.text.lower()
     assert second.headers["HX-Trigger"] == "batch-submitted"
-    assert len(harness.core.list_history()) == 8
+    assert len(decisions.entries(harness.connect())) == 8
 
 
-HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus]] = [
+HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus, str]] = [
     # Ignore is derived on submit and never stored as a mark: a stored one would be a second shape of
     # nothing for Verdict resolution to tell apart from an absent row.
     (
         "/draft",
         lambda batch: {"batch_id": batch, "wallpaper_id": "wp0001", "verdict": "ignore"},
         HTTPStatus.BAD_REQUEST,
+        "an ignore is derived, not drafted",
     ),
     (
         "/draft",
         lambda batch: {"batch_id": batch, "wallpaper_id": "nope", "verdict": "like"},
         HTTPStatus.NOT_FOUND,
+        "unknown wallpaper",
     ),
-    ("/draft/all", lambda batch: {"batch_id": batch, "verdict": "ignore"}, HTTPStatus.BAD_REQUEST),
-    ("/draft/all", lambda batch: {"batch_id": batch, "verdict": "adore"}, HTTPStatus.BAD_REQUEST),
-    ("/history/verdict", lambda _: {"wallpaper_id": "wp0000", "verdict": ""}, HTTPStatus.BAD_REQUEST),
-    ("/history/verdict", lambda _: {"wallpaper_id": "wp0000", "verdict": "sideways"}, HTTPStatus.BAD_REQUEST),
-    ("/history/verdict", lambda _: {"wallpaper_id": "nope", "verdict": "like"}, HTTPStatus.NOT_FOUND),
-    # A Mix deleted in another tab gives the same answer.
-    ("/mix", lambda _: {"mix": "nope"}, HTTPStatus.BAD_REQUEST),
+    (
+        "/draft/all",
+        lambda batch: {"batch_id": batch, "verdict": "ignore"},
+        HTTPStatus.BAD_REQUEST,
+        "an ignore is derived, not drafted",
+    ),
+    (
+        "/draft/all",
+        lambda batch: {"batch_id": batch, "verdict": "adore"},
+        HTTPStatus.BAD_REQUEST,
+        "unknown verdict",
+    ),
+    (
+        "/history/verdict",
+        lambda _: {"wallpaper_id": "wp0000", "verdict": ""},
+        HTTPStatus.BAD_REQUEST,
+        "a verdict is required",
+    ),
+    (
+        "/history/verdict",
+        lambda _: {"wallpaper_id": "wp0000", "verdict": "sideways"},
+        HTTPStatus.BAD_REQUEST,
+        "unknown verdict",
+    ),
+    (
+        "/history/verdict",
+        lambda _: {"wallpaper_id": "nope", "verdict": "like"},
+        HTTPStatus.NOT_FOUND,
+        "unknown wallpaper",
+    ),
+    # A Mix deleted in another tab gives the same answer: the switcher, showing what is stored.
+    ("/mix", lambda _: {"mix": "nope"}, HTTPStatus.BAD_REQUEST, 'id="mix-switcher"'),
 ]
 
 
-@pytest.mark.parametrize(("path", "data", "status"), HAND_MADE_POSTS)
+@pytest.mark.parametrize(("path", "data", "status", "said"), HAND_MADE_POSTS)
 def test_a_post_no_control_sends_is_refused_and_changes_nothing(
-    web: Web, path: str, data: Callable[[str], dict[str, str]], status: HTTPStatus
+    web: Web, path: str, data: Callable[[str], dict[str, str]], status: HTTPStatus, said: str
 ) -> None:
     harness, client = web
     judge(harness, wp0000=Verdict.LIKE)
     batch_id = batch_id_of(client.get("/batch").text)
-    before = (harness.core.list_history(), live(harness).drafts, harness.core.get_settings())
+    before = (decisions.entries(harness.connect()), live(harness).drafts, settings.get(harness.connect()))
 
     response = client.post(path, data=data(batch_id))
 
     assert response.status_code == status
-    assert (harness.core.list_history(), live(harness).drafts, harness.core.get_settings()) == before
+    assert said in response.text
+    assert (
+        decisions.entries(harness.connect()),
+        live(harness).drafts,
+        settings.get(harness.connect()),
+    ) == before
+
+
+def test_a_stale_tab_is_told_in_words_which_batch_it_is_on(web: Web) -> None:
+    """The banner a second tab gets, unlike the bare statuses above: a real case, so a sentence."""
+    _, client = web
+    shown = batch_id_of(client.get("/batch").text)
+    client.post("/submit", data={"batch_id": shown})
+
+    again = client.post("/submit", data={"batch_id": shown})
+    unknown = client.post("/draft/all", data={"batch_id": "nope", "verdict": "like"})
+
+    assert again.status_code == HTTPStatus.CONFLICT
+    assert "That batch has already been submitted" in again.text
+    assert unknown.status_code == HTTPStatus.NOT_FOUND
+    assert "That batch is not one this instance knows about." in unknown.text
 
 
 def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
@@ -226,7 +268,7 @@ def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
     assert switched.status_code == HTTPStatus.OK
     assert 'id="mix-switcher"' in switched.text
     assert "batch-grid" not in switched.text
-    assert harness.core.active_mix() == REFINE_MIX
+    assert settings.active_mix(harness.connect()) == REFINE_MIX
     assert 'data-mix-active="refine"' in reloaded
 
 
@@ -267,7 +309,7 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
     """Most needed on an empty page, where an empty **Pool** and a dead refill look alike. A **Score** from
     the fallback looks like one from the model, so the provider's notice goes beside it."""
     harness = make_harness(db_path, fill_pool=fill_pool)
-    status = harness.core.refill.status()
+    status = harness.modules.refill.status()
 
     with serving(harness) as client:
         text = client.get("/batch").text
@@ -281,7 +323,7 @@ def test_a_provider_at_full_strength_adds_no_line(web: Web) -> None:
     """The model open and every **Pool** **Wallpaper** embedded."""
     harness, client = web
     harness.store.vector_by_id.update({w.id: STUB_DIRECTION for w in catalogue_of(24)})
-    harness.core.similarity_step(threading.Event())
+    harness.modules.similarity.catch_up(harness.modules.thumbnails.directory, threading.Event())
 
     assert "similarity-notice" not in client.get("/batch").text
 
@@ -306,7 +348,7 @@ def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Pat
         db_path, catalogue=catalogue_of(2), like_results={"wp0000": catalogue_of(4, prefix="lk")}
     )
     if favourited:
-        harness.core.update_settings(pool_target_size=1000)
+        workflows.save_settings(harness.modules, pool_target_size=1000)
         favourite(harness, "wp0000")
         harness.fill_pool(1)
 
@@ -364,7 +406,7 @@ def test_a_history_edit_answers_with_its_row_alone(db_path: Path, verdict: Verdi
     assert f'data-resolved-verdict="{verdict.value}"' in response.text
     assert re.sub(r"\{#.*?#\}", "", response.text, flags=re.S).lstrip().startswith("<tr")
     assert response.text.rstrip().endswith("</tr>")
-    assert harness.core.resolve_verdicts(["judged"])["judged"].verdict is verdict
+    assert decisions.resolve(harness.connect(), ["judged"])["judged"].verdict is verdict
 
 
 # -- settings ----------------------------------------------------------------------------------------
@@ -394,10 +436,10 @@ def test_saving_settings_redirects_and_a_partial_post_leaves_the_rest(web: Web, 
     assert saved.status_code == HTTPStatus.SEE_OTHER
     assert saved.headers["location"].startswith("/settings")
     assert "Settings saved." in client.get(saved.headers["location"]).text
-    settings = harness.core.get_settings()
-    assert (settings.batch_size, settings.library_path, settings.pool_target_size) == (4, chosen, 150)
-    assert (settings.min_width, settings.min_height, settings.min_favourites) == (1920, 1080, 40)
-    assert settings.allowed_ratios == ("21x9", "32x9")
+    stored = settings.get(harness.connect())
+    assert (stored.batch_size, stored.library_path, stored.pool_target_size) == (4, chosen, 150)
+    assert (stored.min_width, stored.min_height, stored.min_favourites) == (1920, 1080, 40)
+    assert stored.allowed_ratios == ("21x9", "32x9")
 
 
 def test_a_field_cleared_and_saved_keeps_its_stored_value(web: Web, tmp_path: Path) -> None:
@@ -405,15 +447,15 @@ def test_a_field_cleared_and_saved_keeps_its_stored_value(web: Web, tmp_path: Pa
     alone rather than refusing it as blank."""
     harness, client = web
     chosen = tmp_path / "Wallpapers"
-    harness.core.update_settings(batch_size=5, library_path=chosen)
+    workflows.save_settings(harness.modules, batch_size=5, library_path=chosen)
 
     saved = client.post(
         "/settings", data={"batch_size": "", "library_path": "", "min_width": "1920"}, follow_redirects=False
     )
 
     assert saved.status_code == HTTPStatus.SEE_OTHER
-    settings = harness.core.get_settings()
-    assert (settings.batch_size, settings.library_path, settings.min_width) == (5, chosen, 1920)
+    stored = settings.get(harness.connect())
+    assert (stored.batch_size, stored.library_path, stored.min_width) == (5, chosen, 1920)
 
 
 @pytest.mark.parametrize(
@@ -434,10 +476,10 @@ def test_a_field_cleared_and_saved_keeps_its_stored_value(web: Web, tmp_path: Pa
 def test_a_refused_settings_post_is_the_page_with_the_reason_and_what_was_typed(
     web: Web, posted: dict[str, str], words: list[str]
 ) -> None:
-    """One error branch, the Core service's reason in words and never its enum value; and what was typed,
+    """One error branch, the refusal's reason in words and never its enum value; and what was typed,
     so correcting one field is not retyping the rest."""
     harness, client = web
-    before = harness.core.get_settings()
+    before = settings.get(harness.connect())
 
     response = client.post("/settings", data=posted)
 
@@ -449,7 +491,7 @@ def test_a_refused_settings_post_is_the_page_with_the_reason_and_what_was_typed(
         assert f'value="{typed}"' in response.text
     for word in words:
         assert word.lower() in response.text.lower()
-    assert harness.core.get_settings() == before
+    assert settings.get(harness.connect()) == before
 
 
 def test_a_batch_size_saved_from_the_page_reaches_the_next_batch_and_the_shell(
@@ -471,10 +513,10 @@ def test_downloading_the_favourites_redirects_and_says_what_happened(db_path: Pa
     network calls a refresh should not repeat. The fake's paths are not on this disk, which is the
     state the button exists for."""
     harness = make_harness(db_path, catalogue=catalogue_of(2))
-    harness.core.update_settings(batch_size=2, library_path=tmp_path / "Library")
+    workflows.save_settings(harness.modules, batch_size=2, library_path=tmp_path / "Library")
     stubborn, _ = (w.id for w in live(harness).wallpapers)
-    harness.core.set_all_draft_verdicts(live(harness).id, Verdict.FAVOURITE)
-    harness.core.submit_batch(live(harness).id)
+    workflows.set_all_drafts(harness.modules, live(harness).id, Verdict.FAVOURITE)
+    workflows.submit(harness.modules, live(harness).id)
     harness.library.fail_for.add(stubborn)
 
     with serving(harness) as client:
@@ -502,7 +544,7 @@ def test_saving_a_mix_redirects_and_one_route_both_adds_and_edits(web: Web) -> N
 
     assert edited.status_code == HTTPStatus.SEE_OTHER
     assert edited.headers["location"].startswith("/settings")
-    assert harness.core.list_mixes() == (
+    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (
         Mix(name="Night", unknown=10, banger=80, dud=10),
         Mix(name="explore", unknown=50, banger=45, dud=5),
         REFINE_MIX,
@@ -530,7 +572,7 @@ def test_an_invalid_mix_shows_the_reason_and_what_was_typed(
 
     assert refused.status_code == HTTPStatus.BAD_REQUEST
     assert words in refused.text
-    assert harness.core.list_mixes() == (EXPLORE_MIX, REFINE_MIX)
+    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (EXPLORE_MIX, REFINE_MIX)
     if posted["name"] == "explore":
         row = refused.text.split('data-mix-row="explore"', 1)[1].split("</tr>", 1)[0]
         assert row.count('value="30"') == 3
@@ -549,12 +591,15 @@ def test_deleting_a_mix_redirects_or_says_why_not(
     db_path: Path, deleted: str, active: str, status: HTTPStatus, words: str
 ) -> None:
     harness = make_harness(db_path)
-    harness.core.save_mix("duds only", unknown=0, banger=0, dud=100)
-    harness.core.update_settings(active_mix=active)
+    workflows.save_mix(harness.modules, "duds only", unknown=0, banger=0, dud=100)
+    workflows.save_settings(harness.modules, active_mix=active)
 
     with serving(harness) as client:
         response = client.post("/settings/mixes/delete", data={"name": deleted}, follow_redirects=False)
 
     assert response.status_code == status
     assert words in response.text
-    assert (deleted in {mix.name for mix in harness.core.list_mixes()}) is (status != HTTPStatus.SEE_OTHER)
+    assert (
+        deleted
+        in {mix.name for mix in tuple(listed.mix for listed in settings.list_mixes(harness.connect()))}
+    ) is (status != HTTPStatus.SEE_OTHER)

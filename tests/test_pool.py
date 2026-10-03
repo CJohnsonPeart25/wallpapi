@@ -1,5 +1,5 @@
 """The **Pool** and its **Refill**, through `pool` alone: a real in-memory database, the fake Wallhaven client
-and the fake clock. No Core service and no thread, so the whole 45-calls-a-minute budget is exercised in no
+and the fake clock. No `compose` and no thread, so the whole 45-calls-a-minute budget is exercised in no
 real time. Searches are asserted against the fake's record because the client is an injected seam and
 "searched with these parameters" has no other observable.
 
@@ -269,6 +269,19 @@ def test_a_member_is_contained_until_it_is_retired(connection: sqlite3.Connectio
     assert pool.contains(connection, "wp0000")
     assert not pool.contains(connection, "wp0001")
     assert not pool.contains(connection, "never-admitted")
+
+
+def test_any_recorded_wallpaper_is_looked_up_member_or_not(connection: sqlite3.Connection) -> None:
+    """**History** shows what the **Pool** retired: the `wallpapers` row is the record, not membership."""
+    rig_over(connection, catalogue=catalogue_of(3), steps=1)
+
+    with storage.write(connection) as write:
+        pool.retire(write, ["wp0001"])
+
+    assert pool.wallpapers(connection, ["wp0001", "wp0002", "never-admitted"]) == {
+        w.id: w for w in catalogue_of(3)[1:]
+    }
+    assert pool.wallpapers(connection, []) == {}
 
 
 def test_a_settings_change_that_touches_no_filter_prunes_nothing(rig: Rig) -> None:

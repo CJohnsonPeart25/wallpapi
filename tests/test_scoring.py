@@ -11,9 +11,10 @@ from pathlib import Path
 
 import numpy as np
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import Harness, live, make_harness
 from tests.fakes import catalogue_of
-from wallpapi.core import Batch, ScoredWallpaper
+from wallpapi import workflows
+from wallpapi.allocation import ScoredWallpaper
 from wallpapi.model import Verdict, Zone
 from wallpapi.scoring import classify
 
@@ -22,28 +23,30 @@ POOL_SIZE = 5
 
 def _decide_two(harness: Harness) -> tuple[str, str, list[str]]:
     """Show a **Batch** of two, unsubmitted, and hand back its two IDs and the undecided rest, sorted."""
-    harness.core.update_settings(batch_size=2)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    workflows.save_settings(harness.modules, batch_size=2)
+    batch = live(harness)
     shown = [w.id for w in batch.wallpapers]
     rest = sorted({f"wp{n:04d}" for n in range(POOL_SIZE)} - set(shown))
     return shown[0], shown[1], rest
 
 
 def _submit(harness: Harness, **marks: Verdict) -> None:
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    batch = live(harness)
     for wallpaper_id, verdict in marks.items():
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
-    harness.core.submit_batch(batch.id)
+        workflows.set_draft(harness.modules, batch.id, wallpaper_id, verdict)
+    workflows.submit(harness.modules, batch.id)
 
 
 def _zones(harness: Harness) -> dict[str, Zone]:
-    return {scored.wallpaper.id: scored.zone for scored in harness.core.classify_pool()}
+    return {
+        scored.wallpaper.id: scored.zone for scored in harness.modules.batches.classify(harness.connect())
+    }
 
 
 def _scores(harness: Harness) -> dict[str, float]:
-    return {scored.wallpaper.id: scored.score for scored in harness.core.classify_pool()}
+    return {
+        scored.wallpaper.id: scored.score for scored in harness.modules.batches.classify(harness.connect())
+    }
 
 
 def test_a_favourite_spreads_a_banger_a_ban_spreads_a_dud_and_the_distant_stay_unknown(db_path: Path) -> None:
@@ -72,9 +75,9 @@ def test_a_decided_pool_member_scores_its_own_value_and_a_banned_one_is_in_no_zo
     **Banned** one is absent whatever its **Verdict**, so that could not tell a **Ban** from an **Ignore**.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    assert harness.core.edit_verdict("wp0000", Verdict.FAVOURITE) is None
-    assert harness.core.edit_verdict("wp0001", Verdict.BAN) is None
-    assert harness.core.edit_verdict("wp0002", Verdict.IGNORE) is None
+    assert workflows.edit_verdict(harness.modules, "wp0000", Verdict.FAVOURITE) is None
+    assert workflows.edit_verdict(harness.modules, "wp0001", Verdict.BAN) is None
+    assert workflows.edit_verdict(harness.modules, "wp0002", Verdict.IGNORE) is None
 
     scores, zones = _scores(harness), _zones(harness)
 
@@ -135,16 +138,16 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
     _submit(harness, **{loved: Verdict.FAVOURITE})
     assert _zones(harness)[swayed] is Zone.BANGER
 
-    assert harness.core.edit_verdict(hated, Verdict.BAN) is None
+    assert workflows.edit_verdict(harness.modules, hated, Verdict.BAN) is None
 
     assert _zones(harness)[swayed] is Zone.DUD
 
 
-def test_a_restarted_core_service_derives_the_same_classification(db_path: Path) -> None:
+def test_a_restart_derives_the_same_classification(db_path: Path) -> None:
     """The other half of never stored: the answer survives when nothing changes."""
     similarities = {("wp0004", "wp0000"): 0.9}
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE), similarities=similarities)
-    harness.core.update_settings(batch_size=POOL_SIZE)
+    workflows.save_settings(harness.modules, batch_size=POOL_SIZE)
     _submit(harness, wp0000=Verdict.FAVOURITE)
     before = _scores(harness)
 
@@ -164,7 +167,7 @@ def test_widening_the_radius_brings_a_distant_wallpaper_into_a_zone(db_path: Pat
     _submit(harness, **{loved: Verdict.FAVOURITE})
     assert _zones(harness)[distant] is Zone.UNKNOWN
 
-    harness.core.update_settings(similarity_radius=0.7)
+    workflows.save_settings(harness.modules, similarity_radius=0.7)
 
     assert _zones(harness)[distant] is Zone.BANGER
 
@@ -178,7 +181,7 @@ def test_raising_the_decay_shrinks_what_a_distant_verdict_is_worth(db_path: Path
     _submit(harness, **{loved: Verdict.FAVOURITE})
     gentle = _scores(harness)[nearby]
 
-    harness.core.update_settings(similarity_decay=10.0)
+    workflows.save_settings(harness.modules, similarity_decay=10.0)
     steep = _scores(harness)[nearby]
 
     assert 0.0 < steep < gentle
@@ -190,7 +193,7 @@ def test_an_undecided_pool_is_every_wallpaper_unknown_and_a_score_a_plain_float(
     a numpy scalar a template would print as `np.float64(…)`."""
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
 
-    classified = harness.core.classify_pool()
+    classified = harness.modules.batches.classify(harness.connect())
 
     assert len(classified) == POOL_SIZE
     assert all(isinstance(scored, ScoredWallpaper) and type(scored.score) is float for scored in classified)
@@ -207,7 +210,7 @@ def test_the_similarity_provider_is_asked_for_one_matrix_of_the_whole_pool(db_pa
     _submit(harness, **{loved: Verdict.FAVOURITE})
     harness.similarity.calls.clear()
 
-    harness.core.classify_pool()
+    harness.modules.batches.classify(harness.connect())
 
     assert len(harness.similarity.calls) == 1
     pool_side, decided_side = harness.similarity.calls[0]
