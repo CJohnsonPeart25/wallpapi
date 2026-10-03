@@ -20,8 +20,10 @@ Locked. The original spec issue lists it under "Technology"; if the two disagree
 - **Pico CSS 2.1.1** (`pico.indigo.min.css`, the default class-based build) and **Alpine.js 3.17.4**
   (`alpine.min.js`, the `cdn.min.js` build, loaded `defer`), both vendored into `web/static/` byte for byte
   with their licence headers, like htmx. Pico is the base and `base.css` is what Pico cannot say — ADR 0014.
-  Upgrading either means replacing the file whole and updating the size and SHA-256 pinned in
-  `tests/test_web_shell.py` and recorded in the ADR; `.gitattributes` keeps checkout from rewriting them.
+  `scripts/vendor_assets.py` holds the URL and SHA-256 of all three files, htmx 2.0.4 included, and nothing
+  else records them: upgrading one means changing its version and hash there and running
+  `uv run python scripts/vendor_assets.py`, which checks every hash before writing anything.
+  `.gitattributes` keeps checkout from rewriting them.
 - **Synchronous throughout** (ADR 0001): `httpx2.Client`, standard library `sqlite3`, background work on
   `threading.Thread`s started in the FastAPI lifespan. Migrations are `user_version` plus numbered steps.
 - **numpy** as a *direct* dependency: the matrix interface needs it, and onnxruntime would otherwise supply it
