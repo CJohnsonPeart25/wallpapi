@@ -1,0 +1,210 @@
+"""The three background threads: they start with the app, run their loop, and stop when told.
+
+Everything the loops *decide* is a Core service method the other modules drive by hand. What is left here is
+what a fake cannot stand in for: a loop on another thread, and a shutdown that has to end it. Every wait is on
+an event a fake sets, never a sleep, and fails the test rather than hanging.
+"""
+
+from __future__ import annotations
+
+import ast
+import threading
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from tests.conftest import make_harness
+from tests.fakes import catalogue_of
+from wallpapi.refill import JOIN_TIMEOUT, RefillThread
+from wallpapi.similarity_thread import SimilarityThread
+from wallpapi.thumbnail_thread import THREAD_NAME, ThumbnailThread
+from wallpapi.web.app import create_app
+
+SOURCE = Path(__file__).resolve().parent.parent / "src" / "wallpapi"
+
+
+def _running(name: str) -> bool:
+    return any(thread.name == name for thread in threading.enumerate())
+
+
+def test_the_lifespan_starts_the_refill_and_stops_it_cleanly(db_path: Path) -> None:
+    """The **Pool** is already at its target, so the loop's first act is a long cancellable wait: what is
+    checked is that the thread starts, the wait is cancellable and the join returns."""
+    harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=1)
+    harness.core.update_settings(pool_target_size=1)
+    app = create_app(harness.core, refill=True)
+
+    with TestClient(app) as client:
+        response = client.get("/batch")
+        assert response.status_code == 200
+        assert harness.core.refill_status().running, "the lifespan should have started the thread"
+        assert "Refill idle" in response.text
+
+    assert not harness.core.refill_status().running, "shutdown should have joined the thread"
+
+
+def test_the_refill_thread_fills_the_pool_from_an_empty_start(db_path: Path) -> None:
+    harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=0)
+    harness.core.update_settings(pool_target_size=1)
+    app = create_app(harness.core, refill=True)
+
+    with TestClient(app) as client:
+        client.get("/batch")
+        assert harness.wallhaven.searched.wait(JOIN_TIMEOUT), "the thread should have searched"
+
+    assert harness.core.refill_status().pool_size == 24
+
+
+def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Path) -> None:
+    """The model is fetched off the request path, and shutdown is clean."""
+    harness = make_harness(db_path, catalogue=catalogue_of(24))
+    harness.core.update_settings(pool_target_size=1)
+    app = create_app(harness.core, refill=True)
+
+    with TestClient(app):
+        assert harness.similarity.wait_for_catch_ups(1, JOIN_TIMEOUT), "the thread should have caught up"
+
+
+def test_the_upkeep_is_handed_the_thumbnail_cache(db_path: Path) -> None:
+    """The images wallpapi holds are the **Thumbnail cache** (invariant 8); a **Wallpaper** with no
+    thumbnail there is simply not embedded and falls back to the baseline."""
+    harness = make_harness(db_path)
+
+    harness.core.similarity_step(threading.Event())
+
+    assert harness.similarity.catch_up_calls == [harness.core.thumbnail_dir]
+
+
+def test_a_provider_with_more_to_do_is_called_again_without_waiting(db_path: Path) -> None:
+    """A 0.0 means "come straight back", so a backlog is worked through without the loop sleeping. Two
+    0.0s then `NOTHING_TO_CATCH_UP` is exactly three calls before the loop settles into its wait."""
+    harness = make_harness(db_path, catch_up_waits=[0.0, 0.0])
+    upkeep = SimilarityThread(harness.core)
+
+    upkeep.start()
+    try:
+        assert harness.similarity.wait_for_catch_ups(3, JOIN_TIMEOUT), (
+            "the 0.0s should be followed straight up"
+        )
+    finally:
+        upkeep.stop()
+
+    assert len(harness.similarity.catch_up_calls) == 3
+
+
+def test_the_lifespan_starts_the_downloader_and_it_fetches_on_its_own_thread(db_path: Path) -> None:
+    """Thumbnail fetching for the **Pool** never runs on a request thread, inside `refill_loop` or on the
+    similarity thread, and it starts through the `refill` flag."""
+    harness = make_harness(db_path, catalogue=catalogue_of(3))
+    harness.core.update_settings(pool_target_size=1)
+    app = create_app(harness.core, refill=True)
+
+    with TestClient(app):
+        assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "the downloader should have fetched"
+        assert _running(THREAD_NAME)
+
+    assert harness.wallhaven.thumbnail_threads
+    assert set(harness.wallhaven.thumbnail_threads) == {"wallpapi-thumbnails"}
+    assert not _running(THREAD_NAME), "shutdown should have joined the downloader"
+
+
+def test_without_the_refill_flag_no_downloader_starts(db_path: Path) -> None:
+    harness = make_harness(db_path, catalogue=catalogue_of(3))
+    app = create_app(harness.core)
+
+    with TestClient(app) as client:
+        client.get("/batch")
+        assert not _running(THREAD_NAME)
+
+    assert harness.wallhaven.thumbnail_fetches == []
+
+
+def test_a_stop_during_a_fetch_ends_the_downloader_once_the_fetch_returns(db_path: Path) -> None:
+    """The stop lands while a fetch is held in flight. When the fetch returns, as a real one must inside
+    `REQUEST_TIMEOUT`, the loop goes back to its `stop_event` rather than on to the next **Pool** member."""
+    harness = make_harness(db_path, catalogue=catalogue_of(3))
+    release = threading.Event()
+    harness.wallhaven.hold_thumbnails = release
+    downloader = ThumbnailThread(harness.core)
+    downloader.start()
+    assert harness.wallhaven.thumbnail_fetched.wait(JOIN_TIMEOUT), "a fetch should be in flight"
+    (thread,) = [t for t in threading.enumerate() if t.name == THREAD_NAME]
+
+    downloader.stop(timeout=0.0)
+    release.set()
+    thread.join(JOIN_TIMEOUT)
+
+    assert not thread.is_alive(), "the loop should have ended inside the join timeout"
+    assert len(harness.wallhaven.thumbnail_fetches) == 1
+
+
+@pytest.mark.parametrize(
+    ("thread_type", "name"),
+    [
+        (RefillThread, "wallpapi-refill"),
+        (SimilarityThread, "wallpapi-similarity"),
+        (ThumbnailThread, THREAD_NAME),
+    ],
+)
+def test_starting_and_stopping_twice_is_harmless(
+    thread_type: type[RefillThread | SimilarityThread | ThumbnailThread], name: str, db_path: Path
+) -> None:
+    """A stop without a start, and a second stop, must not raise: shutdown paths get run twice."""
+    harness = make_harness(db_path, fill_pool=0)
+    harness.core.update_settings(pool_target_size=1)
+    thread = thread_type(harness.core)
+
+    thread.stop()
+    thread.start()
+    thread.start()
+    thread.stop()
+    thread.stop()
+
+    assert not _running(name)
+
+
+def _sleep_calls(path: Path) -> list[int]:
+    """Lines calling `time.sleep`, however it was imported. Parsed, not grepped: a docstring may say it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    time_names = {"time"}
+    sleep_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            time_names |= {alias.asname or alias.name for alias in node.names if alias.name == "time"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "time":
+            sleep_names |= {alias.asname or alias.name for alias in node.names if alias.name == "sleep"}
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "sleep" and isinstance(func.value, ast.Name):
+            if func.value.id in time_names:
+                lines.append(node.lineno)
+        elif isinstance(func, ast.Name) and func.id in sleep_names:
+            lines.append(node.lineno)
+    return lines
+
+
+def test_no_source_file_calls_time_sleep() -> None:
+    """Invariant 12: every wait is `stop_event.wait(n)`, so shutdown never hangs behind a sleep."""
+    offenders = {
+        str(path.relative_to(SOURCE)): lines
+        for path in sorted(SOURCE.rglob("*.py"))
+        if (lines := _sleep_calls(path))
+    }
+
+    assert offenders == {}
+
+
+def test_the_sleep_guard_sees_every_spelling(tmp_path: Path) -> None:
+    source = tmp_path / "sleepy.py"
+    source.write_text(
+        '"""Never `time.sleep(n)`."""\n'
+        "import time\nimport time as t\nfrom time import sleep\nfrom time import sleep as nap\n"
+        "time.sleep(1)\nt.sleep(1)\nsleep(1)\nnap(1)\n",
+        encoding="utf-8",
+    )
+
+    assert _sleep_calls(source) == [6, 7, 8, 9]

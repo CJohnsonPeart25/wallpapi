@@ -259,9 +259,7 @@ class FakeSimilarityProvider:
         self.notice_pools: list[tuple[str, ...]] = []
         """The **Pool** each `notice` was asked about, as IDs."""
         self.catch_up_calls: list[Path] = []
-        self.catch_up_started = threading.Event()
-        """Set by the first `catch_up`. The thread test waits on this rather than guessing how long the
-        thread needs, the same way `FakeWallhavenClient.searched` does."""
+        self._caught_up = threading.Condition()
         self._catch_up_waits = list(catch_up_waits)
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
@@ -277,9 +275,15 @@ class FakeSimilarityProvider:
         the loop come straight back before it settles.
         """
         del stop_event
-        self.catch_up_calls.append(thumbnails)
-        self.catch_up_started.set()
+        with self._caught_up:
+            self.catch_up_calls.append(thumbnails)
+            self._caught_up.notify_all()
         return self._catch_up_waits.pop(0) if self._catch_up_waits else NOTHING_TO_CATCH_UP
+
+    def wait_for_catch_ups(self, count: int, timeout: float) -> bool:
+        """Block until `catch_up` has been called `count` times, or `timeout` passes. Never a sleep."""
+        with self._caught_up:
+            return self._caught_up.wait_for(lambda: len(self.catch_up_calls) >= count, timeout)
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         self.notice_pools.append(tuple(w.id for w in pool))
