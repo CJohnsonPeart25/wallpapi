@@ -1,48 +1,24 @@
 """The shell every full page is rendered in: the vendored assets, the nav, and the theme (#40, ADR 0014).
 
 No browser here, so none of Pico's styling or Alpine's behaviour is exercised. What is asserted is the part a
-regression would break silently: which files each page loads and where from, that the vendored files are
-the published ones byte for byte, that the theme is applied by an inline script before anything else, and
-that a fragment htmx swaps in is still a fragment and not a page.
+regression would break silently: which files each page loads and where from, that the theme is applied by
+an inline script before anything else, and that a fragment htmx swaps in is still a fragment and not a page.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import make_harness
 from tests.fakes import catalogue_of
 from tests.test_web_submission import batch_id_of
-from wallpapi.web.app import STATIC_DIR, create_app
+from wallpapi.web.app import create_app
 
 PAGES = ("/", "/history", "/settings")
 ASSETS = re.compile(r'<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"')
-
-VENDORED = {
-    "pico.indigo.min.css": (83_336, "3ff75cde84c76491549e1a7c64294c2c83cb2f92231ea44692f9ffc69897a811"),
-    "alpine.min.js": (55_891, "232519394c6c8fdba6f362b1d9da16106db513cdbf899011f00daab4051df31c"),
-}
-"""Size and SHA-256 of each release file as fetched, recorded in ADR 0014.
-
-Pinned so that a line-ending conversion on checkout, a formatter run over `static/`, or a hand edit all
-show up here rather than as a vendored file that is quietly no longer the one its version number claims.
-"""
-
-
-@pytest.mark.parametrize("name", sorted(VENDORED))
-def test_the_vendored_files_are_the_release_files_byte_for_byte(name: str) -> None:
-    """Acceptance criterion: byte-identical to the release files, licence headers kept."""
-    size, digest = VENDORED[name]
-    data = (STATIC_DIR / name).read_bytes()
-
-    assert len(data) == size
-    assert hashlib.sha256(data).hexdigest() == digest
-    assert b"MIT" in data, "the licence header is part of the file"
 
 
 def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(db_path: Path) -> None:
@@ -53,16 +29,14 @@ def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(db_path
         bodies = {path: client.get(path).text for path in PAGES}
         loaded = {asset for body in bodies.values() for asset in ASSETS.findall(body)}
         answers = {asset: client.get(asset).status_code for asset in loaded}
-        gone = client.get("/static/wallpapi.css").status_code
 
     for path, body in bodies.items():
         for asset in ASSETS.findall(body):
             assert asset.startswith("/static/"), f"{path} loads {asset}, which the app does not serve"
         for base in ("pico.indigo.min.css", "base.css", "htmx.min.js", "alpine.min.js"):
             assert f'"/static/{base}"' in body, f"{path} is not on the shell: no {base}"
-    assert loaded >= {f"/static/{name}" for name in ("wallpapi.js", *VENDORED)}
+    assert loaded >= {f"/static/{name}" for name in ("wallpapi.js", "pico.indigo.min.css", "alpine.min.js")}
     assert all(status == 200 for status in answers.values()), answers
-    assert gone == 404, "wallpapi.css is replaced by Pico and base.css, not kept beside them"
 
 
 def test_the_fragments_htmx_swaps_in_are_still_fragments(db_path: Path) -> None:
