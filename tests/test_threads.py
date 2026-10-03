@@ -67,7 +67,7 @@ def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Pa
 
 
 def test_the_upkeep_is_handed_the_thumbnail_cache(db_path: Path) -> None:
-    """The images wallpapi holds are the **Thumbnail cache** (invariant 8); a **Wallpaper** with no
+    """The images wallpapi holds are the **Thumbnail cache** (ADR 0009); a **Wallpaper** with no
     thumbnail there is simply not embedded and falls back to the baseline."""
     harness = make_harness(db_path)
 

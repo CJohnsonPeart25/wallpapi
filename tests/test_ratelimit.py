@@ -1,4 +1,4 @@
-"""The pacing functions (invariant 11): pure "how long must I wait" over monotonic timestamps; the caller
+"""The pacing functions (ADR 0005): pure "how long must I wait" over monotonic timestamps; the caller
 waits. Monotonic, because a wall clock jumping back over a daylight-saving change would hand out free calls.
 """
 

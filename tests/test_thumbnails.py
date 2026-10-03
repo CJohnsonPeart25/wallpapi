@@ -1,4 +1,4 @@
-"""The **Thumbnail cache**: verdict-aware eviction with a size cap (invariant 8), and the background
+"""The **Thumbnail cache**: verdict-aware eviction with a size cap (ADR 0009), and the background
 downloader that fills it with every **Pool** member (ADR 0017).
 
 The downloader is driven by hand, as the refill is: `thumbnail_wait` says how long the thread would wait and

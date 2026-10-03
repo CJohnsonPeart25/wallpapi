@@ -69,7 +69,7 @@ def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web)
 
 def test_the_preview_fetches_nothing_until_it_is_opened(web: Web) -> None:
     """A native `<dialog>` whose image has no `src` and no binding: nothing full-size is fetched until it
-    is asked for (invariant 8). Each tile carries its full-size and Wallhaven URLs, and the one link out
+    is asked for (ADR 0003). Each tile carries its full-size and Wallhaven URLs, and the one link out
     is the preview's, opened without a handle back or a referrer."""
     harness, client = web
     body = client.get("/").text + client.get("/batch").text
