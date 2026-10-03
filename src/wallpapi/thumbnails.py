@@ -124,8 +124,8 @@ class Thumbnails:
         First, every thumbnail with no **Explicit Verdict** standing, not in the **Pool** and not in the live
         **Batch**: nothing will ask for it again. Then, over `cap_bytes`, the oldest of those still to be
         shown. Neither pass evicts an **Explicit Verdict**, so a cache over the cap on **Favourites** alone
-        says so in `over_cap`. A file that vanishes mid-pass is skipped: this runs after a submission and
-        must not raise.
+        says so in `over_cap`. A file that vanishes mid-pass, or that something holds open, is skipped: this
+        runs after a submission has committed and must not raise.
         """
         cached = _cached_thumbnails(self.directory)
         if not cached:
@@ -144,17 +144,18 @@ class Thumbnails:
                 # Still to be shown, so kept unless the cap says otherwise.
                 capped.append(thumbnail)
                 remaining += thumbnail.size
-            else:
-                thumbnail.path.unlink(missing_ok=True)
+            elif _deleted(thumbnail.path):
                 evicted.append(thumbnail.wallpaper_id)
+            else:
+                remaining += thumbnail.size
 
         # Oldest modified first, the name breaking ties so the order never depends on the listing.
         for thumbnail in sorted(capped, key=lambda cached: (cached.modified_at, cached.path.name)):
             if remaining <= cap_bytes:
                 break
-            thumbnail.path.unlink(missing_ok=True)
-            evicted.append(thumbnail.wallpaper_id)
-            remaining -= thumbnail.size
+            if _deleted(thumbnail.path):
+                evicted.append(thumbnail.wallpaper_id)
+                remaining -= thumbnail.size
 
         return ThumbnailEviction(
             evicted=tuple(evicted), remaining_bytes=remaining, over_cap=remaining > cap_bytes
@@ -256,6 +257,15 @@ def download_loop(
         if stop_event.is_set():
             return
         thumbnails.step(connect())
+
+
+def _deleted(path: Path) -> bool:
+    """Delete a cached file, gone already counting as deleted; one held open is left for the next eviction."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
 
 
 def cap_bytes(current: settings.Settings) -> int:

@@ -162,6 +162,22 @@ def test_an_undecided_wallpaper_that_left_the_pool_loses_its_thumbnail(tmp_path:
         assert rig.cached() == {"banned", "liked"}
 
 
+def test_a_thumbnail_held_open_elsewhere_is_left_for_next_time(tmp_path: Path) -> None:
+    """Eviction runs after a submission has committed, so a file it cannot delete (on Windows, one being
+    read) is skipped rather than raised over the submission. Whatever it reports evicted is gone."""
+    wallpapers = (wallpaper("held"), wallpaper("free"))
+    with rig_over(tmp_path, wallpapers) as rig:
+        rig.fill("held", "free")
+        rig.retire("held", "free")
+        (held,) = rig.directory.glob("held.*")
+
+        with held.open("rb"):
+            evicted = rig.evict()
+
+        assert "free" in evicted
+        assert set(evicted) == {"held", "free"} - rig.cached()
+
+
 QUIET = RefillStatus(
     pool_size=0,
     target_size=0,
