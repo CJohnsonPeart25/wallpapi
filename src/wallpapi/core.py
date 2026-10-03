@@ -20,7 +20,8 @@ from uuid import uuid4
 from wallpapi import decisions, similarity, storage
 from wallpapi import pool as pool_module
 from wallpapi import settings as settings_module
-from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
+from wallpapi.allocation import ScoredWallpaper as ScoredWallpaper
+from wallpapi.allocation import draw
 from wallpapi.background import BackgroundLoop
 from wallpapi.clock import Clock
 from wallpapi.decisions import ResolvedVerdict
@@ -102,15 +103,6 @@ class BatchUnavailable:
     reason: Reason
     error: str | None = None
     error_at: dt.datetime | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ScoredWallpaper:
-    """One **Pool** **Wallpaper**, its **Score** and its **Zone**. Derived on every call, never stored."""
-
-    wallpaper: Wallpaper
-    score: float
-    zone: Zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +311,8 @@ class CoreService:
         if not classified:
             return self._nothing_to_show()
 
-        chosen = self._choose(classified, size)
+        vectors = self._similarity.vectors([scored.wallpaper for scored in classified])
+        chosen = draw(self.active_mix(), classified, size, self._random, vectors)
         created_at = self._clock.now()
         batch_id = uuid4().hex
 
@@ -361,50 +354,6 @@ class CoreService:
             drafts=drafts,
             zones={scored.wallpaper.id: scored.zone for scored in chosen},
         )
-
-    def _choose(self, classified: Sequence[ScoredWallpaper], size: int) -> list[ScoredWallpaper]:
-        """Which of the classified **Pool** a **Batch** shows: slots by **Mix**, each **Zone** in its draw
-        order, and any shortfall refilled in `ZONE_ORDER`.
-
-        Shuffled at the end, so a tile's **Zone** cannot be read from its position.
-        """
-        slots = allocate(self.active_mix(), size, self._random)
-        orders = {zone: self._draw_order(zone, classified, slots[zone]) for zone in ZONE_ORDER}
-        taken = dict.fromkeys(ZONE_ORDER, 0)
-        chosen: list[ScoredWallpaper] = []
-
-        def take(zone: Zone, count: int) -> int:
-            """Up to `count` more from `zone`, in its draw order. Returns how many there were."""
-            available = orders[zone][taken[zone] : taken[zone] + count]
-            taken[zone] += len(available)
-            chosen.extend(available)
-            return len(available)
-
-        shortfall = sum(slots[zone] - take(zone, slots[zone]) for zone in ZONE_ORDER)
-        # One pass is enough: after it every **Zone** is exhausted or the shortfall is met.
-        for zone in ZONE_ORDER:
-            if shortfall <= 0:
-                break
-            shortfall -= take(zone, shortfall)
-        return self._random.sample(chosen, len(chosen))
-
-    def _draw_order(
-        self, zone: Zone, classified: Sequence[ScoredWallpaper], slots: int
-    ) -> list[ScoredWallpaper]:
-        """The order one **Zone** gives its **Wallpapers** up in, best first.
-
-        **Bangers** by **Score** over a random order, so ties break by the seed. **Duds** stay random.
-        **Unknowns** one per look-alike group first (ADR 0018), or random while nothing has an **Embedding**.
-        """
-        members = [scored for scored in classified if scored.zone is zone]
-        ordered = self._random.sample(members, len(members))
-        if zone is Zone.BANGER:
-            ordered.sort(key=lambda scored: scored.score, reverse=True)
-        if zone is Zone.UNKNOWN:
-            vectors = self._similarity.vectors([scored.wallpaper for scored in ordered])
-            favourites = [scored.wallpaper.favourites for scored in ordered]
-            ordered = [ordered[i] for i in varied_order(vectors, favourites, slots, self._random)]
-        return ordered
 
     # -- scoring and zones -----------------------------------------------------------------------------
 

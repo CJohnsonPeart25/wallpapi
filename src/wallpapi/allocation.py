@@ -1,16 +1,17 @@
-"""**Allocation**: turning a **Mix** into **Batch** slots and ordering the **Unknowns**; pure integer
-arithmetic.
+"""**Allocation** and the draw: turning a **Mix** into **Batch** slots, ordering each **Zone**, and choosing
+the **Batch** from a classified **Pool**. Pure functions over sequences; no storage.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi.model import Mix, Zone
+from wallpapi.model import Mix, Wallpaper, Zone
 from wallpapi.rng import SeededRandom
 
 ZONE_ORDER: tuple[Zone, ...] = (Zone.UNKNOWN, Zone.BANGER, Zone.DUD)
@@ -19,6 +20,75 @@ way.
 """
 
 PERCENT = 100
+
+
+@dataclass(frozen=True, slots=True)
+class ScoredWallpaper:
+    """One **Pool** **Wallpaper**, its **Score** and its **Zone**. Derived on every call, never stored."""
+
+    wallpaper: Wallpaper
+    score: float
+    zone: Zone
+
+
+def draw(
+    mix: Mix,
+    classified: Sequence[ScoredWallpaper],
+    size: int,
+    random: SeededRandom,
+    vectors: NDArray[np.float32] | None = None,
+) -> list[ScoredWallpaper]:
+    """Which of the classified **Pool** a **Batch** of `size` shows: slots by `mix`, each **Zone** in its draw
+    order, and any **Shortfall** refilled in `ZONE_ORDER`. Each tile keeps the **Zone** it was drawn from.
+
+    `vectors` are the **Embeddings** row for row with `classified`, for the varied **Unknown** draw (ADR
+    0018); `None` leaves the **Unknowns** in their seeded order. Shuffled at the end, so a tile's **Zone**
+    cannot be read from its position.
+    """
+    if vectors is not None and vectors.shape[0] != len(classified):
+        raise ValueError(f"{vectors.shape[0]} vectors for {len(classified)} classified Wallpapers")
+    slots = allocate(mix, size, random)
+    orders = {zone: _draw_order(zone, classified, vectors, slots[zone], random) for zone in ZONE_ORDER}
+    taken = dict.fromkeys(ZONE_ORDER, 0)
+    chosen: list[ScoredWallpaper] = []
+
+    def take(zone: Zone, count: int) -> int:
+        """Up to `count` more from `zone`, in its draw order. Returns how many there were."""
+        available = orders[zone][taken[zone] : taken[zone] + count]
+        taken[zone] += len(available)
+        chosen.extend(available)
+        return len(available)
+
+    shortfall = sum(slots[zone] - take(zone, slots[zone]) for zone in ZONE_ORDER)
+    # One pass is enough: after it every **Zone** is exhausted or the **Shortfall** is met.
+    for zone in ZONE_ORDER:
+        if shortfall <= 0:
+            break
+        shortfall -= take(zone, shortfall)
+    return random.sample(chosen, len(chosen))
+
+
+def _draw_order(
+    zone: Zone,
+    classified: Sequence[ScoredWallpaper],
+    vectors: NDArray[np.float32] | None,
+    slots: int,
+    random: SeededRandom,
+) -> list[ScoredWallpaper]:
+    """The order one **Zone** gives its **Wallpapers** up in, best first.
+
+    **Bangers** by **Score** over a random order, so ties break by the seed. **Duds** stay random.
+    **Unknowns** one per look-alike group first (ADR 0018), or random without `vectors`. Indices throughout,
+    so a row of `vectors` follows its **Wallpaper**.
+    """
+    members = [index for index, scored in enumerate(classified) if scored.zone is zone]
+    ordered = random.sample(members, len(members))
+    if zone is Zone.BANGER:
+        ordered.sort(key=lambda index: classified[index].score, reverse=True)
+    if zone is Zone.UNKNOWN and vectors is not None:
+        favourites = [classified[index].wallpaper.favourites for index in ordered]
+        ordered = [ordered[i] for i in varied_order(vectors[ordered], favourites, slots, random)]
+    return [classified[index] for index in ordered]
 
 
 def allocate(mix: Mix, size: int, random: SeededRandom) -> dict[Zone, int]:
