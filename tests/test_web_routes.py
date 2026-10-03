@@ -390,6 +390,22 @@ def test_saving_settings_redirects_and_a_partial_post_leaves_the_rest(web: Web, 
     assert settings.allowed_ratios == ("21x9", "32x9")
 
 
+def test_a_field_cleared_and_saved_keeps_its_stored_value(web: Web, tmp_path: Path) -> None:
+    """An empty field is a field not posted, as it always was on this page: clearing one and saving leaves it
+    alone rather than refusing it as blank."""
+    harness, client = web
+    chosen = tmp_path / "Wallpapers"
+    harness.core.update_settings(batch_size=5, library_path=chosen)
+
+    saved = client.post(
+        "/settings", data={"batch_size": "", "library_path": "", "min_width": "1920"}, follow_redirects=False
+    )
+
+    assert saved.status_code == HTTPStatus.SEE_OTHER
+    settings = harness.core.get_settings()
+    assert (settings.batch_size, settings.library_path, settings.min_width) == (5, chosen, 1920)
+
+
 @pytest.mark.parametrize(
     ("posted", "words"),
     [

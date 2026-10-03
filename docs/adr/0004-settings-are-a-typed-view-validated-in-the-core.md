@@ -4,8 +4,10 @@ Date: 2026-09-27
 
 ## Status
 
-Retired by epic #32: replaced when the settings module lands (#63), where one field table takes over
-validating and storing each setting from the **Core service**.
+Accepted; the mechanism changed in #63 (epic #32). The decision stands: a typed view over one row per key,
+keyword updates where `None` leaves a field alone, text in and typed out, and a `SettingsRefused` result
+that writes nothing. What holds it is no longer the **Core service** but `settings.py`, whose one table of
+`Field` descriptors on `Settings` replaces the per-setting validators, defaults and keywords below.
 
 ## Context
 

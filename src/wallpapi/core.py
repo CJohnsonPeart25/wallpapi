@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import math
 import os
 import re
 import sqlite3
@@ -17,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from wallpapi import settings as settings_module
 from wallpapi import storage
 from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
 from wallpapi.clock import Clock
@@ -26,6 +26,14 @@ from wallpapi.model import Clearance, DecisionEntry, Mix, Verdict, Wallpaper, Zo
 from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS, gap_needed, wait_needed
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
+
+# Re-exported (`X as X`) for the tests that still import them from here, until #64 and #68 move them.
+from wallpapi.settings import EXPLORE_MIX as EXPLORE_MIX
+from wallpapi.settings import MAX_BATCH_SIZE as MAX_BATCH_SIZE
+from wallpapi.settings import REFINE_MIX as REFINE_MIX
+from wallpapi.settings import SUPERSEDED_POOL_TARGET_SIZE as SUPERSEDED_POOL_TARGET_SIZE
+from wallpapi.settings import SUPERSEDED_SIMILARITY_RADIUS as SUPERSEDED_SIMILARITY_RADIUS
+from wallpapi.settings import MixListing, Settings, SettingsRefused
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, ThumbnailUnavailable, Wallhaven
 
@@ -76,78 +84,11 @@ LIKE_SORTING = "relevance"
 LIKE_PAGES_PER_FAVOURITE = 3
 """How far a like: walk goes before the next **Favourite**'s turn: 72 **Wallpapers**, and the tail is weak."""
 
-MIN_BATCH_SIZE = 1
-MAX_BATCH_SIZE = 64
-"""The accepted batch size range, inclusive: a **Batch** of none has no way off it, and 64 is as many as
-anyone can judge at once.
-"""
-
-DEFAULT_BATCH_SIZE = 8
-
-MIN_POOL_TARGET_SIZE = 1
-MAX_POOL_TARGET_SIZE = 20_000
-"""The accepted **Pool** target size range. Every whole-**Pool** operation is linear in it, so there is a
-ceiling rather than a **Pool** that grows and slows for ever.
-"""
-
-DEFAULT_POOL_TARGET_SIZE = 500
-"""Enough to draw from, not a backlog (ADR 0016): every submission retires what it showed, and smaller is
-cheaper on every **Batch** minted.
-"""
-
-SUPERSEDED_POOL_TARGET_SIZE = 2000
-"""The target ADR 0005 seeded, kept only because migration 10 has to recognise it."""
-
-MAX_FILTER_PIXELS = 30_000
-"""The largest minimum resolution accepted, per axis. Anything above it is a typo and an empty **Pool**."""
-
-DEFAULT_MIN_WIDTH = 2560
-DEFAULT_MIN_HEIGHT = 1440
-"""1440p as a minimum (`atleast`): native 1440p and larger, not upscaled 1080p."""
-
-DEFAULT_ALLOWED_RATIOS = ("16x9", "16x10", "21x9")
-"""The shapes a desktop monitor actually is: widescreen, 16:10 and ultrawide."""
-
-DEFAULT_MIN_FAVOURITES = 10
-"""Skips the long tail nobody has looked at. Applied locally: Wallhaven's search has no parameter for it."""
-
-SUPERSEDED_SIMILARITY_RADIUS = 0.5
-"""The radius ADR 0007 seeded, kept only because migration 9 has to recognise it."""
-
-DEFAULT_SIMILARITY_RADIUS = 0.15
-"""How far a decided **Wallpaper**'s influence reaches, as a distance in `[0, 1]`.
-
-Not the accuracy-maximising value, deliberately: 0.2 got the sign right more often but left 1% of the **Pool**
-**Unknown**, and **Unknown** is what **Explore** draws from. See ADR 0013.
-"""
-
-DEFAULT_SIMILARITY_DECAY = 4.0
-"""How fast that influence fades, as the rate in `exp(-decay * distance)`. Zero is allowed: no fading."""
-
-MAX_SIMILARITY_DECAY = 50.0
-"""`exp(-50 * d)` is under `1e-21` at a hundredth of the range; anything higher is a **Pool** of
-**Unknowns**.
-"""
-
-DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
-"""The **Thumbnail cache**'s size cap, a backstop behind eviction by **Verdict** (ADR 0009).
-
-At about 23KiB a thumbnail it never fires in normal running. The downloader holds off at the cap rather than
-churn against it (ADR 0017).
-"""
-
 BYTES_IN_A_MEGABYTE = 1024 * 1024
 """Mebibytes, because matching what Explorer shows matters more than matching SI."""
 
 HISTORY_PAGE_SIZE = 100
 """Rows on one page of **History**: it grows by thousands of **Ignores** a week and needs *a* bound."""
-
-WALLHAVEN_RATIOS = frozenset(
-    {"16x9", "16x10", "21x9", "32x9", "48x9", "9x16", "10x16", "9x18", "1x1", "3x2", "4x3", "5x4"}
-)
-"""The `ratios=` values Wallhaven accepts. An unrecognised one is not an error there, just a different
-search.
-"""
 
 RATIO_TOLERANCE = 0.08
 """How far a **Wallpaper**'s own width/height may sit from a named ratio and still count as it.
@@ -155,133 +96,6 @@ RATIO_TOLERANCE = 0.08
 Wallhaven buckets: a 3440x1440 is 2.39 and served under `21x9`, which is 2.33. Generous on purpose, and still
 under half the gap between `16x9` (1.78) and `16x10` (1.60).
 """
-
-EXPLORE_MIX = Mix(name="explore", unknown=75, banger=20, dud=5)
-REFINE_MIX = Mix(name="refine", unknown=25, banger=70, dud=5)
-DEFAULT_MIXES = (EXPLORE_MIX, REFINE_MIX)
-"""The two **Mixes** the spec names: the seed for an empty database and the fallback for an emptied table.
-
-The 5% of **Duds** is deliberate: a **Dud** can stop being one the moment something near it is **Favourited**,
-and never will if it is never shown.
-"""
-
-DEFAULT_ACTIVE_MIX = EXPLORE_MIX.name
-"""**Explore**, because an empty **Decision log** has no **Bangers** to refine towards."""
-
-MIX_TOTAL = 100
-"""What a **Mix** must sum to, exactly: a **Mix** summing to 99 would make the leftover roll systematic."""
-
-MAX_MIX_NAME_LENGTH = 40
-"""How long a **Mix** name may be: it is a button beside the others, and must not push them off the row."""
-
-UNDELETABLE_MIXES = frozenset(mix.name for mix in DEFAULT_MIXES)
-"""**Explore** and **Refine**: editable, never deleted, so `CONTEXT.md`'s two terms always have a **Mix**."""
-
-_BATCH_SIZE = "batch_size"
-_LIBRARY_PATH = "library_path"
-_POOL_TARGET_SIZE = "pool_target_size"
-_MIN_WIDTH = "min_width"
-_MIN_HEIGHT = "min_height"
-_ALLOWED_RATIOS = "allowed_ratios"
-_MIN_FAVOURITES = "min_favourites"
-_SIMILARITY_RADIUS = "similarity_radius"
-_SIMILARITY_DECAY = "similarity_decay"
-_THUMBNAIL_CACHE_MAX_MB = "thumbnail_cache_max_mb"
-_ACTIVE_MIX = "active_mix"
-"""The `settings` keys. One row per key, with `Settings` as the typed view over them."""
-
-
-def _default_library_path() -> Path:
-    """Under Pictures, where Windows' slideshow settings start, in a subfolder of its own."""
-    return Path.home() / "Pictures" / "wallpapi"
-
-
-def _defaults() -> dict[str, str]:
-    """Every setting's seeded value, as stored: what migration 3 seeds and `get_settings` falls back to."""
-    return {
-        _BATCH_SIZE: str(DEFAULT_BATCH_SIZE),
-        _LIBRARY_PATH: str(_default_library_path()),
-        _POOL_TARGET_SIZE: str(DEFAULT_POOL_TARGET_SIZE),
-        _MIN_WIDTH: str(DEFAULT_MIN_WIDTH),
-        _MIN_HEIGHT: str(DEFAULT_MIN_HEIGHT),
-        _ALLOWED_RATIOS: ",".join(DEFAULT_ALLOWED_RATIOS),
-        _MIN_FAVOURITES: str(DEFAULT_MIN_FAVOURITES),
-        _SIMILARITY_RADIUS: str(DEFAULT_SIMILARITY_RADIUS),
-        _SIMILARITY_DECAY: str(DEFAULT_SIMILARITY_DECAY),
-        _THUMBNAIL_CACHE_MAX_MB: str(DEFAULT_THUMBNAIL_CACHE_MAX_MB),
-        _ACTIVE_MIX: DEFAULT_ACTIVE_MIX,
-    }
-
-
-@dataclass(frozen=True, slots=True)
-class Settings:
-    """Everything configurable, as one typed view over one row per key."""
-
-    batch_size: int
-    library_path: Path
-    pool_target_size: int
-    min_width: int
-    min_height: int
-    allowed_ratios: tuple[str, ...]
-    min_favourites: int
-    similarity_radius: float
-    similarity_decay: float
-    thumbnail_cache_max_mb: int
-    active_mix: str
-    """Which **Mix** the next **Batch** is built from, by name.
-
-    Only the name, so `get_settings` stays one query that never refuses; `CoreService.active_mix()` resolves
-    it.
-    """
-
-    @property
-    def atleast(self) -> str:
-        """The minimum resolution in Wallhaven's `WxH` spelling."""
-        return f"{self.min_width}x{self.min_height}"
-
-    @property
-    def ratios(self) -> str:
-        """The allowed ratios in Wallhaven's comma-separated spelling."""
-        return ",".join(self.allowed_ratios)
-
-
-@dataclass(frozen=True)
-class SettingsRefused:
-    """The update did not happen, and this is why. A result, so the page has one error branch."""
-
-    class Reason(StrEnum):
-        BATCH_SIZE_NOT_A_NUMBER = "batch_size_not_a_number"
-        BATCH_SIZE_OUT_OF_RANGE = "batch_size_out_of_range"
-        LIBRARY_PATH_EMPTY = "library_path_empty"
-        LIBRARY_PATH_NOT_ABSOLUTE = "library_path_not_absolute"
-        POOL_TARGET_SIZE_INVALID = "pool_target_size_invalid"
-        MIN_WIDTH_INVALID = "min_width_invalid"
-        MIN_HEIGHT_INVALID = "min_height_invalid"
-        ALLOWED_RATIOS_INVALID = "allowed_ratios_invalid"
-        MIN_FAVOURITES_INVALID = "min_favourites_invalid"
-        SIMILARITY_RADIUS_INVALID = "similarity_radius_invalid"
-        SIMILARITY_DECAY_INVALID = "similarity_decay_invalid"
-        """One reason per **Filter** field: for these, both mistakes have the same one-sentence answer."""
-
-        THUMBNAIL_CACHE_MAX_MB_INVALID = "thumbnail_cache_max_mb_invalid"
-
-        ACTIVE_MIX_UNKNOWN = "active_mix_unknown"
-        """No stored **Mix** goes by that name."""
-
-        MIX_NAME_INVALID = "mix_name_invalid"
-        MIX_PERCENTAGES_INVALID = "mix_percentages_invalid"
-        """The two ways `validated_mix` refuses, so the form can say which field is wrong."""
-
-        MIX_UNKNOWN = "mix_unknown"
-        """No stored **Mix** goes by that name, so there is nothing to delete."""
-
-        MIX_IN_USE = "mix_in_use"
-        """That **Mix** is the active one; switch away first."""
-
-        MIX_NOT_DELETABLE = "mix_not_deletable"
-        """**Explore** and **Refine** are editable and permanent."""
-
-    reason: Reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,193 +343,47 @@ class CoreService:
             yield connection
 
     # -- settings --------------------------------------------------------------------------------------
+    # Delegations to the settings module, kept until the callers move to it (#64, #68).
 
     def get_settings(self) -> Settings:
-        """Everything configurable. Never refuses: a hand-edited bad row falls back to its default, so the
-        settings page still opens to fix it.
+        """Everything configurable; see `settings.get`."""
+        return settings_module.get(self._connect())
+
+    def update_settings(self, **fields: object) -> Settings | SettingsRefused:
+        """Validate and store the settings named, then prune the **Pool** to the **Filters**, in one write
+        transaction; see `settings.update`.
         """
-        stored = {
-            str(row["key"]): str(row["value"])
-            for row in self._connect().execute("SELECT key, value FROM settings")
-        }
-        defaults = _defaults()
-
-        def stored_or_seeded(key: str) -> str:
-            return stored.get(key, defaults[key])
-
-        def or_default[T](validated: T | SettingsRefused.Reason, fallback: T) -> T:
-            return fallback if isinstance(validated, SettingsRefused.Reason) else validated
-
-        return Settings(
-            batch_size=or_default(_validated_batch_size(stored_or_seeded(_BATCH_SIZE)), DEFAULT_BATCH_SIZE),
-            library_path=or_default(
-                _validated_library_path(stored_or_seeded(_LIBRARY_PATH)), _default_library_path()
-            ),
-            pool_target_size=or_default(
-                _validated_pool_target_size(stored_or_seeded(_POOL_TARGET_SIZE)),
-                DEFAULT_POOL_TARGET_SIZE,
-            ),
-            min_width=or_default(_validated_min_width(stored_or_seeded(_MIN_WIDTH)), DEFAULT_MIN_WIDTH),
-            min_height=or_default(_validated_min_height(stored_or_seeded(_MIN_HEIGHT)), DEFAULT_MIN_HEIGHT),
-            allowed_ratios=or_default(
-                _validated_allowed_ratios(stored_or_seeded(_ALLOWED_RATIOS)), DEFAULT_ALLOWED_RATIOS
-            ),
-            min_favourites=or_default(
-                _validated_min_favourites(stored_or_seeded(_MIN_FAVOURITES)), DEFAULT_MIN_FAVOURITES
-            ),
-            similarity_radius=or_default(
-                _validated_similarity_radius(stored_or_seeded(_SIMILARITY_RADIUS)),
-                DEFAULT_SIMILARITY_RADIUS,
-            ),
-            similarity_decay=or_default(
-                _validated_similarity_decay(stored_or_seeded(_SIMILARITY_DECAY)), DEFAULT_SIMILARITY_DECAY
-            ),
-            thumbnail_cache_max_mb=or_default(
-                _validated_thumbnail_cache_max_mb(stored_or_seeded(_THUMBNAIL_CACHE_MAX_MB)),
-                DEFAULT_THUMBNAIL_CACHE_MAX_MB,
-            ),
-            # Not checked against `mixes`: this view never refuses, and `active_mix()` is where it falls back.
-            active_mix=stored_or_seeded(_ACTIVE_MIX).strip() or DEFAULT_ACTIVE_MIX,
-        )
-
-    def update_settings(
-        self,
-        *,
-        batch_size: int | str | None = None,
-        library_path: Path | str | None = None,
-        pool_target_size: int | str | None = None,
-        min_width: int | str | None = None,
-        min_height: int | str | None = None,
-        allowed_ratios: Sequence[str] | str | None = None,
-        min_favourites: int | str | None = None,
-        similarity_radius: float | str | None = None,
-        similarity_decay: float | str | None = None,
-        thumbnail_cache_max_mb: int | str | None = None,
-        active_mix: str | None = None,
-    ) -> Settings | SettingsRefused:
-        """Validate and persist the settings named, in one write transaction; `None` leaves a field alone.
-
-        Keywords rather than a whole `Settings`, so a form that renders half the settings cannot reset the
-        other half, and there is no read-then-write. Everything is validated before anything is written.
-        """
-        changes: list[tuple[str, str]] = []
-        if batch_size is not None:
-            validated_size = _validated_batch_size(batch_size)
-            if isinstance(validated_size, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_size)
-            changes.append((_BATCH_SIZE, str(validated_size)))
-        if library_path is not None:
-            validated_path = _validated_library_path(library_path)
-            if isinstance(validated_path, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_path)
-            # Stored, not created: the writer creates the folder on its first write, so a path typed and
-            # undone leaves nothing behind.
-            changes.append((_LIBRARY_PATH, str(validated_path)))
-        if pool_target_size is not None:
-            validated_target = _validated_pool_target_size(pool_target_size)
-            if isinstance(validated_target, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_target)
-            changes.append((_POOL_TARGET_SIZE, str(validated_target)))
-        if min_width is not None:
-            validated_width = _validated_min_width(min_width)
-            if isinstance(validated_width, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_width)
-            changes.append((_MIN_WIDTH, str(validated_width)))
-        if min_height is not None:
-            validated_height = _validated_min_height(min_height)
-            if isinstance(validated_height, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_height)
-            changes.append((_MIN_HEIGHT, str(validated_height)))
-        if allowed_ratios is not None:
-            validated_ratios = _validated_allowed_ratios(allowed_ratios)
-            if isinstance(validated_ratios, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_ratios)
-            changes.append((_ALLOWED_RATIOS, ",".join(validated_ratios)))
-        if min_favourites is not None:
-            validated_favourites = _validated_min_favourites(min_favourites)
-            if isinstance(validated_favourites, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_favourites)
-            changes.append((_MIN_FAVOURITES, str(validated_favourites)))
-        if similarity_radius is not None:
-            validated_radius = _validated_similarity_radius(similarity_radius)
-            if isinstance(validated_radius, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_radius)
-            changes.append((_SIMILARITY_RADIUS, str(validated_radius)))
-        if similarity_decay is not None:
-            validated_decay = _validated_similarity_decay(similarity_decay)
-            if isinstance(validated_decay, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_decay)
-            changes.append((_SIMILARITY_DECAY, str(validated_decay)))
-        if thumbnail_cache_max_mb is not None:
-            validated_cap = _validated_thumbnail_cache_max_mb(thumbnail_cache_max_mb)
-            if isinstance(validated_cap, SettingsRefused.Reason):
-                return SettingsRefused(reason=validated_cap)
-            changes.append((_THUMBNAIL_CACHE_MAX_MB, str(validated_cap)))
-        if active_mix is not None:
-            # Checked against another table, before the write transaction: a second tab deleting this **Mix**
-            # meanwhile leaves `active_mix` naming nothing, and `active_mix()` falls back.
-            if active_mix.strip() not in {mix.name for mix in self.list_mixes()}:
-                return SettingsRefused(reason=SettingsRefused.Reason.ACTIVE_MIX_UNKNOWN)
-            changes.append((_ACTIVE_MIX, active_mix.strip()))
-
         with self._write() as write:
-            write.executemany(_UPSERT_SETTING, changes)
-            # Read inside the transaction, so what comes back is what this write put there.
-            updated = self.get_settings()
-            self._prune_pool(write, updated)
+            updated = settings_module.update(write, **fields)
+            if isinstance(updated, Settings):
+                self._prune_pool(write, updated)
             return updated
 
     # -- mixes -----------------------------------------------------------------------------------------
 
     def list_mixes(self) -> tuple[Mix, ...]:
-        """Every stored **Mix**, by name, or the seeded pair if there are none.
+        """Every stored **Mix**, by name; see `settings.list_mixes`."""
+        return tuple(listed.mix for listed in self.mix_listings())
 
-        A hand-edited row that `validated_mix` refuses is dropped rather than offered.
-        """
-        rows = self._connect().execute("SELECT name, unknown, banger, dud FROM mixes ORDER BY name")
-        stored = [
-            mix
-            for mix in (
-                validated_mix(str(row["name"]), unknown=row["unknown"], banger=row["banger"], dud=row["dud"])
-                for row in rows.fetchall()
-            )
-            if isinstance(mix, Mix)
-        ]
-        return tuple(stored) if stored else DEFAULT_MIXES
+    def mix_listings(self) -> tuple[MixListing, ...]:
+        """Every stored **Mix**, by name, each saying whether it may be deleted."""
+        return settings_module.list_mixes(self._connect())
 
     def active_mix(self) -> Mix:
-        """The **Mix** the next **Batch** is built from, or the first there is if the stored name matches
-        none.
-        """
-        mixes = self.list_mixes()
-        name = self.get_settings().active_mix
-        return next((mix for mix in mixes if mix.name == name), mixes[0])
+        """The **Mix** the next **Batch** is built from; see `settings.active_mix`."""
+        return settings_module.active_mix(self._connect())
 
     def save_mix(
         self, name: str, *, unknown: int | str, banger: int | str, dud: int | str
     ) -> Mix | SettingsRefused:
-        """Store a **Mix** under that name, replacing any already there. Applies to the next **Batch**, not
-        this one.
-        """
-        mix = validated_mix(name, unknown=unknown, banger=banger, dud=dud)
-        if isinstance(mix, SettingsRefused.Reason):
-            return SettingsRefused(reason=mix)
+        """Store a **Mix** under that name; see `settings.save_mix`."""
         with self._write() as write:
-            write.execute(_UPSERT_MIX, (mix.name, mix.unknown, mix.banger, mix.dud))
-        return mix
+            return settings_module.save_mix(write, name, unknown=unknown, banger=banger, dud=dud)
 
     def delete_mix(self, name: str) -> SettingsRefused | None:
-        """Remove a **Mix**, or say why it stays: unknown, then permanent, then in use, in that order."""
-        trimmed = name.strip()
-        if trimmed not in {mix.name for mix in self.list_mixes()}:
-            return SettingsRefused(reason=SettingsRefused.Reason.MIX_UNKNOWN)
-        if trimmed in UNDELETABLE_MIXES:
-            return SettingsRefused(reason=SettingsRefused.Reason.MIX_NOT_DELETABLE)
-        if trimmed == self.get_settings().active_mix:
-            return SettingsRefused(reason=SettingsRefused.Reason.MIX_IN_USE)
+        """Remove a **Mix**, or say why it stays; see `settings.delete_mix`."""
         with self._write() as write:
-            write.execute(_DELETE_MIX, (trimmed,))
-        return None
+            return settings_module.delete_mix(write, name)
 
     # -- batches ---------------------------------------------------------------------------------------
 
@@ -1570,17 +1238,6 @@ def _alternated(last: RefillStrategy | None, *, has_favourites: bool) -> RefillS
     return RefillStrategy.RANDOM if last is None else RefillStrategy.LIKE
 
 
-def _validated_batch_size(value: int | str) -> int | SettingsRefused.Reason:
-    """The batch size, or the reason it is not one. "1.5" is refused, not rounded."""
-    try:
-        size = int(str(value).strip())
-    except ValueError:
-        return SettingsRefused.Reason.BATCH_SIZE_NOT_A_NUMBER
-    if not MIN_BATCH_SIZE <= size <= MAX_BATCH_SIZE:
-        return SettingsRefused.Reason.BATCH_SIZE_OUT_OF_RANGE
-    return size
-
-
 def _passes_filters(wallpaper: Wallpaper, settings: Settings) -> bool:
     """Every **Filter**, checked locally: the one rule for admitting to the **Pool** and for pruning it.
 
@@ -1618,107 +1275,6 @@ def _ratio_value(named: str) -> float | None:
         return int(width) / int(height)
     except ValueError, ZeroDivisionError:
         return None
-
-
-def _whole_number(value: object) -> int | None:
-    """The value as a whole number, or `None`: "1.5" and "1e3" are refused rather than coerced."""
-    try:
-        return int(str(value).strip())
-    except ValueError:
-        return None
-
-
-def _validated_pool_target_size(value: int | str) -> int | SettingsRefused.Reason:
-    """The **Pool** target size, or the reason it is not one."""
-    size = _whole_number(value)
-    if size is None or not MIN_POOL_TARGET_SIZE <= size <= MAX_POOL_TARGET_SIZE:
-        return SettingsRefused.Reason.POOL_TARGET_SIZE_INVALID
-    return size
-
-
-def _validated_min_width(value: int | str) -> int | SettingsRefused.Reason:
-    return _validated_pixels(value, SettingsRefused.Reason.MIN_WIDTH_INVALID)
-
-
-def _validated_min_height(value: int | str) -> int | SettingsRefused.Reason:
-    return _validated_pixels(value, SettingsRefused.Reason.MIN_HEIGHT_INVALID)
-
-
-def _validated_pixels(value: int | str, reason: SettingsRefused.Reason) -> int | SettingsRefused.Reason:
-    """One axis of the minimum resolution, or the reason it is not one. Zero means no minimum."""
-    pixels = _whole_number(value)
-    if pixels is None or not 0 <= pixels <= MAX_FILTER_PIXELS:
-        return reason
-    return pixels
-
-
-def _validated_min_favourites(value: int | str) -> int | SettingsRefused.Reason:
-    """The minimum **Favourites**, or the reason it is not one. No ceiling: no value is clearly a typo."""
-    favourites = _whole_number(value)
-    if favourites is None or favourites < 0:
-        return SettingsRefused.Reason.MIN_FAVOURITES_INVALID
-    return favourites
-
-
-def _decimal_number(value: object) -> float | None:
-    """The value as a finite decimal, or `None`. NaN parses, and a NaN radius would make everything
-    **Unknown**.
-    """
-    try:
-        number = float(str(value).strip())
-    except ValueError:
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _validated_similarity_radius(value: float | str) -> float | SettingsRefused.Reason:
-    """The similarity radius in `[0, 1]`, or the reason it is not one: above 1 it would do nothing."""
-    number = _decimal_number(value)
-    if number is None or not 0.0 <= number <= 1.0:
-        return SettingsRefused.Reason.SIMILARITY_RADIUS_INVALID
-    return number
-
-
-def _validated_similarity_decay(value: float | str) -> float | SettingsRefused.Reason:
-    """The similarity decay, or the reason it is not one. Negative would invert the rule."""
-    number = _decimal_number(value)
-    if number is None or not 0.0 <= number <= MAX_SIMILARITY_DECAY:
-        return SettingsRefused.Reason.SIMILARITY_DECAY_INVALID
-    return number
-
-
-def _validated_thumbnail_cache_max_mb(value: int | str) -> int | SettingsRefused.Reason:
-    """The **Thumbnail cache** cap in megabytes, or the reason it is not one.
-
-    Zero is accepted: the cap never evicts an **Explicit Verdict**, so **History** still renders.
-    """
-    megabytes = _whole_number(value)
-    if megabytes is None or megabytes < 0:
-        return SettingsRefused.Reason.THUMBNAIL_CACHE_MAX_MB_INVALID
-    return megabytes
-
-
-def _validated_allowed_ratios(value: Sequence[str] | str) -> tuple[str, ...] | SettingsRefused.Reason:
-    """The allowed ratios, trimmed and de-duplicated in order, or the reason they are not.
-
-    Checked against `WALLHAVEN_RATIOS`; an empty list is refused as more likely a mistake than an intention.
-    """
-    parts = value.split(",") if isinstance(value, str) else list(value)
-    named = list(dict.fromkeys(part.strip() for part in parts))
-    if not named or any(part not in WALLHAVEN_RATIOS for part in named):
-        return SettingsRefused.Reason.ALLOWED_RATIOS_INVALID
-    return tuple(named)
-
-
-def _validated_library_path(value: Path | str) -> Path | SettingsRefused.Reason:
-    """The **Library** path, absolute, or the reason it is not one. Never touches the filesystem."""
-    text = str(value).strip()
-    if not text:
-        return SettingsRefused.Reason.LIBRARY_PATH_EMPTY
-    path = Path(text)
-    if not path.is_absolute():
-        return SettingsRefused.Reason.LIBRARY_PATH_NOT_ABSOLUTE
-    return path
 
 
 LIBRARY_FILE_NAME = re.compile(r"[A-Za-z0-9]+\.[a-z0-9]{1,5}")
@@ -1776,40 +1332,6 @@ def confined_to_library(path: Path, library_root: Path) -> Path | None:
         return None
     return resolved
 
-
-def validated_mix(
-    name: str, *, unknown: int | str, banger: int | str, dud: int | str
-) -> Mix | SettingsRefused.Reason:
-    """A **Mix**, or the reason those numbers are not one. The one place that decides what a **Mix** is.
-
-    Whole percentages, none negative, summing to exactly `MIX_TOTAL`; a name trimmed, non-empty and at most
-    `MAX_MIX_NAME_LENGTH`, compared case-sensitively.
-    """
-    trimmed = name.strip()
-    if not trimmed or len(trimmed) > MAX_MIX_NAME_LENGTH:
-        return SettingsRefused.Reason.MIX_NAME_INVALID
-    percentages = [_whole_number(value) for value in (unknown, banger, dud)]
-    if any(share is None or share < 0 for share in percentages):
-        return SettingsRefused.Reason.MIX_PERCENTAGES_INVALID
-    shares = [share for share in percentages if share is not None]
-    if sum(shares) != MIX_TOTAL:
-        return SettingsRefused.Reason.MIX_PERCENTAGES_INVALID
-    return Mix(name=trimmed, unknown=shares[0], banger=shares[1], dud=shares[2])
-
-
-_UPSERT_SETTING = """
-INSERT INTO settings (key, value) VALUES (?, ?)
-ON CONFLICT (key) DO UPDATE SET value = excluded.value
-"""
-
-_UPSERT_MIX = """
-INSERT INTO mixes (name, unknown, banger, dud) VALUES (?, ?, ?, ?)
-ON CONFLICT (name) DO UPDATE
-SET unknown = excluded.unknown, banger = excluded.banger, dud = excluded.dud
-"""
-"""One statement for creating and editing a **Mix**: the name is the key, so there is no rename."""
-
-_DELETE_MIX = "DELETE FROM mixes WHERE name = ?"
 
 _LIBRARY_CANDIDATES = """
 SELECT w.id AS wallpaper_id, w.full_url AS full_url, f.path AS path

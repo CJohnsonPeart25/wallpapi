@@ -64,7 +64,7 @@ class Zone(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Mix:
-    """The **Zone** percentages a **Batch** is built from. Does not validate itself: `core.validated_mix`
+    """The **Zone** percentages a **Batch** is built from. Does not validate itself: `settings.validated_mix`
     does, so a form gets a refusal and not a traceback.
     """
 
