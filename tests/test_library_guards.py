@@ -13,44 +13,20 @@ not a log line; and against `tmp_path` with a real symlink, which is the case on
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness, favourite_the_whole_batch, make_harness
+from tests.conftest import (
+    Harness,
+    favourite_the_whole_batch,
+    library_junction,
+    library_symlink,
+    make_harness,
+)
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import confined_to_library, library_file_name
 from wallpapi.model import Verdict
-
-
-def library_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
-    """Make `link` a symlink to `target`, or skip — Windows needs a privilege tests cannot assume."""
-    link.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        link.symlink_to(target, target_is_directory=directory)
-    except (OSError, NotImplementedError) as unavailable:  # pragma: no cover - platform dependent
-        pytest.skip(f"symlinks are not available here: {unavailable}")
-
-
-def library_junction(link: Path, target: Path) -> None:
-    """Make `link` a Windows directory junction to `target`, or skip.
-
-    The symlink tests above skip on an ordinary Windows account — `CreateSymbolicLink` needs a privilege
-    a developer machine does not hand out by default — and this is what stops the most important case in
-    the ticket from going untested on the one platform wallpapi runs on. A junction is a reparse point
-    just the same, it needs no privilege at all, and `Path.resolve` follows it, which is the whole of what
-    the guard depends on.
-    """
-    if os.name != "nt":  # pragma: no cover - platform dependent
-        pytest.skip("junctions are a Windows thing; the symlink tests carry this elsewhere")
-    link.parent.mkdir(parents=True, exist_ok=True)
-    made = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=False
-    )
-    if made.returncode != 0:  # pragma: no cover - platform dependent
-        pytest.skip(f"junctions are not available here: {made.stderr.decode(errors='replace').strip()}")
-
 
 # -- the guard, directly ---------------------------------------------------------------------------------
 

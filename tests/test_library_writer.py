@@ -14,9 +14,8 @@ from pathlib import Path
 import httpx2
 import pytest
 
-from tests.conftest import FIXED_NOW
+from tests.conftest import FIXED_NOW, library_junction, library_symlink
 from tests.fakes import FakeClock, FakeSimilarityProvider, FakeWallhavenClient, catalogue_of
-from tests.test_library_guards import library_junction, library_symlink
 from wallpapi.core import Batch, CoreService
 from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.model import Verdict
