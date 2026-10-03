@@ -16,7 +16,7 @@ import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
-from tests.conftest import FIXED_NOW, Harness, make_harness
+from tests.conftest import FIXED_NOW, Harness, make_harness, submit_with
 from tests.fakes import catalogue_of
 from wallpapi.core import Batch, ResolvedVerdict
 from wallpapi.model import Clearance, Verdict
@@ -49,22 +49,6 @@ def test_ignores_do_not_stack(db_path: Path) -> None:
 
     assert resolved[twice_ignored].verdict is Verdict.IGNORE
     assert resolved[twice_ignored].value == -10
-
-
-def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
-    """Draft `marks` against the live **Batch** and submit it, returning the **Batch** that was submitted.
-
-    The catalogue these tests use holds exactly `batch_size` **Wallpapers**, so the **Batch** shows all of
-    them. A tile left out of `marks` keeps whatever the **Batch** was minted with — its latest **Explicit
-    Verdict**, or nothing and so an **Ignore** — and a mark of `None` unmarks it, as clicking its mark
-    again does on the page.
-    """
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    for wallpaper_id, verdict in marks.items():
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
-    harness.core.submit_batch(batch.id)
-    return batch
 
 
 def test_each_explicit_verdict_resolves_to_its_own_value(db_path: Path) -> None:

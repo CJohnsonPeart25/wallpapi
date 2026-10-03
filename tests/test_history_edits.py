@@ -12,24 +12,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import Harness, make_harness, submit_with
 from tests.fakes import catalogue_of
 from wallpapi.core import Batch, BatchUnavailable, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict
-
-
-def submit_with(harness: Harness, marks: dict[str, Verdict | None]) -> Batch:
-    """Draft `marks` against the live **Batch** and submit it, returning the **Batch** submitted.
-
-    The catalogues here hold exactly `batch_size` **Wallpapers**, so every **Batch** shows all of them. A
-    tile left out of `marks` keeps what the **Batch** was minted with, and `None` unmarks it.
-    """
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    for wallpaper_id, verdict in marks.items():
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
-    harness.core.submit_batch(batch.id)
-    return batch
 
 
 def test_an_ignore_from_history_overturns_the_verdict(db_path: Path) -> None:

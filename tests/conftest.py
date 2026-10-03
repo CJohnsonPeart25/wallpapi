@@ -191,3 +191,17 @@ def library_junction(link: Path, target: Path) -> None:
     )
     if made.returncode != 0:  # pragma: no cover - platform dependent
         pytest.skip(f"junctions are not available here: {made.stderr.decode(errors='replace').strip()}")
+
+
+def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
+    """Draft `marks` against the live **Batch** and submit it, returning the **Batch** submitted.
+
+    The catalogues here hold exactly `batch_size` **Wallpapers**, so every **Batch** shows all of them. A
+    tile left out of `marks` keeps what the **Batch** was minted with, and `None` unmarks it.
+    """
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    for wallpaper_id, verdict in marks.items():
+        harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
+    harness.core.submit_batch(batch.id)
+    return batch
