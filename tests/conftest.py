@@ -25,8 +25,8 @@ from tests.fakes import (
     FakeWallhavenClient,
     catalogue_of,
 )
-from wallpapi.core import CoreService
-from wallpapi.model import Wallpaper
+from wallpapi.core import Batch, CoreService
+from wallpapi.model import Verdict, Wallpaper
 from wallpapi.rng import SeededRandom
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
@@ -137,3 +137,18 @@ def db_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def harness(db_path: Path) -> Harness:
     return make_harness(db_path)
+
+
+def favourite(harness: Harness, *wallpaper_ids: str) -> None:
+    """Record a **Favourite** the way the UI does: mint a **Batch**, mark it, submit it.
+
+    Through the seam and never by writing a row. The **Wallpapers** have to be *in* the **Batch** to be
+    judged, so every test here keeps the **Pool** small enough that one **Batch** shows all of it.
+    """
+    batch = harness.core.get_next_batch()
+    assert isinstance(batch, Batch)
+    shown = {w.id for w in batch.wallpapers}
+    assert set(wallpaper_ids) <= shown, f"{set(wallpaper_ids) - shown} is not in the batch to judge"
+    for wallpaper_id in wallpaper_ids:
+        harness.core.set_draft_verdict(batch.id, wallpaper_id, Verdict.FAVOURITE)
+    harness.core.submit_batch(batch.id)

@@ -10,9 +10,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_harness
+from tests.conftest import favourite, make_harness
 from tests.fakes import catalogue_of
-from tests.test_refill_like import favourite
 from wallpapi.web.app import create_app
 
 

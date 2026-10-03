@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.conftest import Harness, make_harness
+from tests.conftest import Harness, favourite, make_harness
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi.core import (
     ERROR_BACKOFF_SECONDS,
@@ -25,21 +25,6 @@ from wallpapi.core import (
 )
 from wallpapi.model import Verdict
 from wallpapi.ratelimit import CALLS_PER_MINUTE, WINDOW_SECONDS
-
-
-def favourite(harness: Harness, *wallpaper_ids: str) -> None:
-    """Record a **Favourite** the way the UI does: mint a **Batch**, mark it, submit it.
-
-    Through the seam and never by writing a row. The **Wallpapers** have to be *in* the **Batch** to be
-    judged, so every test here keeps the **Pool** small enough that one **Batch** shows all of it.
-    """
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    shown = {w.id for w in batch.wallpapers}
-    assert set(wallpaper_ids) <= shown, f"{set(wallpaper_ids) - shown} is not in the batch to judge"
-    for wallpaper_id in wallpaper_ids:
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, Verdict.FAVOURITE)
-    harness.core.submit_batch(batch.id)
 
 
 def queries(harness: Harness) -> list[object]:
