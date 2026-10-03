@@ -41,8 +41,8 @@ that boots the app and hits `/`. No test touches the network.
 ## Invariants
 
 Design intent no test can hold. Numbers are stable and never reused, because ADRs cite them. Retired:
-1 -> 14 (ADR 0019); 3 -> `storage.py`; 6, 7 -> `batches.py`; 8 -> ADRs 0003 and 0009; 11 -> ADR 0005 and
-Traps; 13 -> ADR 0013.
+1 -> 14 (ADR 0019); 3 -> `storage.py`; 5 -> `decisions.py`, `pool.py`, `batches.py`, `library.py`; 6, 7 ->
+`batches.py`; 8 -> `thumbnails.py`; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
 
 - **2. Scores are never stored.** Always derived from the **Decision log** in one array operation over the
   whole **Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never
@@ -51,11 +51,12 @@ Traps; 13 -> ADR 0013.
   clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence.
   The rule is one SQL fragment in `decisions.py`; build on it. A submitted **Batch** is never retracted.
   ADR 0015.
-- **5. Timestamps are ISO 8601 UTC strings** from the injected clock.
-- **9. The Library is confined.** Every write and deletion goes through `confined_to_library` and uses the
-  path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks regular files
-  only; a recorded path that fails the guard is dropped from the record and left on disk. ADR 0006.
-- **10. Library writes are atomic**: a temp file beside the confined destination, then `os.replace`.
+- **9. The Library is confined.** Every write and deletion goes through `library.confined_to_library` and
+  uses the path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks
+  regular files only; a recorded path that fails the guard is dropped from the record and left on disk.
+  ADR 0006.
+- **10. Library writes are atomic**: `files.write_atomically`, a temp file beside the confined destination,
+  then `os.replace`.
 - **12. Every wait is cancellable**: `stop_event.wait(n)`, never `time.sleep(n)`, and the HTTP timeout below
   the shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
 - **14. Modules have their own seams.** Every module exposes a small interface taking a connection and its
@@ -86,7 +87,7 @@ Decided, not built. Defer explicitly; do not quietly forget.
 - Throttling full-resolution fetches: needs **Favourite** downloads off the request thread first.
 - Renaming a **Mix**: delete and add covers it; a rename must move `active_mix` in the same transaction.
 - **Decision log** backup: `VACUUM INTO`, the database being one file.
-- Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (ADR 0009).
+- Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (`thumbnails.py`).
 - Fading old **Verdicts**: a half-life in log sequence, not time; nothing real to tune it against yet.
 - Showing decided **Wallpapers** again: must answer near-duplicates; dormant pre-marking waits for it.
 - **Dud** build-up in the **Pool**: for now, **Ban** or **Ignore** a page of them and submit.

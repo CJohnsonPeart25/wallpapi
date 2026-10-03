@@ -290,6 +290,13 @@ def set_all_drafts(
     return replace(claimed, drafts={w.id: verdict for w in claimed.wallpapers})
 
 
+def showing(connection: sqlite3.Connection) -> set[str]:
+    """Every **Wallpaper** in an unsubmitted **Batch**: the live one, plus any a database from before
+    ADR 0002 still holds.
+    """
+    return {str(row["wallpaper_id"]) for row in connection.execute(_SELECT_SHOWING)}
+
+
 def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefused:
     """The unsubmitted **Batch** `batch_id`, or why it cannot be drafted against or submitted."""
     row = write.execute(
@@ -355,3 +362,12 @@ FROM batch_wallpapers
 WHERE batch_id = ?
 """
 """Select-all as one statement, read inside the same transaction as the delete."""
+
+
+_SELECT_SHOWING = """
+SELECT bw.wallpaper_id
+FROM batch_wallpapers AS bw
+JOIN batches AS b ON b.id = bw.batch_id
+WHERE b.submitted_at IS NULL
+"""
+"""Every tile of every unsubmitted **Batch**."""

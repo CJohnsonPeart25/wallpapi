@@ -393,6 +393,14 @@ def size(connection: sqlite3.Connection) -> int:
     return int(connection.execute("SELECT COUNT(*) FROM pool").fetchone()[0])
 
 
+def contains(connection: sqlite3.Connection, wallpaper_id: str) -> bool:
+    """Whether the **Wallpaper** is in the **Pool** now."""
+    return (
+        connection.execute("SELECT 1 FROM pool WHERE wallpaper_id = ?", (wallpaper_id,)).fetchone()
+        is not None
+    )
+
+
 def members(connection: sqlite3.Connection) -> list[Wallpaper]:
     """Every **Wallpaper** in the **Pool**, ordered so a seeded random source draws the same sample."""
     return [wallpaper_from_row(row) for row in connection.execute(_SELECT_POOL_WALLPAPERS)]

@@ -14,7 +14,7 @@ import socket
 import sqlite3
 import subprocess
 from collections.abc import Generator, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,10 +34,11 @@ from tests.fakes import (
     StubEmbed,
     catalogue_of,
 )
-from wallpapi import storage
+from wallpapi import decisions, pool, settings, storage
 from wallpapi.core import Batch, CoreService
-from wallpapi.library import LibraryWriter
+from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
+from wallpapi.pool import RefillStrategy
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import EMBED_BATCH, Embeddings
 from wallpapi.web.app import create_app
@@ -154,6 +155,7 @@ def make_harness(
     clock = FakeClock(now)
     core = CoreService(
         db_path=db_path,
+        thumbnail_dir=db_path.parent / "thumbnails",
         wallhaven=wallhaven,
         library=fake_library if library is None else library,
         similarity=embeddings,
@@ -270,6 +272,48 @@ def library_junction(link: Path, target: Path) -> None:
     )
     if made.returncode != 0:  # pragma: no cover - platform dependent
         pytest.skip(f"junctions are not available here: {made.stderr.decode(errors='replace').strip()}")
+
+
+@dataclass
+class LibraryRig:
+    """The **Library** over one in-memory database: **Wallpapers** admitted and **Verdicts** appended as their
+    own modules do, and a writer that is the fake or the real one on `tmp_path`."""
+
+    connection: sqlite3.Connection
+    writer: LibraryWriter
+    library_path: Path
+    clock: FakeClock
+
+    def __post_init__(self) -> None:
+        self.library = Library(self.writer, self.clock)
+
+    def admit(self, wallpapers: Sequence[Wallpaper]) -> None:
+        with storage.write(self.connection) as write:
+            pool.admit(
+                write, wallpapers, settings.get(write), source=RefillStrategy.RANDOM, at=self.clock.now()
+            )
+
+    def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
+        with storage.write(self.connection) as write:
+            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+
+    def reconcile(self) -> LibraryReconciliation:
+        return self.library.reconcile(self.connection, self.library_path)
+
+    def download_favourites(self) -> FavouriteDownload:
+        return self.library.download_favourites(self.connection, self.library_path)
+
+
+@contextmanager
+def library_rig(
+    tmp_path: Path, writer: LibraryWriter, wallpapers: Sequence[Wallpaper]
+) -> Generator[LibraryRig]:
+    """A `LibraryRig` with `wallpapers` admitted and the **Library path** at `tmp_path / "Library"`."""
+    with closing(storage.connect(":memory:")) as connection:
+        storage.migrate(connection)
+        rig = LibraryRig(connection, writer, tmp_path / "Library", FakeClock(FIXED_NOW))
+        rig.admit(wallpapers)
+        yield rig
 
 
 @contextmanager

@@ -9,6 +9,8 @@ but it now covers the **Pool** rather than only what has been on screen. Amends 
 consequence: thumbnail fetches are now paced, and full resolution is still not. Amended 2026-10-03:
 `thumbnail_thread.py` is gone, the loop is `core.thumbnail_loop` run by `background.BackgroundLoop`, and
 `gap_needed` and `THUMBNAIL_GAP_SECONDS` moved from `ratelimit` to `core`, until the thumbnails module lands.
+Amended again (#66): the loop is `thumbnails.download_loop` over `Thumbnails.wait` and `Thumbnails.step`, and
+the gap is `thumbnails.gap_needed` and `GAP_SECONDS`.
 
 ## Context
 

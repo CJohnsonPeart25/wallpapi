@@ -259,6 +259,18 @@ def test_retiring_drops_only_the_named_members_and_keeps_their_rows(connection: 
     assert connection.execute("SELECT COUNT(*) FROM wallpapers").fetchone()[0] == 4
 
 
+def test_a_member_is_contained_until_it_is_retired(connection: sqlite3.Connection) -> None:
+    """The thumbnail downloader's recheck before each fetch; a `wallpapers` row alone is not membership."""
+    rig_over(connection, catalogue=catalogue_of(2), steps=1)
+
+    with storage.write(connection) as write:
+        pool.retire(write, ["wp0001"])
+
+    assert pool.contains(connection, "wp0000")
+    assert not pool.contains(connection, "wp0001")
+    assert not pool.contains(connection, "never-admitted")
+
+
 def test_a_settings_change_that_touches_no_filter_prunes_nothing(rig: Rig) -> None:
     before = rig.members()
 
