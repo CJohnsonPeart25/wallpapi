@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FIXED_NOW, make_harness, raw_connection
+from tests.conftest import FIXED_NOW, live, make_harness, raw_connection
 from tests.fakes import (
     THUMBNAIL_BYTES,
     FakeClock,
@@ -32,7 +32,7 @@ from tests.fakes import (
     WallhavenUnreachable,
     wallpaper,
 )
-from wallpapi import batches, decisions, pool, settings, storage
+from wallpapi import batches, decisions, pool, settings, storage, workflows
 from wallpapi.batches import Batch, Batches
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
@@ -488,30 +488,29 @@ def test_the_thumbnail_gap(last: float | None, now: float, wait: float) -> None:
 def test_a_submission_evicts_what_it_retired_without_a_verdict(db_path: Path) -> None:
     """Eviction runs at the tail of a submission, after the **Decision log** commits."""
     harness = make_harness(db_path, catalogue=(wallpaper("liked"), wallpaper("ignored")))
-    harness.core.update_settings(batch_size=2)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    workflows.save_settings(harness.modules, batch_size=2)
+    batch = live(harness)
     for wallpaper_id in ("liked", "ignored"):
-        harness.core.get_thumbnail(wallpaper_id)
-    harness.core.set_draft_verdict(batch.id, "liked", Verdict.LIKE)
+        harness.modules.thumbnails.get(harness.connect(), wallpaper_id)
+    workflows.set_draft(harness.modules, batch.id, "liked", Verdict.LIKE)
 
-    harness.core.submit_batch(batch.id)
+    workflows.submit(harness.modules, batch.id)
 
-    assert {p.stem for p in harness.core.thumbnails.directory.iterdir()} == {"liked"}
+    assert {p.stem for p in harness.modules.thumbnails.directory.iterdir()} == {"liked"}
 
 
 def test_the_notice_leaves_out_what_the_downloader_gave_up_on(db_path: Path) -> None:
     """Coverage is of what can be embedded, or a dead thumbnail would hold the line on the page for ever."""
     harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
     harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = ThumbnailUnavailable(404)
-    thumbnails = harness.core.thumbnails
+    thumbnails = harness.modules.thumbnails
     with raw_connection(db_path) as connection:
         for _ in range(len(OUT_OF_ORDER) + 1):
             harness.clock.advance(thumbnails.wait())
             thumbnails.step(connection)
     assert thumbnails.given_up() == {DEAD.id}
 
-    harness.core.similarity_step(threading.Event())
+    harness.modules.similarity.catch_up(harness.modules.thumbnails.directory, threading.Event())
 
     assert set(harness.embed.seen) == {"cc0003", "bb0002"}
-    assert harness.core.similarity_notice() is None
+    assert harness.modules.similarity.notice(harness.modules.thumbnails.obtainable(harness.connect())) is None
