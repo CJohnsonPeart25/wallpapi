@@ -4,8 +4,8 @@ Date: 2026-09-27
 
 ## Status
 
-Retired by epic #32: replaced when the thumbnails module lands (#66), which takes over fetching and serving
-every image wallpapi shows. That full resolution is never cached stands, as a deferred decision in `AGENTS.md`.
+Retired by epic #32: replaced by the `thumbnails` module (#66), which fetches and serves every thumbnail
+wallpapi shows. That full resolution is never cached stands, as a deferred decision in `AGENTS.md`.
 
 ## Context
 

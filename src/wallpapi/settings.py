@@ -82,7 +82,7 @@ MAX_SIMILARITY_DECAY = 50.0
 """
 
 DEFAULT_THUMBNAIL_CACHE_MAX_MB = 500
-"""The **Thumbnail cache**'s size cap, a backstop behind eviction by **Verdict** (ADR 0009).
+"""The **Thumbnail cache**'s size cap, a backstop behind eviction by **Verdict** (`thumbnails.py`).
 
 At about 23KiB a thumbnail it never fires in normal running. The downloader holds off at the cap rather than
 churn against it (ADR 0017).

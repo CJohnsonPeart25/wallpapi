@@ -7,7 +7,8 @@
   control: it is derived at submit.
 
   `data-full-url` is the source the preview loads when it opens. Deliberately not an `<img src>`: a **Batch**
-  never hotlinks, not even its thumbnails, and one full-size image is fetched only when asked for (ADR 0003).
+  never hotlinks, not even its thumbnails, and one full-size image is fetched only when asked for
+  (`thumbnails.py`, and a deferred decision in `AGENTS.md`).
   The preview reads the Wallhaven link off `data-page-url`.
 
   `zone` is the **Zone** the **Wallpaper** was drawn from, recorded when the **Batch** was minted; absent,

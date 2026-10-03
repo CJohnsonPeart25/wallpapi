@@ -32,7 +32,7 @@ def live(harness: Harness) -> Batch:
 
 def test_every_page_boots_on_the_shell_and_tiles_come_from_the_cache(web: Web) -> None:
     """The smoke test across all three pages: a template error in the shell breaks every one at once. A
-    **Batch** of tiles is served from `/thumb`, never hotlinked (ADR 0003)."""
+    **Batch** of tiles is served from `/thumb`, never hotlinked (`thumbnails.py`)."""
     _, client = web
 
     responses = {path: client.get(path) for path in ("/", "/history", "/settings")}
