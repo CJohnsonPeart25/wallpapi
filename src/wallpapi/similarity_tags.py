@@ -1,31 +1,10 @@
-"""#14's first candidate: a **Similarity provider** that reads Wallhaven's tags.
+"""A **Similarity provider** that reads Wallhaven's tags.
 
-A tag is Wallhaven's own label on a **Wallpaper** — `landscape`, `mountains`, `long exposure` — applied by
-its users and identified by an integer. Two **Wallpapers** that share most of their tags are about the same
-thing, which is exactly what the baseline provider's colour histogram cannot see: a snowy peak and a
-bedsheet share a palette and nothing else.
-
-**What it costs.** Tags come only from the single-**Wallpaper** endpoint, `GET /api/v1/w/{id}`, one call
-per **Wallpaper**, and that endpoint is on `wallhaven.cc/api` — the 45-per-minute budget the **Pool**
-refill is already spending. So a **Pool** of 2,000 **Wallpapers** is 2,000 **API calls**, about 45 minutes
-of the budget at full tilt, and a **Pool** of 10,000 is nearly four hours. That is the single fact the
-spike turns on, and it is why fetching is a step somebody runs on purpose rather than something wired into
-the refill thread, where it would compete with the searches that stock the **Pool**.
-
-**The formula.** Tag similarity is the Jaccard index of the two tag-id sets — shared tags over total
-distinct tags — blended with the baseline's colour-and-category number:
-
-    similarity = TAG_SHARE * jaccard + (1 - TAG_SHARE) * baseline
-
-for a pair where both sides have tags, and the baseline alone for a pair where either side does not. The
-fallback is the whole reason this stays usable: a **Pool** fills faster than 45 calls a minute can tag it,
-so at any moment most of it is untagged, and a provider that answered 0.0 for an untagged **Wallpaper**
-would call it unlike everything — including unlike the **Bans** — and quietly promote it.
-
-Jaccard rather than cosine over the same sets. Cosine divides by the geometric mean of the two set sizes
-and so barely notices that one **Wallpaper** has four tags and the other forty; Jaccard divides by the
-union and does. A **Wallpaper** tagged `nature` alone is not 70% the same as one tagged `nature` plus
-nineteen other things, and Jaccard is the one that says so.
+Tags come only from `GET /api/v1/w/{id}`, one **API call** per **Wallpaper** out of the refill's 45 a minute,
+so fetching is a step somebody runs on purpose, never wired into the refill. A pair where both sides have tags
+scores `TAG_SHARE * jaccard + (1 - TAG_SHARE) * baseline`; any other pair scores the baseline alone, so an
+untagged **Wallpaper** is not called unlike everything. Jaccard, not cosine, because it notices a size
+mismatch between tag sets.
 """
 
 from __future__ import annotations
@@ -45,32 +24,19 @@ from wallpapi.similarity_cache import SidecarDatabase
 from wallpapi.wallhaven import Tag
 
 TAG_SHARE = 0.6
-"""How much of the similarity the tags are worth when both sides have them, the baseline taking the rest.
-
-Six-tenths rather than all of it. The tags are the better evidence — they are about subject, which is what
-the baseline is blind to — but they are sparse, crowd-sourced and uneven: a **Wallpaper** can carry two
-tags or thirty, and two photographs of the same mountain can share none of them if different people tagged
-them. Keeping four-tenths on colour and category means a pair the tags cannot tell apart still gets an
-answer from the evidence that is always present, and it keeps the number continuous rather than collapsing
-to a handful of Jaccard values.
-
-Not tuned against anything. Like the **Similarity radius** and **Similarity decay** in ADR 0007, this is a
-starting point, and #14's comparison says what it is worth.
+"""How much the tags are worth when both sides have them, the baseline taking the rest. Not tuned against
+anything.
 """
 
 
 class TagSource(Protocol):
-    """Where the provider gets tag sets from.
-
-    Plural, for invariant 2's reason: one call per matrix, never one per **Wallpaper**. A per-**Wallpaper**
-    lookup here would be a Python loop over the whole **Pool** on a path that already has to be one pass.
+    """Where the provider gets tag sets from, plural so there is one call per matrix and never a loop
+    (invariant 2).
     """
 
     def tags_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, tuple[int, ...]]:
-        """The tag ids of each **Wallpaper** that has any, keyed by **Wallpaper** id.
-
-        A **Wallpaper** that has never been fetched and one Wallhaven returned no tags for are both simply
-        absent: the provider treats them the same way, by falling back to the baseline.
+        """The tag ids of each **Wallpaper** that has any, keyed by id; one never fetched or with no tags is
+        absent.
         """
         ...
 
@@ -94,15 +60,10 @@ _SCHEMA = (
 
 
 class TagCache:
-    """Wallhaven's tags for a **Wallpaper**, kept for good in a SQLite file of the provider's own.
+    """Wallhaven's tags, kept for good in a SQLite file of the provider's own: a re-fetch costs one of 45
+    calls a minute.
 
-    Permanent because a **Wallpaper**'s tags barely change and a re-fetch costs one of 45 calls a minute.
-    Regenerable because every one of them can be asked for again — which is what makes it a cache rather
-    than a second **Decision log**, and what lets it live outside `wallpapi.db` with no migration.
-
-    `fetched` is a separate table from `wallpaper_tags` on purpose. Without it, a **Wallpaper** Wallhaven
-    returned no tags for is indistinguishable from one nobody has asked about, and the fill step would ask
-    about it again on every run for ever.
+    `fetched` is a table of its own so a **Wallpaper** with no tags is not asked about again on every run.
     """
 
     def __init__(self, path: Path) -> None:
@@ -116,10 +77,8 @@ class TagCache:
         return self._db.size_bytes()
 
     def tags_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, tuple[int, ...]]:
-        """Every tag id held for the named **Wallpapers**, in one query rather than one per **Wallpaper**.
-
-        Chunked because SQLite's parameter limit is 32,766 and a **Pool** plus its decided set can pass it:
-        20,000 **Pool** members is already most of the way there.
+        """Every tag id held for the named **Wallpapers**, in chunked queries: SQLite's parameter limit is
+        32,766.
         """
         requested = list(dict.fromkeys(wallpaper_ids))
         found: dict[str, list[int]] = {}
@@ -135,11 +94,8 @@ class TagCache:
         return {wallpaper_id: tuple(tags) for wallpaper_id, tags in found.items()}
 
     def store(self, wallpaper_id: str, tags: Iterable[Tag], *, fetched_at: dt.datetime) -> None:
-        """Record one **Wallpaper**'s tags, replacing whatever was held for it.
-
-        Replacing rather than adding, so a re-fetch of a **Wallpaper** whose tags were edited on Wallhaven
-        leaves the cache agreeing with Wallhaven rather than with the union of both readings. The
-        `fetched` row is written whether or not there were any tags — that is the point of it.
+        """Record one **Wallpaper**'s tags, replacing what was held; the `fetched` row is written even with no
+        tags.
         """
         with self._db.write() as write:
             write.execute("DELETE FROM wallpaper_tags WHERE wallpaper_id = ?", (wallpaper_id,))
@@ -153,12 +109,12 @@ class TagCache:
             )
 
     def fetched_ids(self) -> set[str]:
-        """Every **Wallpaper** already asked about, so a fill step costs nothing for the second run."""
+        """Every **Wallpaper** already asked about."""
         rows = self._db.connect().execute("SELECT wallpaper_id FROM fetched").fetchall()
         return {str(row["wallpaper_id"]) for row in rows}
 
     def names_for(self, wallpaper_id: str) -> tuple[str, ...]:
-        """One **Wallpaper**'s tag names, for reading a spike result rather than for the maths."""
+        """One **Wallpaper**'s tag names, for reading by eye rather than for the maths."""
         rows = self._db.connect().execute(
             "SELECT tag_name FROM wallpaper_tags WHERE wallpaper_id = ? ORDER BY tag_name", (wallpaper_id,)
         )
@@ -166,17 +122,11 @@ class TagCache:
 
 
 class TagSimilarityProvider:
-    """Tag overlap blended with the baseline, behind the same protocol as everything else.
+    """Tag overlap blended with the baseline.
 
-    **Vectorised, and only over the columns that can matter.** The obvious spelling is an indicator matrix
-    over every distinct tag in the **Pool** and the decided set together, which for 20,000 **Wallpapers**
-    and 20,000 distinct tags is 1.6GB of float32 for a matrix that is almost entirely zeros. It is not
-    needed: a tag no decided **Wallpaper** carries contributes nothing to any intersection, and the union
-    needs only each side's own tag count, which is one number per **Wallpaper**. So the columns are the
-    tags of the decided set alone — a few hundred for a realistic **Decision log** — and the intersection
-    is one matmul. The only Python iteration is over each **Wallpaper**'s own tag list while the indicators
-    are built, which is linear in the **Pool** and not quadratic in it, exactly as the baseline's
-    histograms are.
+    The indicator matrix has columns only for the decided set's tags: a tag no decided **Wallpaper** carries
+    adds nothing to an intersection, and the union needs only each side's own count. One matmul, no loop over
+    pairs.
     """
 
     def __init__(
@@ -208,48 +158,36 @@ class TagSimilarityProvider:
         pool_counts = _counts(pool_tags)
         decided_counts = _counts(decided_tags)
         union = pool_counts[:, None] + decided_counts[None, :] - intersection
-        # Guarded rather than patched up afterwards: a pair with no tags on either side has a union of
-        # zero, and its Jaccard index is not 0.0 but undefined — which is why the `both` mask below, and
-        # not this division, is what decides that such a pair falls back to the baseline.
+        # A pair with no tags has a union of zero and an undefined Jaccard; the `both` mask below decides it.
         jaccard = np.where(union > 0.0, intersection / np.where(union > 0.0, union, 1.0), 0.0)
 
         both = (pool_counts > 0.0)[:, None] & (decided_counts > 0.0)[None, :]
         blended = np.where(both, self._tag_share * jaccard + (1.0 - self._tag_share) * baseline, baseline)
-        # Clipped for the baseline's reason: a **Wallpaper** against itself must come out at 1.0 and never
-        # a rounding above it, or the **Score** maths' `1 - similarity` distance goes negative.
+        # Clipped for the baseline's reason.
         return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
-        """Deliberately nothing, even though this is the provider whose cache most needs filling.
-
-        Filling it is one **API call** per **Wallpaper** out of Wallhaven's 45 a minute — about 500 of
-        them for a **Pool** at its default target size — and that is the same budget the refill spends
-        keeping the **Pool** stocked. Quietly taking half of it is not a decision a **Similarity
-        provider** gets to make on the user's behalf. So tagging stays an explicit step somebody runs
-        (`scripts/similarity_spike.py tags`), and this provider spends no **API calls** at all, whether or
-        not it is the selected one.
+        """Nothing: filling the cache is one **API call** per **Wallpaper**, and a provider may not quietly
+        spend the refill's budget.
         """
         del thumbnails, stop_event
         return NOTHING_TO_CATCH_UP
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
-        """Nothing. An untagged **Wallpaper** falls back to the baseline and the page is still right.
-
-        Since #44 it is handed the **Pool** and could say "n of the **Pool** is untagged", but the only fill
-        for its cache is a step somebody runs by hand at one **API call** a **Wallpaper**. A count nothing
-        in the app will ever move is a line nobody can act on, so the argument is ignored.
+        """Nothing: an untagged **Wallpaper** falls back to the baseline, and nothing in the app moves a
+        coverage count.
         """
         del pool
         return None
 
     def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
-        """None. A tag set is not a position, and the varied **Unknown** draw falls back to today's."""
+        """None: a tag set is not a position."""
         del pool
         return None
 
 
 def _indicator(tag_sets: Sequence[tuple[int, ...]], columns: Mapping[int, int]) -> NDArray[np.float32]:
-    """The `len(tag_sets)` x `len(columns)` matrix with a 1.0 wherever a **Wallpaper** carries that tag."""
+    """The `len(tag_sets)` x `len(columns)` matrix with 1.0 wherever a **Wallpaper** carries that tag."""
     matrix = np.zeros((len(tag_sets), len(columns)), dtype=np.float32)
     for row, tags in enumerate(tag_sets):
         for tag in tags:
@@ -260,7 +198,7 @@ def _indicator(tag_sets: Sequence[tuple[int, ...]], columns: Mapping[int, int]) 
 
 
 def _counts(tag_sets: Sequence[tuple[int, ...]]) -> NDArray[np.float32]:
-    """How many distinct tags each **Wallpaper** carries — the union's other half."""
+    """How many distinct tags each **Wallpaper** carries."""
     return np.array([len(set(tags)) for tags in tag_sets], dtype=np.float32)
 
 
