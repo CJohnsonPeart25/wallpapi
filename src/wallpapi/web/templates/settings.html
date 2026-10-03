@@ -210,12 +210,8 @@
   </form>
 
   {#
-    Downloading the favourites (#14). A form of its own and outside the settings form, because HTML
-    does not nest forms and this posts no fields at all — the operation takes no arguments, which is
-    what makes it safe to press twice.
-
-    One way only. There is no button anywhere that empties the library: files leave it when a
-    favourite is replaced, and never because the folder and the log were compared.
+    Downloading the favourites: a form of its own, outside the settings form, because HTML does not nest
+    forms. It takes no arguments, so it is safe to press twice, and one way only: nothing empties the library.
   #}
   <article>
     <h2>Favourites</h2>
@@ -230,27 +226,16 @@
   </article>
 
   {#
-    Mixes (#12). Outside the settings form and not inside it: each row posts four fields under names
-    every other row posts too — so one big form would send three copies of "unknown" and the server
-    would have to guess.
+    Mixes: outside the settings form, because every row posts four fields under the same names.
 
-    A table, one Mix per row. HTML allows no <form> inside a <tr> — a browser moves it out, and the
-    inputs are left posting nothing — so each row's forms are empty ones before the table, carrying only
-    the name, and every field and button in the row names its form with `form=`.
+    A table, one Mix per row. HTML allows no <form> inside a <tr>, so each row's forms are empty ones before
+    the table and every field and button in the row names its form with `form=`.
 
-    Editing and adding post to the same route. A mix is saved under its name, and whether one was
-    already there is not a question worth asking the user; that also means there is no rename —
-    saving under a new name makes a second mix.
+    Editing and adding post to the same route: a mix is saved under its name, so there is no rename. No
+    delete control on explore, refine or the active mix, which the core service refuses anyway.
 
-    No delete control on explore, on refine, or on the active mix. All three are refusals the core
-    service makes anyway, and a page that offers a button which cannot work is a page telling the
-    user something untrue — the same reason history renders no clear control on a row with nothing
-    to clear.
-
-    Each row adds itself up as it is typed into, and marks its three numbers when they do not come to
-    the total: an Alpine component on the row. It is only a hint before the post — the Core service is
-    still what refuses a Mix that does not add up. A row left entirely blank, as the add row starts, is
-    not marked; nothing has been got wrong yet.
+    Each row adds itself up as it is typed into and marks its numbers when they miss the total: an Alpine
+    hint only, since the Core service still refuses a Mix that does not add up. A blank row is not marked.
   #}
   {% set running_total %}{
       sum: 0,

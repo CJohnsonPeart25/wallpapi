@@ -262,7 +262,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         """Submit the **Batch**, answer with the banner, and tell the page to fetch the next one.
 
         `HX-Trigger: batch-submitted` has `#batch` fetch `/batch` again, so a refusal triggers it too: the
-        second tab (invariant 7) is told why, then shown the live **Batch**.
+        second tab is told why, then shown the live **Batch**.
         """
         result = core.submit_batch(batch_id)
         if not isinstance(result, Batch):
@@ -316,7 +316,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     ) -> HTMLResponse:
         """Mark the whole **Batch**, or clear it, and swap the whole grid back.
 
-        One post and one transaction, never one per tile (invariant 6). The grid and tiles disable each
+        One post and one transaction, never one per tile (ADR 0002). The grid and tiles disable each
         other's controls in flight (`hx-disabled-elt`) so a bulk post and a tile post never overlap.
         **Ignore** is refused as for a single mark.
         """
