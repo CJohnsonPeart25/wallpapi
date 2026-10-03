@@ -39,6 +39,9 @@ from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
 
+SOURCE = Path(__file__).resolve().parent.parent / "src" / "wallpapi"
+"""The package's source, for the tests that read it rather than run it."""
+
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 """Allowed through the socket guard: every `TestClient` on Windows makes one loopback `connect` for
 asyncio's self-pipe, so a guard that refused it would refuse the whole web suite."""
