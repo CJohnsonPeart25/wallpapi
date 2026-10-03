@@ -1,7 +1,5 @@
-"""The Wallhaven client seam and the shape of a search result.
-
-The only module that knows Wallhaven's URLs, field names and parameters, and its one failure of its own, a 429
-(`RateLimited`).
+"""The Wallhaven client seam and the shape of a search result: the only module that knows Wallhaven's URLs,
+fields and parameters.
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ TOO_MANY_REQUESTS = 429
 class RateLimited(Exception):
     """Wallhaven answered 429, the only failure told apart from the rest.
 
-    `retry_after` is `None` when there is no usable header; `Retry-After` is parsed as seconds only, and the
+    `retry_after` is `None` when there is no usable header: `Retry-After` is parsed as seconds only, and the
     caller's back-off covers an HTTP date.
     """
 
@@ -39,11 +37,7 @@ class RateLimited(Exception):
 
 
 class ThumbnailUnavailable(Exception):
-    """The thumbnail host refused this one file (a 404, a 403, a 5xx).
-
-    Told apart so the downloader skips the file, where `RateLimited` or a transport failure makes it back off
-    a minute.
-    """
+    """The thumbnail host refused this one file (a 404, a 403, a 5xx): the downloader skips it and goes on."""
 
     def __init__(self, status: int) -> None:
         super().__init__(f"the thumbnail host answered {status}")
@@ -62,7 +56,7 @@ def _retry_after_seconds(value: str | None) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class SearchPage:
-    """One page of a Wallhaven search: 24 **Wallpapers**, and the `meta.seed` that stops a walk repeating
+    """One page of a Wallhaven search: 24 **Wallpapers** and the `meta.seed` that stops a walk repeating
     itself.
     """
 
@@ -72,9 +66,7 @@ class SearchPage:
 
 @dataclass(frozen=True, slots=True)
 class Tag:
-    """One of Wallhaven's labels on a **Wallpaper**. The id is what overlap is computed on; the name is for
-    humans.
-    """
+    """One of Wallhaven's labels on a **Wallpaper**; the id is what overlap is computed on."""
 
     id: int
     name: str
@@ -97,16 +89,14 @@ class Wallhaven(Protocol):
     ) -> SearchPage:
         """One page of results. `purity` is Wallhaven's three-bit mask, so SFW-only is `"100"`.
 
-        `seed` carries a previous page's `meta.seed`. `query` is Wallhaven's `q`, a search expression such as
-        `like:<id>`; this seam only carries it. `None` parameters are omitted from the request. Raises
-        `RateLimited` on a 429.
+        `query` is Wallhaven's `q`, a search expression such as `like:<id>`. `None` parameters are omitted.
+        Raises `RateLimited` on a 429.
         """
         ...
 
     def fetch_thumbnail(self, url: str) -> bytes:
-        """The bytes of one thumbnail. Not an **API call**.
-
-        Raises `RateLimited` on a 429 and `ThumbnailUnavailable` on any other refusal.
+        """The bytes of one thumbnail. Not an **API call**. Raises `RateLimited` on a 429 and
+        `ThumbnailUnavailable` on any other refusal.
         """
         ...
 
@@ -173,12 +163,7 @@ def _to_wallpaper(item: _SearchItem) -> Wallpaper:
 
 
 class WallhavenClient:
-    """The only module that knows Wallhaven. Thin: it forwards the parameters it is given and maps the
-    response.
-
-    The minimum **Favourites** **Filter** never arrives: Wallhaven has no parameter for it. No API key, so
-    purity is SFW.
-    """
+    """Thin: forwards the parameters it is given and maps the response. No API key, so purity is SFW."""
 
     def __init__(self, client: httpx2.Client | None = None) -> None:
         self._client = httpx2.Client(timeout=REQUEST_TIMEOUT) if client is None else client
@@ -195,7 +180,7 @@ class WallhavenClient:
         atleast: str | None = None,
         ratios: str | None = None,
     ) -> SearchPage:
-        """One page of results. An **API call**; `None` parameters are omitted from the query."""
+        """One page of results: an **API call**."""
         parameters: dict[str, str | int] = {"sorting": sorting, "purity": purity, "page": page}
         for name, value in (
             ("categories", categories),
@@ -216,10 +201,8 @@ class WallhavenClient:
         )
 
     def fetch_tags(self, wallpaper_id: str) -> tuple[Tag, ...]:
-        """One **Wallpaper**'s tags: one **API call** each, so it is not on the `Wallhaven` protocol.
-
-        The refill must not call it; the tag **Similarity provider** holds the real client and paces itself. A
-        429 becomes `RateLimited`.
+        """One **Wallpaper**'s tags: one **API call** each, so not on the `Wallhaven` protocol and never
+        called by the refill.
         """
         response = self._client.get(API_WALLPAPER_URL.format(wallpaper_id=wallpaper_id))
         if response.status_code == TOO_MANY_REQUESTS:
@@ -229,11 +212,7 @@ class WallhavenClient:
         return tuple(Tag(id=item.id, name=item.name) for item in payload.data.tags)
 
     def fetch_thumbnail(self, url: str) -> bytes:
-        """The bytes behind a `thumbs.small` URL, from `th.wallhaven.cc`: not an **API call**, so not counted
-        against the 45 a minute (ADR 0017).
-
-        A 429 becomes `RateLimited`, any other non-2xx `ThumbnailUnavailable`.
-        """
+        """The bytes behind a `thumbs.small` URL, from `th.wallhaven.cc`: not an **API call** (ADR 0017)."""
         response = self._client.get(url)
         if response.status_code == TOO_MANY_REQUESTS:
             raise RateLimited(_retry_after_seconds(response.headers.get("Retry-After")))

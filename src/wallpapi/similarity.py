@@ -1,7 +1,7 @@
 """The **Similarity provider** seam, and the baseline provider behind it.
 
 The interface is a matrix, **Pool** x decided, never pairwise (invariant 2): a pairwise call forces a Python
-loop and tempts caching **Scores**. Whole **Wallpapers** on both sides, so a provider never reopens storage.
+loop and tempts caching **Scores**.
 """
 
 from __future__ import annotations
@@ -17,9 +17,7 @@ from numpy.typing import NDArray
 from wallpapi.model import Wallpaper
 
 NOTHING_TO_CATCH_UP = 3600.0
-"""What a provider with no upkeep returns from `catch_up`, in seconds: an hour, so the thread keeps one shape
-of wait.
-"""
+"""What a provider with no upkeep returns from `catch_up`, in seconds."""
 
 
 class SimilarityProvider(Protocol):
@@ -34,25 +32,20 @@ class SimilarityProvider(Protocol):
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Do one step of this provider's upkeep and return how long to wait before the next.
 
-        On the protocol so the Core service never needs to know which provider it holds; one with nothing to
-        do returns `NOTHING_TO_CATCH_UP`. Called only from the background thread; every wait is
-        `stop_event.wait(n)` (invariant 12). Must never raise.
+        On the protocol so the Core service never needs to know which provider it holds. Called only from the
+        background thread; must never raise, and returns `NOTHING_TO_CATCH_UP` when idle.
         """
         ...
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
         """One line for the page when this provider is not at full strength, or `None`: a fallback **Score**
-        looks like a real one, so it has to be said.
-
-        `pool` lets a provider report coverage; one with nothing to say ignores it.
+        looks like a real one.
         """
         ...
 
     def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
-        """Each of `pool`'s positions as a `len(pool)` x d array (a zero row for no **Embedding**), or `None`
-        if this provider has none.
-
-        Read by the varied **Unknown** draw (ADR 0018); never **Pool** x **Pool**.
+        """Each of `pool`'s positions as a `len(pool)` x d array (zero row for no **Embedding**), or `None` if
+        this provider has none.
         """
         ...
 
@@ -66,14 +59,11 @@ TONE_SPLIT = 0.5
 NEUTRAL_BINS = 4
 
 SATURATION_FLOOR = 0.15
-"""Below this, HSV hue is unstable and meaningless."""
 
 CHROMATIC_BINS = HUE_BINS * TONE_BINS
 
 COLOURLESS_BIN = CHROMATIC_BINS + NEUTRAL_BINS
-"""A bin for a **Wallpaper** with no usable colours, so its histogram is never all zeros and its self-cosine
-stays 1.0.
-"""
+"""A bin for a **Wallpaper** with no usable colours, so its self-cosine stays 1.0."""
 
 BIN_COUNT = COLOURLESS_BIN + 1
 
@@ -86,9 +76,9 @@ chance.
 class MetadataSimilarityProvider:
     """The baseline: dominant colours and category off the search response. No **API call**.
 
-    Each **Wallpaper** is a unit-length histogram over `BIN_COUNT` colour bins, so colour similarity is their
-    cosine: `CATEGORY_SHARE * (categories match) + (1 - CATEGORY_SHARE) * (colour cosine)`. Deliberately crude
-    (hard bins, nothing about composition) and vectorised: one matmul, no loop over pairs.
+    Colour similarity is the cosine of unit-length histograms over `BIN_COUNT` bins, blended with
+    `CATEGORY_SHARE` for a matching category. Deliberately crude, and vectorised: one matmul, no loop over
+    pairs.
     """
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
@@ -100,7 +90,7 @@ class MetadataSimilarityProvider:
         return np.clip(similarity, 0.0, 1.0).astype(np.float32)
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
-        """Nothing to keep up: everything it reads is already on the **Wallpaper**."""
+        """Nothing to keep up."""
         del thumbnails, stop_event
         return NOTHING_TO_CATCH_UP
 
@@ -116,9 +106,7 @@ class MetadataSimilarityProvider:
 
 
 def _category_codes(wallpapers: Sequence[Wallpaper], codes: dict[str, int]) -> NDArray[np.int64]:
-    """Each **Wallpaper**'s category as an integer; `codes` is shared between both sides of a matrix so a name
-    gets one number.
-    """
+    """Each **Wallpaper**'s category as an integer; `codes` is shared across both sides of a matrix."""
     return np.array(
         [codes.setdefault(w.category.strip().lower(), len(codes)) for w in wallpapers], dtype=np.int64
     )
@@ -146,9 +134,7 @@ def _histograms(wallpapers: Sequence[Wallpaper]) -> NDArray[np.float32]:
 
 
 def _bins(packed: NDArray[np.int64]) -> NDArray[np.int64]:
-    """Which bin each packed 24-bit colour falls in, in one numpy pass rather than a scalar `colorsys` call
-    per colour.
-    """
+    """Which bin each packed 24-bit colour falls in, in one numpy pass."""
     red = ((packed >> 16) & 0xFF) / 255.0
     green = ((packed >> 8) & 0xFF) / 255.0
     blue = (packed & 0xFF) / 255.0
@@ -174,9 +160,7 @@ def _bins(packed: NDArray[np.int64]) -> NDArray[np.int64]:
 
 
 def _rgb(colour: str) -> int | None:
-    """`"#660000"` as `0x660000`, or `None`. Tolerant: a hand-edited row costs one colour, not every **Score**
-    on the page.
-    """
+    """`"#660000"` as `0x660000`, or `None`: a hand-edited row costs one colour, not every **Score**."""
     text = colour.strip().removeprefix("#")
     if len(text) != 6:
         return None

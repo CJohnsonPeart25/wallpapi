@@ -1,7 +1,5 @@
-"""The web layer: Jinja templates over an already-constructed Core service.
-
-Endpoints are plain `def`, so FastAPI runs them in its threadpool and the synchronous core never blocks the
-event loop (ADR 0001).
+"""The web layer: Jinja templates over an already-constructed Core service, on plain `def` endpoints (ADR
+0001).
 """
 
 from __future__ import annotations
@@ -46,9 +44,7 @@ from wallpapi.thumbnail_thread import ThumbnailThread
 
 @dataclass(frozen=True, slots=True)
 class _DownloadCounts:
-    """What the last "download all **Favourites**" did, as the settings page renders it. `downloaded` tells a
-    page load after a download from a plain one.
-    """
+    """What the last "download all **Favourites**" did, as the settings page renders it."""
 
     downloaded: bool
     written: int
@@ -58,12 +54,12 @@ class _DownloadCounts:
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
-"""Vendored htmx, stylesheet and preview script. No third-party asset in any template."""
+"""Vendored htmx, stylesheet and preview script: no third-party asset in any template."""
 
 
 def _drafted_verdict(posted: str) -> Verdict | None:
     """The **Verdict** a tile control posted, or `None` for a clear. **Ignore** is refused: it is derived at
-    submit, and no control posts it.
+    submit.
     """
     if not posted:
         return None
@@ -77,8 +73,7 @@ def _drafted_verdict(posted: str) -> Verdict | None:
 
 
 def _chosen_verdict(posted: str) -> Verdict:
-    """The **Verdict** a **History** control posted. Required, and **Ignore** included: a **History** edit is
-    appended at once, so withdrawing a **Verdict** posts the **Ignore** itself. An empty **Verdict** is
+    """The **Verdict** a **History** control posted. Required, **Ignore** included: an empty **Verdict** is
     refused.
     """
     if not posted:
@@ -91,7 +86,7 @@ def _chosen_verdict(posted: str) -> Verdict:
 
 def _history_filter(posted: str) -> Verdict | None:
     """The resolved **Verdict** the **History** listing is narrowed to, or `None`. **Ignore** is accepted
-    here, as a resolved value.
+    here.
     """
     if not posted:
         return None
@@ -104,21 +99,18 @@ def _history_filter(posted: str) -> Verdict | None:
 _HISTORY_REFUSAL_STATUS = {
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: HTTPStatus.NOT_FOUND,
 }
-"""What each **History** refusal is over HTTP: a status code, since only a hand-made post can produce one and
-htmx does not swap a 4xx.
+"""A **History** refusal is a status code: only a hand-made post can produce one, and htmx does not swap a
+4xx.
 """
 
 _FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
-"""The **History** filter's choices, written out so **Ignore**, the commonest and least interesting, is
-last.
-"""
+"""The **History** filter's choices, written out so **Ignore**, the commonest, is last."""
 
 
 def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
     """Start the three background threads with the app and join them on the way out.
 
-    Started here, not in the Core service, because a test constructs that and must not start a thread that
-    talks to Wallhaven. Joined with a timeout above the longest read they can be inside (invariant 12).
+    Started here and not in the Core service, which a test constructs and must not start a thread.
     """
 
     @asynccontextmanager
@@ -164,8 +156,8 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
 
 
 def _mix_context(core: CoreService) -> dict[str, object]:
-    """What the switcher needs: every **Mix**, and the stored active name. The name, not
-    `core.active_mix().name`, so a deleted **Mix** still shows as the choice made.
+    """What the switcher needs. The stored active name, not `core.active_mix().name`, so a deleted **Mix**
+    still shows as chosen.
     """
     return {"mixes": core.list_mixes(), "active_mix": core.get_settings().active_mix}
 
@@ -173,9 +165,8 @@ def _mix_context(core: CoreService) -> dict[str, object]:
 def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> dict[str, object]:
     """The **Mixes** section of the settings page: a row per **Mix**, plus the row that adds one.
 
-    Built here so the template does not know the rules. `posted` is a refused save put back over its row; a
-    name matching no stored **Mix** belongs to the add row. A row is deletable unless it is **Explore**,
-    **Refine** or the active **Mix**.
+    `posted` is a refused save put back over its row; a name matching no stored **Mix** belongs to the add
+    row.
     """
     typed = dict(posted or {})
     typed_name = typed.get("name", "").strip()
@@ -205,17 +196,16 @@ def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> 
 def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     """The app over an already-constructed Core service.
 
-    `refill` starts the three background threads in the lifespan. Off by default, and `main.py` is the one
-    caller that turns it on: a test that started a thread would have a race in it, so tests drive the steps by
-    hand.
+    `refill` starts the background threads and is off by default: `main.py` is the one caller that turns it
+    on, and tests drive the steps by hand.
     """
     app = FastAPI(title="wallpapi", lifespan=_lifespan(core) if refill else None)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
     def render(request: Request, result: Batch | BatchUnavailable | SubmissionRefused) -> HTMLResponse:
-        """One fragment and one status code per outcome. A **Batch** or an empty **Pool** is `#batch`, with
-        the refill status because it is the answer to "why empty"; a refusal is `#batch-banner`.
+        """One fragment and one status code per outcome; a **Batch** or empty **Pool** carries the refill
+        status, a refusal is the banner.
         """
         if isinstance(result, SubmissionRefused):
             already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
@@ -241,9 +231,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def batch_page(request: Request) -> HTMLResponse:
-        """The **Batch** page's shell, which fetches its **Batch** from `/batch`. It mints nothing: empty
-        tiles hold the grid's shape.
-        """
+        """The **Batch** page's shell, which fetches its **Batch** from `/batch`. It mints nothing."""
         return templates.TemplateResponse(
             request,
             "batch.html",
@@ -252,17 +240,14 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.get("/batch", response_class=HTMLResponse)
     def batch_view(request: Request) -> HTMLResponse:
-        """The live **Batch**, as the fragment the shell swaps in. Tiles are served from the **Thumbnail
-        cache**, never hotlinked.
-        """
+        """The live **Batch** as the fragment the shell swaps in."""
         return render(request, core.get_next_batch())
 
     @app.post("/submit", response_class=HTMLResponse)
     def submit(request: Request, batch_id: Annotated[str, Form()]) -> HTMLResponse:
         """Submit the **Batch**, answer with the banner, and tell the page to fetch the next one.
 
-        `HX-Trigger: batch-submitted` has `#batch` fetch `/batch` again, so a refusal triggers it too: the
-        second tab is told why, then shown the live **Batch**.
+        A refusal triggers the refetch too: the second tab is told why, then shown the live **Batch**.
         """
         result = core.submit_batch(batch_id)
         if not isinstance(result, Batch):
@@ -284,9 +269,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         wallpaper_id: Annotated[str, Form()],
         verdict: Annotated[str, Form()] = "",
     ) -> HTMLResponse:
-        """Mark one tile, or clear it, and swap that tile back. `hx-sync` on the control stops a late response
-        swapping a stale tile in.
-        """
+        """Mark one tile, or clear it, and swap that tile back."""
         refused = core.set_draft_verdict(batch_id, wallpaper_id, _drafted_verdict(verdict))
         if refused is not None:
             return render(request, refused)
@@ -314,11 +297,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         batch_id: Annotated[str, Form()],
         verdict: Annotated[str, Form()] = "",
     ) -> HTMLResponse:
-        """Mark the whole **Batch**, or clear it, and swap the whole grid back.
-
-        One post and one transaction, never one per tile (ADR 0002). The grid and tiles disable each
-        other's controls in flight (`hx-disabled-elt`) so a bulk post and a tile post never overlap.
-        **Ignore** is refused as for a single mark.
+        """Mark the whole **Batch**, or clear it, and swap the grid back: one post and one transaction (ADR
+        0002).
         """
         refused = core.set_all_draft_verdicts(batch_id, _drafted_verdict(verdict))
         if refused is not None:
@@ -330,8 +310,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         return templates.TemplateResponse(request, "grid.html", {"batch": live})
 
     def render_history_row(request: Request, wallpaper_id: str) -> HTMLResponse:
-        """The one row an edit changed, read back from the Core service so the screen shows what the
-        **Decision log** resolves to.
+        """The one row an edit changed, read back so the screen shows what the **Decision log** resolves
+        to.
         """
         row = core.get_history_row(wallpaper_id)
         if row is None:
@@ -343,9 +323,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.get("/history", response_class=HTMLResponse)
     def history_page(request: Request, verdict: str = "", page: int = 1) -> HTMLResponse:
-        """**History**: one row per **Wallpaper** ever judged, newest activity first, filtered and paged. A
-        page out of range is clamped, so a stale link lands on the last page.
-        """
+        """**History**, filtered by resolved **Verdict** and paged; a page out of range is clamped."""
         listing = core.list_history_rows(verdict=_history_filter(verdict), page=page)
         return templates.TemplateResponse(
             request, "history.html", {"history": listing, "verdicts": _FILTERABLE_VERDICTS}
@@ -367,9 +345,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     def choose_mix(request: Request, mix: Annotated[str, Form()]) -> HTMLResponse:
         """Switch the active **Mix**, and swap the switcher back.
 
-        The live **Batch** is untouched: the **Mix** is read when a **Batch** is minted, and rerolling would
-        discard a **Draft Batch**. An unknown **Mix** is a 400 with the switcher unchanged; read back so what
-        swaps in is what is held.
+        The live **Batch** is untouched: rerolling would discard its **Draft Batch**. An unknown **Mix** is a
+        400 with the switcher unchanged.
         """
         refused = core.update_settings(active_mix=mix)
         status_code = HTTPStatus.BAD_REQUEST if isinstance(refused, SettingsRefused) else HTTPStatus.OK
@@ -387,11 +364,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         download: _DownloadCounts | None = None,
         status_code: int = HTTPStatus.OK,
     ) -> HTMLResponse:
-        """The settings form, filled with the values given rather than the values stored, so a refused save
-        keeps what was typed.
-
-        `posted_mix` is the same for the **Mixes** section, apart from `posted` because every **Mix** row
-        posts the same four field names.
+        """The settings form, filled with the values given rather than those stored, so a refused save keeps
+        what was typed.
         """
         return templates.TemplateResponse(
             request,
@@ -424,11 +398,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         skipped: int = 0,
         failed: int = 0,
     ) -> HTMLResponse:
-        """The settings page, showing what is stored.
-
-        The download counts arrive as query parameters, because this page is the redirect target of the
-        download and not the download itself. They are `int`: wallpapi's own numbers, so FastAPI's 422 on a
-        hand-edited URL is right.
+        """The settings page. The download counts are query parameters because this page is the redirect
+        target of the download, not the download itself.
         """
         return render_settings(
             request,
@@ -454,9 +425,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     ) -> Response:
         """Save the settings, or come back with the reason they were refused.
 
-        Every field is `str` and coerced by the Core service, so a typo gets this page's sentence and not
-        FastAPI's JSON 422. A field the post did not carry is left alone; an empty one is a value, and the
-        Core service refuses it. Post-redirect-get on success.
+        Every field is `str`, coerced by the Core service, so a typo gets this page's sentence and not a JSON
+        422. A field the post did not carry is left alone.
         """
         posted = {
             name: value
@@ -488,10 +458,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
     @app.post("/settings/library/download")
     def download_favourites() -> Response:
         """Pull every **Favourite** whose **Library** file is missing, and redirect to the settings page with
-        the counts.
-
-        One-way: it writes and skips and never deletes. No refusal branch: a failure or a guarded name is
-        counted and picked up by the next press.
+        the counts. It never deletes.
         """
         pulled = core.download_favourites()
         return RedirectResponse(
@@ -510,11 +477,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         banger: Annotated[str, Form()] = "",
         dud: Annotated[str, Form()] = "",
     ) -> Response:
-        """Create a **Mix** or edit one, and come back with the reason if those are not percentages.
-
-        One route for both: the add row and every edit row post the same four fields. A plain form post,
-        redirected on success. Every field is `str` so an empty percentage reaches `MIX_PERCENTAGES_INVALID`
-        and not a 422.
+        """Create a **Mix** or edit one: one route for both, since the add row and every edit row post the
+        same four fields.
         """
         result = core.save_mix(name, unknown=unknown, banger=banger, dud=dud)
         if isinstance(result, SettingsRefused):
@@ -529,11 +493,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.post("/settings/mixes/delete")
     def delete_mix(request: Request, name: Annotated[str, Form()] = "") -> Response:
-        """Remove a **Mix**, or re-render with the reason it stays.
-
-        No control is rendered for **Explore**, **Refine** or the active **Mix**, so a refusal is a second tab
-        or a hand-made post, but it is a rendered sentence because this is a full page load.
-        """
+        """Remove a **Mix**, or re-render with the reason it stays."""
         refused = core.delete_mix(name)
         if refused is not None:
             return render_settings(
@@ -546,7 +506,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.get("/thumb/{wallpaper_id}")
     def thumbnail(wallpaper_id: str) -> FileResponse:
-        """One tile, off the **Thumbnail cache**. Fetched from Wallhaven the first time and never again."""
+        """One tile, off the **Thumbnail cache**."""
         cached = core.get_thumbnail(wallpaper_id)
         if cached is None:
             raise HTTPException(status_code=404, detail="unknown wallpaper")

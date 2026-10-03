@@ -1,11 +1,8 @@
 """The **Similarity provider** wallpapi runs with: thumbnails compared by a CLIP image encoder (ADR 0013).
 
-ONNX Runtime, image tower only, CPU, never `torch` or `open_clip`; `onnxruntime` and `pillow` are imported
-inside the methods that use them because importing onnxruntime costs most of a second. Nothing here is on a
-page load: `catch_up` embeds on the background thread. Embeddings are L2 normalised, so cosine is a dot
-product, mapped by `(1 + cosine) / 2` into `[0, 1]`; a pair with no cached embedding on either side falls back
-to the baseline. Real CLIP cosines are bunched, so distances stay under about 0.41, which is why the default
-**Similarity radius** is 0.15.
+ONNX Runtime, image tower only, CPU; `onnxruntime` and `pillow` are imported inside the methods that use them
+because importing onnxruntime costs most of a second. Cosine is mapped by `(1 + cosine) / 2` into `[0, 1]`,
+and a pair with no cached embedding falls back to the baseline.
 """
 
 from __future__ import annotations
@@ -24,17 +21,13 @@ from wallpapi.similarity import NOTHING_TO_CATCH_UP, MetadataSimilarityProvider,
 from wallpapi.similarity_cache import SidecarDatabase
 
 MODEL_REPO = "Xenova/clip-vit-base-patch32"
-"""The Hugging Face repository the image tower comes from: OpenAI's `clip-vit-base-patch32`, exported as
-separate text and vision files.
-"""
+"""OpenAI's `clip-vit-base-patch32`, exported by Xenova as separate text and vision files."""
 
 MODEL_REVISION = "d15189d7028b43f1d3e65039190477f6af591c2a"
 """Pinned to a commit, so the file cannot change under the recorded checksum."""
 
 MODEL_FILE = "onnx/vision_model_quantized.onnx"
-"""The int8-quantised image tower, 85MiB against 335MiB: quantised on purpose, since all it has to do is
-rank.
-"""
+"""The int8-quantised image tower, on purpose: it only has to rank."""
 
 MODEL_SHA256 = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299"
 """Checked on download rather than trusted."""
@@ -52,9 +45,7 @@ EMBED_BATCH = 16
 """Thumbnails per model run, and so how often `catch_up` looks at its `stop_event`."""
 
 CAUGHT_UP = 30.0
-"""Seconds to wait once every cached thumbnail has an embedding: the downloader keeps adding, so "caught up"
-is for now.
-"""
+"""Seconds to wait once every cached thumbnail has an embedding; the downloader keeps adding."""
 
 DOWNLOAD_CHUNK = 1 << 20
 """A MiB at a time, which is how often the download looks at its `stop_event` (invariant 12)."""
@@ -91,9 +82,7 @@ class ModelSource(Protocol):
     """Where the CLIP image tower comes from, injected so no test needs 85MiB of weights."""
 
     def ensure(self, stop_event: threading.Event) -> Path:
-        """The model file on disk, fetching it if absent; raises if it cannot be had. Watches `stop_event`
-        (invariant 12).
-        """
+        """The model file on disk, fetching it if absent; raises if it cannot be had. Watches `stop_event`."""
         ...
 
 
@@ -133,10 +122,8 @@ _SCHEMA = (
 
 
 class EmbeddingCache:
-    """One vector per **Wallpaper**, kept for good in a SQLite file of the provider's own.
-
-    A raw little-endian float32 blob, read back with `np.frombuffer`. `dim` is stored beside it so a vector of
-    another width is caught on the way out.
+    """One vector per **Wallpaper**, in a SQLite file of the provider's own; `dim` is stored so another
+    model's width is caught.
     """
 
     def __init__(self, path: Path) -> None:
@@ -166,9 +153,7 @@ class EmbeddingCache:
         return found
 
     def store(self, wallpaper_id: str, vector: NDArray[np.float32]) -> None:
-        """Record one **Wallpaper**'s embedding, normalised here and nowhere else; a zero vector is stored as
-        it is.
-        """
+        """Record one **Wallpaper**'s embedding, normalised here and nowhere else."""
         flat = np.asarray(vector, dtype=np.float32).reshape(-1)
         with self._db.write() as write:
             write.execute(
@@ -182,11 +167,11 @@ class EmbeddingCache:
 
 
 class EmbeddingSimilarityProvider:
-    """Cosine between cached CLIP image embeddings, mapped into `[0, 1]`, with the baseline as the per-pair
+    """Cosine between cached CLIP embeddings, mapped into `[0, 1]`, with the baseline as the per-pair
     fallback.
 
-    One matmul, no loop over pairs. A fresh install behaves as the baseline did and `notice(pool)` says so.
-    `model=None` means it manages no model: it serves what its cache holds and reports nothing.
+    `notice(pool)` says when it is running on the fallback. `model=None` means it manages no model and reports
+    nothing.
     """
 
     def __init__(
@@ -235,10 +220,8 @@ class EmbeddingSimilarityProvider:
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Get the model, then embed one batch of thumbnails that have none yet.
 
-        One batch per call so `stop_event` is seen between batches (invariant 12). Returns 0.0 while there is
-        more to do, `CAUGHT_UP` otherwise. The **Thumbnail cache** is the work list: a **Wallpaper** with no
-        thumbnail falls back to the baseline until it has one. Never raises: a failed download is recorded and
-        reported by `notice`.
+        One batch per call so `stop_event` is seen between batches (invariant 12). The **Thumbnail cache** is
+        the work list. Never raises: a failed download is recorded and reported by `notice`.
         """
         if self._model is None or self._cache is None:
             return NOTHING_TO_CATCH_UP
@@ -253,11 +236,8 @@ class EmbeddingSimilarityProvider:
         return 0.0 if len(pending) > self._batch else CAUGHT_UP
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
-        """What the page says while this provider is not yet itself, or `None`.
-
-        A fallback **Score** looks like a real one, so the line has to be said. A pending, failed or unusable
-        model is the whole story; once it works, the line is how much of `pool` has an **Embedding**. With no
-        model to manage it reports nothing.
+        """What the page says while this provider is not yet itself, or `None`: a fallback **Score** looks
+        like a real one.
         """
         with self._lock:
             state = self._state
@@ -272,8 +252,8 @@ class EmbeddingSimilarityProvider:
         return _COVERAGE.format(embedded=embedded, pool=len(embeddable))
 
     def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
-        """The cached CLIP rows of `pool`, in its order, for the varied **Unknown** draw; a zero row for no
-        **Embedding** or a vector of the wrong width.
+        """The cached CLIP rows of `pool`, in its order; a zero row for no **Embedding** or a vector of the
+        wrong width.
         """
         held = self._vectors.vectors_for([w.id for w in pool])
         width = next(iter(held.values())).size if held else 0
@@ -319,7 +299,7 @@ class EmbeddingSimilarityProvider:
         return sorted(files, key=lambda path: path.stat().st_mtime)
 
     def _embed(self, batch: Sequence[Path]) -> None:
-        """One batch through the model and into the cache. A file that will not open costs itself only."""
+        """One batch through the model and into the cache; a file that will not open costs itself only."""
         if self._embedder is None or self._cache is None:
             return
         try:
@@ -349,9 +329,7 @@ class EmbeddingSimilarityProvider:
 
 
 class OnnxClipEmbedder:
-    """A CLIP image tower run on the CPU by ONNX Runtime. The session is built on first call, not in
-    `__init__`.
-    """
+    """A CLIP image tower run on the CPU by ONNX Runtime, its session built on first call."""
 
     def __init__(self, model_path: Path, *, batch_size: int = EMBED_BATCH) -> None:
         self._model_path = model_path
@@ -374,9 +352,7 @@ class OnnxClipEmbedder:
         return np.stack([_normalised(row) for row in stacked])
 
     def warm(self) -> None:
-        """Open the session now, so a model that will not open is reported once instead of failing every
-        embedding.
-        """
+        """Open the session now, so a model that will not open is reported once."""
         self._loaded()
 
     def _loaded(self) -> _OnnxSession:
@@ -402,9 +378,8 @@ class OnnxClipEmbedder:
 class DownloadedModel:
     """The image tower, fetched once from Hugging Face and verified against the pinned checksum.
 
-    Verified only on the way in: re-hashing 85MiB at every boot would answer a question only a hand edit
-    changes, and ONNX Runtime fails on a corrupt file anyway. Written to a `.part` sibling and moved into
-    place, so an interrupted download leaves nothing that looks like a model.
+    Verified only on the way in. Written to a `.part` sibling and moved into place, so an interrupted download
+    leaves nothing that looks like a model.
     """
 
     def __init__(
@@ -452,7 +427,7 @@ class DownloadedModel:
 
 
 class _Cancelled(Exception):
-    """Shutdown arrived mid download: not a failure worth putting on the page."""
+    """Shutdown arrived mid download: not worth putting on the page."""
 
 
 class _OnnxNode(Protocol):
@@ -468,10 +443,7 @@ class _OnnxSession(Protocol):
 
 
 def _preprocess(path: Path) -> NDArray[np.float32]:
-    """One thumbnail as CLIP's `(3, 224, 224)` input: resize the short side, centre crop, normalise.
-
-    OpenAI's own preprocessing, bicubic; the centre crop loses the sides of a wide image.
-    """
+    """One thumbnail as CLIP's `(3, 224, 224)` input: resize the short side, centre crop, normalise."""
     from PIL import Image
 
     with Image.open(path) as handle:
@@ -498,8 +470,8 @@ def _as_vectors(output: Any) -> NDArray[np.float32]:
 def _rows(
     wallpaper_ids: Sequence[str], held: Mapping[str, NDArray[np.float32]], width: int
 ) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
-    """The embedding matrix for these **Wallpapers** and a mask of which had one; the mask, not the zero row,
-    decides the baseline fallback.
+    """The embedding matrix for these **Wallpapers** and a mask of which had one; the mask decides the
+    fallback.
     """
     matrix = np.zeros((len(wallpaper_ids), width), dtype=np.float32)
     known = np.zeros(len(wallpaper_ids), dtype=np.bool_)
