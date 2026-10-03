@@ -49,7 +49,7 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
   **Pool** x **Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. ADR 0007.
 - **4. The Decision log is append-only and resolves by sequence.** One transaction's rows, or two **History**
   clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence.
-  The rule is one SQL fragment, `_RESOLUTION_CTE`; build on it. A submitted **Batch** is never retracted.
+  The rule is one SQL fragment in `decisions.py`; build on it. A submitted **Batch** is never retracted.
   ADR 0015.
 - **5. Timestamps are ISO 8601 UTC strings** from the injected clock.
 - **6. A Draft Batch is not the Decision log**: a tile post sets its entry, never toggles; submit appends.

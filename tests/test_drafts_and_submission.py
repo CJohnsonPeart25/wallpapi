@@ -13,7 +13,8 @@ import pytest
 
 from tests.conftest import FIXED_NOW, Harness, make_harness
 from tests.fakes import catalogue_of
-from wallpapi.core import Batch, CoreService, ResolvedVerdict, SubmissionRefused
+from wallpapi.core import Batch, CoreService, SubmissionRefused
+from wallpapi.decisions import ResolvedVerdict
 from wallpapi.model import Verdict
 
 

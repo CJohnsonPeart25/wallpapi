@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import Harness, batch_id_of, favourite, judge, make_harness, serving
 from tests.fakes import THUMBNAIL_BYTES, catalogue_of, wallpaper
-from wallpapi.core import EXPLORE_MIX, HISTORY_PAGE_SIZE, MAX_BATCH_SIZE, REFINE_MIX, Batch, SettingsRefused
+from wallpapi.core import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, Batch, SettingsRefused
+from wallpapi.decisions import HISTORY_PAGE_SIZE
 from wallpapi.model import Mix, Verdict
 
 Web = tuple[Harness, TestClient]
