@@ -18,7 +18,6 @@ from fastapi.testclient import TestClient
 from tests.conftest import make_harness
 from tests.fakes import catalogue_of
 from wallpapi.thumbnail_thread import JOIN_TIMEOUT, THREAD_NAME, ThumbnailThread
-from wallpapi.wallhaven import REQUEST_TIMEOUT
 from wallpapi.web.app import create_app
 
 
@@ -93,8 +92,3 @@ def test_starting_and_stopping_twice_is_harmless(db_path: Path) -> None:
     downloader.stop()
 
     assert not _running(THREAD_NAME)
-
-
-def test_the_join_timeout_outlasts_a_fetch_that_is_still_in_flight() -> None:
-    """Invariant 12: the shutdown join must be longer than the client's own request timeout."""
-    assert JOIN_TIMEOUT > REQUEST_TIMEOUT

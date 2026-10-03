@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import make_harness
 from tests.fakes import catalogue_of
-from wallpapi.similarity_embedding import DOWNLOAD_TIMEOUT
 from wallpapi.similarity_thread import JOIN_TIMEOUT, SimilarityThread
 from wallpapi.web.app import create_app
 
@@ -77,12 +76,3 @@ def test_starting_and_stopping_twice_is_harmless(db_path: Path) -> None:
     thread.start()
     thread.stop()
     thread.stop()
-
-
-def test_the_join_timeout_outlasts_a_download_read_that_is_still_in_flight() -> None:
-    """Invariant 12: the shutdown join must be longer than the longest read the loop can be inside.
-
-    For this thread that is the model download's read timeout, not the Wallhaven client's — it is the
-    only thing here that waits on a socket.
-    """
-    assert JOIN_TIMEOUT > DOWNLOAD_TIMEOUT

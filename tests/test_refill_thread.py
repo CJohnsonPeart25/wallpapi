@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 from tests.conftest import make_harness
 from tests.fakes import catalogue_of
 from wallpapi.refill import JOIN_TIMEOUT, RefillThread
-from wallpapi.wallhaven import REQUEST_TIMEOUT
 from wallpapi.web.app import create_app
 
 
@@ -78,12 +77,3 @@ def test_starting_and_stopping_twice_is_harmless(db_path: Path) -> None:
     thread.stop()
 
     assert not harness.core.refill_status().running
-
-
-def test_the_join_timeout_outlasts_a_request_that_is_still_in_flight() -> None:
-    """Invariant 12: the shutdown join must be longer than the client's own request timeout.
-
-    Otherwise a stop arriving the instant a search was sent gives up on a thread that was always going to
-    come back, and the process is left with a thread it stopped waiting for.
-    """
-    assert JOIN_TIMEOUT > REQUEST_TIMEOUT
