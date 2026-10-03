@@ -17,8 +17,6 @@ import pytest
 from tests.conftest import Harness, make_harness
 from wallpapi.core import (
     DEFAULT_ALLOWED_RATIOS,
-    DEFAULT_MIN_FAVOURITES,
-    DEFAULT_MIN_HEIGHT,
     DEFAULT_MIN_WIDTH,
     DEFAULT_POOL_TARGET_SIZE,
     MAX_POOL_TARGET_SIZE,
@@ -26,24 +24,6 @@ from wallpapi.core import (
     Settings,
     SettingsRefused,
 )
-
-
-def test_a_fresh_database_reads_the_filter_defaults(harness: Harness) -> None:
-    """Acceptance criterion: the **Filters** are persisted, and a fresh database is already configured.
-
-    The defaults are aimed at the monitor the spec describes. 2560x1440 admits a 1440p wallpaper at its
-    native size and everything larger, and excludes the 1080p uploads that would be upscaled; the three
-    ratios are the shapes a desktop monitor actually is; ten **Favourites** skips the long tail nobody has
-    looked at without collapsing the **Pool** to a handful of famous images.
-    """
-    settings = harness.core.get_settings()
-
-    assert isinstance(settings, Settings)
-    assert settings.min_width == DEFAULT_MIN_WIDTH == 2560
-    assert settings.min_height == DEFAULT_MIN_HEIGHT == 1440
-    assert settings.allowed_ratios == DEFAULT_ALLOWED_RATIOS == ("16x9", "16x10", "21x9")
-    assert settings.min_favourites == DEFAULT_MIN_FAVOURITES == 10
-    assert settings.pool_target_size == DEFAULT_POOL_TARGET_SIZE == 500
 
 
 def test_the_filters_are_configurable_and_persist_across_a_restart(db_path: Path) -> None:

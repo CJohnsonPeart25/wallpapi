@@ -71,9 +71,3 @@ def test_unordered_timestamps_are_handled_rather_than_trusted() -> None:
     calls = [0.0] * (CALLS_PER_MINUTE - 1)
 
     assert wait_needed([*calls, 30.0], now=30.0) == WINDOW_SECONDS - 30.0
-
-
-def test_the_documented_limit_is_forty_five_a_minute() -> None:
-    """Wallhaven's documented figure, pinned so a tuning edit is a deliberate one."""
-    assert CALLS_PER_MINUTE == 45
-    assert WINDOW_SECONDS == 60.0

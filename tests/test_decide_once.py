@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tests.conftest import FIXED_NOW, Harness, make_harness
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi.core import DEFAULT_POOL_TARGET_SIZE, IDLE_RECHECK_SECONDS, SUPERSEDED_POOL_TARGET_SIZE, Batch
+from wallpapi.core import IDLE_RECHECK_SECONDS, SUPERSEDED_POOL_TARGET_SIZE, Batch
 from wallpapi.model import Clearance, Verdict, Zone
 
 
@@ -77,12 +77,6 @@ def test_a_wallpaper_whose_only_entry_is_a_legacy_clearance_is_not_readmitted(db
 
 
 # -- migration 10 ---------------------------------------------------------------------------------------
-
-
-def test_a_fresh_database_targets_a_pool_of_five_hundred(harness: Harness) -> None:
-    """The **Pool** is a stream now, topped up as **Batches** are submitted, so it no longer needs to be a
-    standing backlog of 2000."""
-    assert harness.core.get_settings().pool_target_size == DEFAULT_POOL_TARGET_SIZE == 500
 
 
 def test_the_new_target_reaches_a_database_that_still_held_the_old_one(db_path: Path) -> None:

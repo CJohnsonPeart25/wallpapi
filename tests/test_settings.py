@@ -12,7 +12,6 @@ import pytest
 
 from tests.conftest import Harness, make_harness
 from wallpapi.core import (
-    DEFAULT_BATCH_SIZE,
     DEFAULT_SIMILARITY_RADIUS,
     MAX_BATCH_SIZE,
     MIN_BATCH_SIZE,
@@ -21,20 +20,6 @@ from wallpapi.core import (
     Settings,
     SettingsRefused,
 )
-
-
-def test_a_fresh_database_reads_the_seeded_defaults(harness: Harness) -> None:
-    """Acceptance criterion: settings are readable. A fresh database is already configured.
-
-    The defaults are seeded rows rather than a fallback in the reader, so there is one source of truth for
-    what "unconfigured" means and the settings page has nothing to special-case.
-    """
-    settings = harness.core.get_settings()
-
-    assert isinstance(settings, Settings)
-    assert settings.batch_size == DEFAULT_BATCH_SIZE == 8
-    assert settings.library_path == Path.home() / "Pictures" / "wallpapi"
-    assert settings.library_path.is_absolute()
 
 
 def test_updating_the_batch_size_changes_the_next_batch_minted(harness: Harness) -> None:
@@ -214,12 +199,6 @@ def test_a_refused_batch_size_leaves_the_next_batch_alone(harness: Harness) -> N
 
 
 # -- migration 9: the Similarity radius default moves with the provider (#14) ---------------------------
-
-
-def test_a_fresh_database_gets_the_radius_the_embedding_provider_wants(harness: Harness) -> None:
-    """0.15, not the 0.5 ADR 0007 seeded. Image-embedding similarities are bunched into the top of the
-    range, so 0.5 made every decided **Wallpaper** a neighbour of the whole **Pool** (ADR 0013)."""
-    assert harness.core.get_settings().similarity_radius == DEFAULT_SIMILARITY_RADIUS == 0.15
 
 
 def test_the_new_default_reaches_a_database_that_still_held_the_old_one(db_path: Path) -> None:

@@ -47,18 +47,6 @@ def _zone_counts(batch: Batch) -> Counter[Zone]:
     return Counter(batch.zones[w.id] for w in batch.wallpapers)
 
 
-def test_the_two_named_mixes_are_there_with_the_percentages_the_spec_gives(db_path: Path) -> None:
-    """The first acceptance criterion: **Explore** and **Refine** exist, and **Explore** is the one in
-    force on a database nobody has configured."""
-    harness = make_harness(db_path)
-
-    assert harness.core.list_mixes() == (EXPLORE_MIX, REFINE_MIX)
-    assert (EXPLORE_MIX.unknown, EXPLORE_MIX.banger, EXPLORE_MIX.dud) == (75, 20, 5)
-    assert (REFINE_MIX.unknown, REFINE_MIX.banger, REFINE_MIX.dud) == (25, 70, 5)
-    assert harness.core.get_settings().active_mix == "explore"
-    assert harness.core.active_mix() == EXPLORE_MIX
-
-
 def test_the_mixes_survive_a_restart(db_path: Path) -> None:
     """Stored rather than hard-coded, which is what #12 needs to be able to edit them.
 

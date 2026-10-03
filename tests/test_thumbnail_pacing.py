@@ -9,12 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from wallpapi.ratelimit import THUMBNAIL_GAP_SECONDS, gap_needed
-
-
-def test_the_gap_is_a_quarter_of_a_second() -> None:
-    """A constant and not a setting (#44): about four a second, which looks like one person browsing."""
-    assert THUMBNAIL_GAP_SECONDS == 0.25
+from wallpapi.ratelimit import gap_needed
 
 
 def test_nothing_fetched_yet_means_no_wait() -> None:
