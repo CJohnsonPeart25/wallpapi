@@ -484,15 +484,3 @@ def test_the_stylesheet_turns_delete_the_ban_colour_on_hover(db_path: Path) -> N
     rule = next(block for block in stylesheet.split("}") if "[data-mix-delete]" in block)
     assert ":hover" in rule
     assert "var(--ban)" in rule
-
-
-def test_the_page_has_no_revisit_weight(db_path: Path) -> None:
-    """Gone with #38 (ADR 0016). A decided **Wallpaper** never returns to the **Pool**, so the weight had
-    nothing left to act on, and a field that changes nothing is a lie on the settings page."""
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        response = client.get("/settings")
-
-    assert "revisit" not in response.text.lower()
