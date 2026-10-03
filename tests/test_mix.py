@@ -1,7 +1,7 @@
 """**Mixes**: the pure **Allocation** of slots, and making, editing and deleting **Mixes**.
 
 **Allocation** is a pure function and is tested as one, with a seeded source; the draw a **Batch** gets
-under a **Mix** is `test_batches.py`'s. Everything else enters through the Core service.
+under a **Mix** is `test_batches.py`'s. Everything else enters through the modules and the workflows.
 """
 
 from __future__ import annotations

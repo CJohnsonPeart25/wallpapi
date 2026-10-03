@@ -58,7 +58,7 @@ class SearchPage:
 
 
 class Wallhaven(Protocol):
-    """What the Core service needs of Wallhaven."""
+    """What the modules need of Wallhaven."""
 
     def search(
         self,

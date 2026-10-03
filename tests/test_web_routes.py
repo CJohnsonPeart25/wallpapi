@@ -1,6 +1,6 @@
 """The route layer: status codes, redirects, `HX-Trigger`, fragment versus page, and refusals in words.
 
-What a write means is tested through the Core service elsewhere; here it is only checked that the route
+What a write means is tested through the workflows elsewhere; here it is only checked that the route
 reached it. `TestClient` runs the app in process over the fakes, with no background threads.
 """
 
@@ -476,7 +476,7 @@ def test_a_field_cleared_and_saved_keeps_its_stored_value(web: Web, tmp_path: Pa
 def test_a_refused_settings_post_is_the_page_with_the_reason_and_what_was_typed(
     web: Web, posted: dict[str, str], words: list[str]
 ) -> None:
-    """One error branch, the Core service's reason in words and never its enum value; and what was typed,
+    """One error branch, the refusal's reason in words and never its enum value; and what was typed,
     so correcting one field is not retyping the rest."""
     harness, client = web
     before = settings.get(harness.connect())

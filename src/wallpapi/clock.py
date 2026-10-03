@@ -10,7 +10,7 @@ from typing import Protocol
 
 
 class Clock(Protocol):
-    """What the Core service needs of time."""
+    """What the modules need of time."""
 
     def now(self) -> dt.datetime:
         """The current moment, always UTC-aware."""

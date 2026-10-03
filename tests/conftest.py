@@ -1,8 +1,9 @@
-"""Harness for driving the Core service the way the UI does, and the guard that keeps tests off the network.
+"""Harness for driving the composed modules and workflows the way the routes do, and the guard that keeps
+tests off the network.
 
-Every test enters through the Core service with fakes behind it. The only reach past the seam is the raw
-connection the migration and legacy-Clearance tests need, because nothing the seam offers can produce an
-older database's rows or a Clearance any more.
+Tests enter through `compose`'s modules and `workflows` with fakes behind them. The only reach past them is
+the raw connection the migration and legacy-Clearance tests need, because nothing the modules offer can
+produce an older database's rows or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -91,13 +92,13 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
 
 @dataclass
 class Harness:
-    """A Core service plus the fakes behind it, so tests can assert on both sides of the seam."""
+    """The composed modules plus the fakes behind them, so tests can assert on both sides of the seam."""
 
     core: CoreService
     modules: Modules
     wallhaven: FakeWallhavenClient
     library: FakeLibraryWriter
-    """The fake the Core service writes through, unless `make_harness` was handed a real writer."""
+    """The fake the **Library** writes through, unless `make_harness` was handed a real writer."""
     similarity: FakeSimilarities
     """The matrix `embeddings` falls back to: every pair, unless a test stores vectors in `store`."""
     embeddings: Embeddings
@@ -141,13 +142,13 @@ def make_harness(
     embed_batch: int = EMBED_BATCH,
     library: LibraryWriter | None = None,
 ) -> Harness:
-    """Build a Core service over `db_path`, with `fill_pool` refill steps already run (one page each).
+    """Build the modules over `db_path`, with `fill_pool` refill steps already run (one page each).
 
     Safe to call twice on one path: that is how a restart is tested. `similarities` is
     `{(pool id, decided id): value}` for the injected matrix, a **Wallpaper** against itself 1.0 and
     everything unnamed 0.0; `vectors` are **Embeddings** already stored. The model is not yet fetched, so
     the page shows the "still starting up" notice until `similarity_step` runs. `library` replaces the fake
-    writer the Core service gets, for the tests of the real one.
+    writer the **Library** gets, for the tests of the real one.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,

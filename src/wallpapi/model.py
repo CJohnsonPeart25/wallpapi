@@ -1,4 +1,4 @@
-"""The domain types the Core service, storage and the web layer share, in `CONTEXT.md`'s vocabulary."""
+"""The domain types the modules, storage and the web layer share, in `CONTEXT.md`'s vocabulary."""
 
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 """The **Pool** and its **Refill**, through `pool` alone: a real in-memory database, the fake Wallhaven client
-and the fake clock. No Core service and no thread, so the whole 45-calls-a-minute budget is exercised in no
+and the fake clock. No `compose` and no thread, so the whole 45-calls-a-minute budget is exercised in no
 real time. Searches are asserted against the fake's record because the client is an injected seam and
 "searched with these parameters" has no other observable.
 

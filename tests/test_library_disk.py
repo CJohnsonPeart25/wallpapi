@@ -168,7 +168,7 @@ def test_a_write_creates_the_folder_replaces_in_place_and_leaves_no_part_file(tm
 
 def test_a_download_that_dies_part_way_leaves_nothing_behind(tmp_path: Path) -> None:
     """A **Favourite** with no file is retried by the next reconciliation; one with half a file would not
-    be, so the failure must reach the Core service and neither file may survive."""
+    be, so the failure must reach the workflow and neither file may survive."""
     destination = tmp_path / "Library" / "wp0001.jpg"
 
     def dies_part_way() -> Iterator[bytes]:

@@ -1,4 +1,4 @@
-"""The **Decision log**, through `decisions` alone: a real in-memory database, no Core service.
+"""The **Decision log**, through `decisions` alone: a real in-memory database, no `compose`.
 
 Entries are appended the way submit and the **History** edit append them. The legacy **Clearance** is the one
 row written behind the seam, because `append` takes a **Verdict** and nothing may write a **Clearance** now.

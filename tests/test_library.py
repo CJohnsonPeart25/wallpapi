@@ -3,7 +3,7 @@
 The **Library** is derived from the **Decision log**: a **Favourite** with no file gets one, and a file whose
 **Wallpaper** is no longer a **Favourite** loses it. That makes `reconcile` idempotent, which is what lets a
 failed download simply be retried. A real in-memory database; **Wallpapers** are admitted and **Verdicts**
-appended as `pool` and `decisions` do. The last section is the Core service calling it at the right moments.
+appended as `pool` and `decisions` do. The last section is the workflows calling it at the right moments.
 """
 
 from __future__ import annotations
@@ -264,7 +264,7 @@ def test_a_download_that_fails_is_reported_and_retried_by_the_next_run(
     assert sorted(second.written) == [ONE, TWO]
 
 
-# -- the Core service calls it after the Decision log commits ------------------------------------------
+# -- the workflows call it after the Decision log commits ----------------------------------------------
 
 
 def library_harness(db_path: Path, library_path: Path, count: int) -> Harness:

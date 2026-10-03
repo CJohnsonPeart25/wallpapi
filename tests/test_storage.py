@@ -1,4 +1,4 @@
-"""The storage rules, through `storage` alone: a real database, no Core service.
+"""The storage rules, through `storage` alone: a real database, no `compose`.
 
 The contention tests use two connections to one file, one of them on a thread, and wait on events with a
 timeout rather than sleeping.

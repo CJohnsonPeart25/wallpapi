@@ -1,4 +1,4 @@
-"""A **Batch** and the **Pool** through the Core service: deciding once (ADR 0016), so the **Pool** holds no
+"""A **Batch** and the **Pool** through the modules: deciding once (ADR 0016), so the **Pool** holds no
 **Wallpaper** the **Decision log** mentions, kept at submission, at admission and (in `test_migrations.py`)
 at migration; and what a submission leaves behind. The draw, the **Draft Batch** and submit itself are
 `test_batches.py`'s.
@@ -158,7 +158,7 @@ def test_a_second_ignore_is_appended_not_folded_into_the_first(db_path: Path) ->
 
 
 def test_the_decision_log_survives_a_restart(db_path: Path) -> None:
-    """A second Core service over the same file, which also proves the migrations are idempotent."""
+    """A second set of modules over the same file, which also proves the migrations are idempotent."""
     first_run = make_harness(db_path)
     workflows.submit(first_run.modules, live(first_run).id)
     recorded = decisions.entries(first_run.connect())

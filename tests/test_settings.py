@@ -1,4 +1,4 @@
-"""The settings rules, through `settings` alone: a real database, no Core service. One refusal table across
+"""The settings rules, through `settings` alone: a real database, no `compose`. One refusal table across
 the fields, what is accepted, a partial update, a restart, and a refusal that writes nothing; and which
 **Mixes** can be deleted. What each **Filter** excludes is `test_pool.py`; the **Mix** rules in a
 **Batch** are `test_mix.py`.
@@ -42,7 +42,7 @@ def memory() -> Iterator[sqlite3.Connection]:
 
 
 def update(connection: sqlite3.Connection, **fields: object) -> Settings | SettingsRefused:
-    """One `settings.update` in its own write transaction, as the Core service calls it."""
+    """One `settings.update` in its own write transaction, as the workflows call it."""
     with storage.write(connection) as write:
         return settings.update(write, **fields)
 

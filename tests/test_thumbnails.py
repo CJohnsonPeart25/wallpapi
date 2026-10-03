@@ -482,7 +482,7 @@ def test_the_thumbnail_gap(last: float | None, now: float, wait: float) -> None:
     assert gap_needed(last, now=now) == pytest.approx(wait)  # pyright: ignore[reportUnknownMemberType]
 
 
-# -- the Core service: the tail of a submission, and the page's notice ---------------------------------
+# -- the modules and workflows: the tail of a submission, and the page's notice ----------------------
 
 
 def test_a_submission_evicts_what_it_retired_without_a_verdict(db_path: Path) -> None:
