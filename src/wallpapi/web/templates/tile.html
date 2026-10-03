@@ -3,12 +3,12 @@
   Verdict** controls. Included by grid.html and rendered on its own as the htmx swap for a mark.
 
   Each control posts the **Verdict** the tile should *end up* with, so a replayed click lands on the same
-  state (ADR 0002); the marked control posts an empty **Verdict**, which clears it. **Ignore** has no
+  state (invariant 6); the marked control posts an empty **Verdict**, which clears it. **Ignore** has no
   control: it is derived at submit.
 
   `data-full-url` is the source the preview loads when it opens. Deliberately not an `<img src>`: a **Batch**
-  of full-size images is hotlinking (ADR 0009), and nothing is fetched until one is asked for. The preview
-  reads the Wallhaven link off `data-page-url`.
+  never hotlinks, not even its thumbnails, and one full-size image is fetched only when asked for (ADR 0003).
+  The preview reads the Wallhaven link off `data-page-url`.
 
   `zone` is the **Zone** the **Wallpaper** was drawn from, recorded when the **Batch** was minted; absent,
   the label is not rendered.

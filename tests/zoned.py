@@ -1,35 +1,24 @@
-"""A **Pool** whose **Zones** a test chooses outright.
+"""A **Pool** whose **Zones** a test chooses, arranged through the Core service.
 
-Every test for **Allocation** needs a **Pool** with a known number of **Bangers**, **Duds** and
-**Unknowns** in it, and a **Zone** is not something the seam lets you set — it is the sign of a **Score**,
-derived from the **Decision log** and the **Similarity provider**. So this arranges the two things that
-produce one, and it does it through the Core service like everything else (invariant 1).
-
-**How it works.** Two *seed* **Wallpapers** are admitted to the **Pool** on their own, shown as a
-**Batch**, and given the only two **Verdicts** that matter here: one **Favourite**, one **Ban**. The
-**Filters** are then moved so that the seeds fall out of the **Pool** and the population falls into it,
-which is the whole trick — a **Favourite** that a **Filter** change pruned still counts towards every
-**Score** (ADR 0007), so the two seeds go on spreading +100 and -100 from outside the **Pool** while
-contributing no **Zone** of their own. The population is then whatever the hand-defined similarities say:
-near the **Favourite** is a **Banger**, near the **Ban** is a **Dud**, near neither is a **Score** of
-exactly 0.0 and so an **Unknown**.
-
-The seeds have to leave the **Pool** for two reasons and not one. The **Favourite** would otherwise be a
-**Banger** nobody asked for, and — the reason there is no way around it — an empty **Pool** at the moment
-the seeding **Batch** is submitted is what stops a **Batch** being minted on the way out. A live **Batch**
-is handed back rather than rerolled (ADR 0002), so a test that left one behind would be testing that
-**Batch** rather than the draw it came to test.
+A **Zone** is the sign of a derived **Score**, so it cannot be set. Two seeds are shown as a **Batch** and
+given a **Favourite** and a **Ban**; the **Filters** then move so the seeds leave the **Pool** and the
+population enters it. A pruned **Favourite** still counts towards every **Score** (ADR 0007), so the seeds
+spread +100 and -100 from outside the **Pool** and the hand-defined similarities decide each member's
+**Zone**: near the **Favourite** a **Banger**, near the **Ban** a **Dud**, near neither exactly 0.0 and
+**Unknown**. The **Pool** is empty while the seeds are submitted, which leaves no live **Batch** behind to
+be handed back in place of a fresh draw (ADR 0002).
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 from tests.conftest import Harness, make_harness
 from tests.fakes import wallpaper
 from wallpapi.core import Batch
-from wallpapi.model import Verdict, Wallpaper
+from wallpapi.model import Verdict, Wallpaper, Zone
 
 FAVOURED = "sd0000"
 LOATHED = "sd0001"
@@ -39,23 +28,14 @@ the time a test looks at it, and never drawn into a **Batch**."""
 _SEED_WIDTH = 2560
 _SEED_HEIGHT = 1440
 _POPULATION_WIDTH = 3840
-"""The **Filter** that separates them. The seeds are admitted under the default minimum resolution and
-pruned by a higher one; the population clears both. Both are 16x9, or the ratio **Filter** would reject
-them before the resolution one was reached."""
+"""The seeds pass the default minimum width and fail a higher one; the population passes both."""
 
 _ADMITTING_WIDTH = 3000
 
 NEAR = 0.9
-"""How alike a population **Wallpaper** is made to a seed to put it in that seed's **Zone**.
-
-Inside the default radius — a distance of 0.1 against a radius of 0.15 — so the seed's +/-100 arrives at
-about `exp(-0.4)` of full strength, which is 67 either way. Nowhere near the boundary the **Zone** is read
-off, which is the point: these tests are about **Allocation**, and none of them should be able to fail
-because of the **Scoring** arithmetic underneath.
-
-The margin narrowed when the radius default moved to 0.15 with the embedding provider (ADR 0013). A test
-here that wants to grade **Wallpapers** apart has to do it in steps small enough to stay inside it.
-"""
+"""How alike a population **Wallpaper** is made to a seed to put it in that seed's **Zone**: a distance
+of 0.1 inside the default radius of 0.15, so about 67 either way, far from the **Zone** boundary. A test
+grading **Wallpapers** apart has to stay inside the radius."""
 
 
 @dataclass
@@ -66,6 +46,18 @@ class ZonedPool:
     bangers: tuple[str, ...]
     duds: tuple[str, ...]
     unknowns: tuple[str, ...]
+
+
+def drawn(pool: ZonedPool, size: int) -> Batch:
+    """One **Batch** of `size` off an arranged **Pool**."""
+    pool.harness.core.update_settings(batch_size=size)
+    batch = pool.harness.core.get_next_batch()
+    assert isinstance(batch, Batch), batch
+    return batch
+
+
+def zone_counts(batch: Batch) -> Counter[Zone]:
+    return Counter(batch.zones[w.id] for w in batch.wallpapers)
 
 
 def zoned_pool(
@@ -83,9 +75,7 @@ def zoned_pool(
     harness = make_harness(
         db_path,
         catalogue=(*_seeds(), *population),
-        # One page holds the whole catalogue, so that "page two is empty, start again at page one" is the
-        # only walk this has to reason about. With Wallhaven's real listing size the population would
-        # straddle a page boundary and half of it would be skipped when the **Filters** moved.
+        # One page holds the whole catalogue, so no page boundary is skipped when the Filters move.
         page_size=1000,
         seed=seed,
     )
@@ -103,10 +93,8 @@ def zoned_pool(
     harness.core.update_settings(min_width=_ADMITTING_WIDTH, min_favourites=0)
     harness.core.submit_batch(seeding.id)
 
-    # Enough steps to be sure the random walk has come back round to page one. Two things make that more
-    # than one step: the walk is left on page two, which is empty and is what sends it back to the start,
-    # and there is a **Favourite** now, so the like: strategy takes every other turn (#13) and answers an
-    # empty page because the fake was given no lookalikes. Six is comfortably more than the four it takes.
+    # Enough steps for the random walk to come back round to page one: it is left on the empty page two,
+    # and the like: strategy now takes every other step. Four would do.
     harness.fill_pool(6)
 
     ids = tuple(w.id for w in population)

@@ -1,23 +1,14 @@
-"""What the embedding provider does on the background thread: fetch its model, embed thumbnails, say so.
+"""Which provider the app runs, and what the embedding provider does on the background thread.
 
-**Still no model and no network.** The `ModelSource` is a stand-in that hands back a path or raises, and
-the `Embedder` is a function that returns vectors written here. That is the whole point of both being
-injected: the download, the fallback while it has not happened, and the failure afterwards are all
-behaviours somebody has to be able to check without 85MiB and a working connection.
-
-What is left uncovered is the real `DownloadedModel` and the real `OnnxClipEmbedder` — the two pieces that
-*are* the network and the model. That is named in the review note rather than papered over with a mock of
-a download.
-
-One exception, and it is deliberate: the test that pins what happens to a model file which will not
-open does import `onnxruntime`, because the thing it pins is ONNX Runtime refusing a file. It hands it
-twenty-five bytes that are not a graph, so no model is loaded and nothing is fetched — but it is the one
-test here that touches the library at all, and it is worth it: the failure it covers is the only one that
-would otherwise be invisible.
+No model and no network: the `ModelSource` is a stand-in that hands back a path or raises, and the
+`Embedder` returns vectors written here. The real `DownloadedModel` and `OnnxClipEmbedder` are the two
+pieces left uncovered. One test imports `onnxruntime` on purpose, handing it bytes that are not a graph:
+the failure it pins would otherwise be invisible.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -26,16 +17,84 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.fakes import wallpaper
-from wallpapi.similarity import NOTHING_TO_CATCH_UP
-from wallpapi.similarity_embedding import (
-    CAUGHT_UP,
-    EmbeddingCache,
-    EmbeddingSimilarityProvider,
-)
+from tests.conftest import make_harness
+from tests.fakes import catalogue_of, wallpaper
+from wallpapi.main import build_similarity
+from wallpapi.similarity import NOTHING_TO_CATCH_UP, MetadataSimilarityProvider
+from wallpapi.similarity_embedding import CAUGHT_UP, EmbeddingCache, EmbeddingSimilarityProvider
+from wallpapi.similarity_tags import TagSimilarityProvider
 
 EAST = np.array([1.0, 0.0], dtype=np.float32)
 NORTH = np.array([0.0, 1.0], dtype=np.float32)
+
+
+# -- selection ---------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (None, EmbeddingSimilarityProvider),
+        ("metadata", MetadataSimilarityProvider),
+        ("tags", TagSimilarityProvider),
+        ("embedding", EmbeddingSimilarityProvider),
+    ],
+)
+def test_each_name_selects_its_provider_and_unset_is_embedding(
+    name: str | None, expected: type[object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All three look identical from the page, so a typo wiring the baseline back in would be silent."""
+    if name is None:
+        monkeypatch.delenv("WALLPAPI_SIMILARITY", raising=False)
+    else:
+        monkeypatch.setenv("WALLPAPI_SIMILARITY", name)
+
+    assert isinstance(build_similarity(tmp_path), expected)
+
+
+def test_an_unrecognised_name_refuses_rather_than_falling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WALLPAPI_SIMILARITY", "clip")
+
+    with pytest.raises(ValueError, match="metadata, tags or embedding"):
+        build_similarity(tmp_path)
+
+
+def test_selecting_a_provider_touches_no_disk_until_it_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise every boot leaves empty databases behind and reaches for 85MiB before it has started."""
+    monkeypatch.setenv("WALLPAPI_SIMILARITY", "embedding")
+    build_similarity(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", ["metadata", "tags"])
+def test_the_providers_that_read_no_thumbnails_keep_nothing_up_and_say_nothing(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tag provider's upkeep would spend the refill's 45 **API calls** a minute, which is a decision
+    for the person running wallpapi; so its `catch_up` does nothing, selected or not."""
+    monkeypatch.setenv("WALLPAPI_SIMILARITY", name)
+    provider = build_similarity(tmp_path)
+
+    assert provider.catch_up(tmp_path, threading.Event()) == NOTHING_TO_CATCH_UP
+    assert provider.notice([wallpaper("a"), wallpaper("b")]) is None
+
+
+def test_the_provider_is_asked_about_the_whole_pool(db_path: Path) -> None:
+    """`notice` takes the **Pool**, the shape `similarities` takes, so the Core service need not know
+    which provider it holds."""
+    harness = make_harness(db_path, catalogue=catalogue_of(24))
+
+    harness.core.similarity_notice()
+
+    assert harness.similarity.notice_pools == [tuple(w.id for w in catalogue_of(24))]
+
+
+# -- the embedding provider's upkeep -----------------------------------------------------------------
 
 
 class ModelOnDisk:
@@ -52,15 +111,13 @@ class ModelOnDisk:
 
 
 class ModelThatFails:
-    """A `ModelSource` that cannot be had — no network, or a checksum that did not match."""
+    """A `ModelSource` that cannot be had: no network, or a checksum that did not match."""
 
     def __init__(self, message: str = "connection refused") -> None:
         self.message = message
-        self.calls = 0
 
     def ensure(self, stop_event: threading.Event) -> Path:
         del stop_event
-        self.calls += 1
         raise RuntimeError(self.message)
 
 
@@ -86,10 +143,7 @@ def thumbnails(directory: Path, *names: str) -> Path:
     for index, name in enumerate(names):
         path = directory / f"{name}.jpg"
         path.write_bytes(b"\xff\xd8\xff\xe0 fake thumbnail")
-        # Distinct mtimes, so "oldest first" is a fact about the files rather than about the filesystem's
-        # clock resolution.
-        import os
-
+        # Distinct mtimes, so "oldest first" does not depend on the filesystem's clock resolution.
         os.utime(path, (1_700_000_000 + index, 1_700_000_000 + index))
     return directory
 
@@ -109,64 +163,55 @@ def provider(
     )
 
 
+def not_a_model(tmp_path: Path) -> ModelOnDisk:
+    path = tmp_path / "m.onnx"
+    path.write_bytes(b"this is not an onnx graph")
+    return ModelOnDisk(path)
+
+
 def test_a_provider_with_no_model_source_keeps_nothing_up() -> None:
-    """The shape the unit tests and a cache filled elsewhere both want: serve what is there, do nothing."""
+    """What the unit tests and a cache filled elsewhere both want: serve what is there, do nothing."""
     bare = EmbeddingSimilarityProvider(EmbeddingCache(Path("unused")))
 
     assert bare.catch_up(Path("unused"), threading.Event()) == NOTHING_TO_CATCH_UP
     assert bare.notice([]) is None
 
 
-def test_before_the_model_arrives_the_page_is_told(tmp_path: Path) -> None:
-    """A **Score** from the fallback looks exactly like a **Score** from the model, so the difference has
-    to be said out loud or it is invisible."""
+def test_before_the_model_arrives_the_page_is_told_and_coverage_waits(tmp_path: Path) -> None:
+    """A **Score** from the fallback looks exactly like one from the model, so the difference is said out
+    loud. Coverage is how far the model has got, so it says nothing before there is a model."""
     embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "model.onnx"))
 
-    notice = embedding.notice([])
+    empty = embedding.notice([])
+    notice = embedding.notice([wallpaper("a")])
 
+    assert empty is not None
+    assert "colour and category" in empty
     assert notice is not None
-    assert "colour and category" in notice
+    assert "still starting up" in notice
+    assert "Pool wallpapers" not in notice
 
 
-def test_a_wallpaper_with_no_embedding_falls_back_rather_than_scoring_zero(tmp_path: Path) -> None:
-    """Which is what makes the empty-cache state safe: a fresh wallpapi behaves as the baseline did."""
-    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "model.onnx"))
-    pair = [wallpaper("a")], [wallpaper("a")]
-
-    assert float(embedding.similarities(*pair)[0, 0]) == pytest.approx(1.0)
-
-
-def test_catching_up_embeds_the_cached_thumbnails(tmp_path: Path) -> None:
-    """The **Thumbnail cache** is the work list, so its contents are what ends up in the cache."""
+def test_catching_up_embeds_what_is_in_the_thumbnail_cache_and_later_arrivals(tmp_path: Path) -> None:
+    """A **Wallpaper** with no thumbnail is not in the work list, so it falls back to the baseline until
+    its thumbnail arrives, and the next pass picks it up."""
     embedder = CountingEmbedder()
     embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
-
-    embedding.catch_up(thumbnails(tmp_path / "thumbs", "one", "two"), threading.Event())
-
-    assert embedder.seen == ["one", "two"]
-    assert cache.embedded_ids() == {"one", "two"}
-
-
-def test_a_wallpaper_with_no_thumbnail_is_simply_not_embedded(tmp_path: Path) -> None:
-    """The answer to "what about a **Wallpaper** the page has not fetched a thumbnail for yet": it is not
-    a file in that directory, so nothing embeds it and every pair it is in falls back to the baseline —
-    until the tile renders, after which the next pass picks it up."""
-    embedder = CountingEmbedder()
-    embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
-    directory = thumbnails(tmp_path / "thumbs", "fetched")
+    directory = thumbnails(tmp_path / "thumbs", "one", "two")
 
     embedding.catch_up(directory, threading.Event())
-    assert cache.embedded_ids() == {"fetched"}
+    assert embedder.seen == ["one", "two"]
+    assert cache.embedded_ids() == {"one", "two"}
 
     thumbnails(directory, "arrived_later")
     embedding.catch_up(directory, threading.Event())
 
-    assert cache.embedded_ids() == {"fetched", "arrived_later"}
+    assert cache.embedded_ids() == {"one", "two", "arrived_later"}
 
 
 def test_catching_up_takes_one_batch_at_a_time_and_asks_to_come_straight_back(tmp_path: Path) -> None:
-    """One batch per call is how the thread's `stop_event` gets looked at during a **Pool**-sized backlog
-    (invariant 12); the 0.0 is how the loop knows not to sleep on the way through it."""
+    """One batch per call is how the thread's `stop_event` gets looked at during a backlog (invariant
+    12); the 0.0 is how the loop knows not to sleep on the way through it."""
     embedder = CountingEmbedder()
     embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder, batch=2)
     directory = thumbnails(tmp_path / "thumbs", "a", "b", "c")
@@ -180,61 +225,42 @@ def test_catching_up_takes_one_batch_at_a_time_and_asks_to_come_straight_back(tm
 
 
 def test_an_empty_thumbnail_cache_is_caught_up_rather_than_an_error(tmp_path: Path) -> None:
-    """The state on a first boot, before the refill has put anything in the **Pool**."""
     embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
 
     assert embedding.catch_up(tmp_path / "never_created", threading.Event()) == CAUGHT_UP
 
 
-def test_a_provider_that_can_already_embed_says_nothing(tmp_path: Path) -> None:
-    """ "Still fetching" means there is no way to embed anything yet. A provider handed one is at full
-    strength from the start, and a line saying otherwise would be a line that is simply untrue."""
-    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
-
-    assert embedding.notice([]) is None
-
-
 def test_a_model_file_that_will_not_open_says_so_rather_than_failing_silently(tmp_path: Path) -> None:
-    """Only reachable if somebody replaced the file — the download verifies its checksum before moving
-    anything into place — but the alternative is every embedding failing behind a notice that says all is
-    well, which is the one failure mode nobody would ever notice."""
-    not_a_model = tmp_path / "m.onnx"
-    not_a_model.write_bytes(b"this is not an onnx graph")
-    embedding, cache = provider(tmp_path, model=ModelOnDisk(not_a_model))
+    """Only reachable if somebody replaced the file after its checksum was verified, but otherwise every
+    embedding fails behind a notice that says all is well. It outranks coverage."""
+    embedding, cache = provider(tmp_path, model=not_a_model(tmp_path))
 
     embedding.catch_up(thumbnails(tmp_path / "thumbs", "one"), threading.Event())
 
-    notice = embedding.notice([])
+    notice = embedding.notice([wallpaper("a")])
     assert notice is not None
     assert "could not open its model" in notice
+    assert "Pool wallpapers" not in notice
     assert cache.embedded_ids() == set()
 
 
-def test_a_failed_download_says_so_and_keeps_serving_the_baseline(tmp_path: Path) -> None:
-    """The acceptance criterion for the failure path: no crash, no blank page, and a line that names the
-    reason — "could not reach it" and "the file was not what it should be" are different problems."""
-    model = ModelThatFails("connection refused")
-    embedding, cache = provider(tmp_path, model=model)
+def test_a_failed_download_says_why_keeps_the_baseline_and_is_not_retried(tmp_path: Path) -> None:
+    """ "Could not reach it" and "the file was not what it should be" are different problems, so the line
+    names the reason. Not retried: the usual cause is being offline, and the next restart is soon enough."""
+    embedding, cache = provider(tmp_path, model=ModelThatFails("connection refused"))
 
-    embedding.catch_up(thumbnails(tmp_path / "thumbs", "one"), threading.Event())
+    wait = embedding.catch_up(thumbnails(tmp_path / "thumbs", "one"), threading.Event())
 
-    notice = embedding.notice([])
+    assert wait == NOTHING_TO_CATCH_UP
+    notice = embedding.notice([wallpaper("a")])
     assert notice is not None
     assert "connection refused" in notice
+    assert "Pool wallpapers" not in notice
     assert cache.embedded_ids() == set()
     assert float(embedding.similarities([wallpaper("a")], [wallpaper("a")])[0, 0]) == pytest.approx(1.0)
 
 
-def test_a_failed_download_is_not_retried_every_few_seconds(tmp_path: Path) -> None:
-    """The usual cause is being offline, and the next restart is soon enough. A loop that came back every
-    thirty seconds would be a log full of the same failure and a page that never settles."""
-    model = ModelThatFails()
-    embedding, _ = provider(tmp_path, model=model)
-
-    assert embedding.catch_up(tmp_path / "thumbs", threading.Event()) == NOTHING_TO_CATCH_UP
-
-
-def test_the_model_is_asked_for_once_rather_than_every_pass(tmp_path: Path) -> None:
+def test_an_injected_embedder_means_the_model_is_never_asked_for(tmp_path: Path) -> None:
     model = ModelOnDisk(tmp_path / "m.onnx")
     embedding, _ = provider(tmp_path, model=model, embedder=CountingEmbedder())
     directory = thumbnails(tmp_path / "thumbs", "one")
@@ -242,12 +268,12 @@ def test_the_model_is_asked_for_once_rather_than_every_pass(tmp_path: Path) -> N
     embedding.catch_up(directory, threading.Event())
     embedding.catch_up(directory, threading.Event())
 
-    assert model.calls == 0, "an injected embedder means the model is never needed at all"
+    assert model.calls == 0
 
 
 def test_a_thumbnail_that_will_not_open_costs_only_itself(tmp_path: Path) -> None:
-    """A half-written or hand-replaced file must not be able to stop the whole **Pool** being embedded,
-    and must not be picked up again on every pass either."""
+    """It must not stop the rest being embedded, be picked up again every pass, or hold the coverage line
+    on the page for ever: it is out of the count and out of the total."""
     embedder = CountingEmbedder(unreadable=["broken"])
     embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
     directory = thumbnails(tmp_path / "thumbs", "broken", "fine")
@@ -256,103 +282,46 @@ def test_a_thumbnail_that_will_not_open_costs_only_itself(tmp_path: Path) -> Non
 
     assert cache.embedded_ids() == {"fine"}
     assert embedding.catch_up(directory, threading.Event()) == CAUGHT_UP
+    assert embedding.notice([wallpaper("broken"), wallpaper("fine")]) is None
+    notice = embedding.notice([wallpaper("broken"), wallpaper("fine"), wallpaper("waiting")])
+    assert notice is not None
+    assert "1 of 2 Pool wallpapers" in notice
 
 
 def test_an_embedded_wallpaper_stops_using_the_baseline(tmp_path: Path) -> None:
-    """The whole point of the upkeep: once two **Wallpapers** are embedded, what decides their similarity
-    is the images and not their palettes."""
-    embedder = CountingEmbedder()
-    embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
+    """Same category and palette, so the baseline would call these identical; their vectors are at a right
+    angle, which maps to 0.5."""
+    embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
     embedding.catch_up(thumbnails(tmp_path / "thumbs", "a"), threading.Event())
     cache.store("b", NORTH)
 
-    # Same category and same palette, so the baseline would call these identical; their vectors are at a
-    # right angle, which maps to 0.5.
     matrix = embedding.similarities([wallpaper("a")], [wallpaper("b")])
 
     assert float(matrix[0, 0]) == pytest.approx(0.5)
 
 
-# -- coverage of the Pool (#44) ---------------------------------------------------------------------------
-
-
 def test_the_page_is_told_how_much_of_the_pool_is_embedded(tmp_path: Path) -> None:
-    """#44: until every **Pool** member has an **Embedding**, some of its pairs are the baseline's, and a
-    **Score** from the baseline looks exactly like one from the model — so the page says how much."""
+    """Counted against the **Pool** only, so a retired **Wallpaper** with an **Embedding** does not count,
+    and in thousands the way a person reads them."""
     embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
     cache.store("a", EAST)
     cache.store("b", NORTH)
     cache.store("retired", EAST)
 
-    notice = embedding.notice([wallpaper("a"), wallpaper("b"), wallpaper("c")])
+    partial = embedding.notice([wallpaper("a"), wallpaper("b"), wallpaper("c")])
+    large = embedding.notice([wallpaper(f"w{n:04d}") for n in range(1200)])
 
-    assert notice is not None
-    assert "2 of 3 Pool wallpapers" in notice
-
-
-def test_coverage_is_counted_in_thousands_the_way_a_person_reads_them(tmp_path: Path) -> None:
-    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
-
-    notice = embedding.notice([wallpaper(f"w{n:04d}") for n in range(1200)])
-
-    assert notice is not None
-    assert "0 of 1,200 Pool wallpapers" in notice
+    assert partial is not None
+    assert "2 of 3 Pool wallpapers" in partial
+    assert large is not None
+    assert "0 of 1,200 Pool wallpapers" in large
 
 
 def test_a_wholly_embedded_pool_adds_no_line(tmp_path: Path) -> None:
-    """Acceptance criterion: nothing extra once coverage is complete. A retired **Wallpaper** with an
-    **Embedding** does not count, and an empty **Pool** is not a **Pool** short of anything."""
+    """Nothing extra once coverage is complete, and an empty **Pool** is not short of anything."""
     embedding, cache = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=CountingEmbedder())
     cache.store("a", EAST)
     cache.store("b", NORTH)
 
     assert embedding.notice([wallpaper("a"), wallpaper("b")]) is None
     assert embedding.notice([]) is None
-
-
-def test_a_model_still_on_its_way_outranks_coverage(tmp_path: Path) -> None:
-    """Acceptance criterion: the pending, failed and unusable states take precedence. Coverage is about
-    how far the model has got; before the model there is nothing to have got far with."""
-    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "model.onnx"))
-
-    notice = embedding.notice([wallpaper("a")])
-
-    assert notice is not None
-    assert "still starting up" in notice
-    assert "Pool wallpapers" not in notice
-
-
-def test_a_failed_download_outranks_coverage(tmp_path: Path) -> None:
-    embedding, _ = provider(tmp_path, model=ModelThatFails("connection refused"))
-    embedding.catch_up(tmp_path / "thumbs", threading.Event())
-
-    notice = embedding.notice([wallpaper("a")])
-
-    assert notice is not None
-    assert "connection refused" in notice
-    assert "Pool wallpapers" not in notice
-
-
-def test_an_unusable_model_outranks_coverage(tmp_path: Path) -> None:
-    not_a_model = tmp_path / "m.onnx"
-    not_a_model.write_bytes(b"this is not an onnx graph")
-    embedding, _ = provider(tmp_path, model=ModelOnDisk(not_a_model))
-    embedding.catch_up(tmp_path / "thumbs", threading.Event())
-
-    notice = embedding.notice([wallpaper("a")])
-
-    assert notice is not None
-    assert "could not open its model" in notice
-
-
-def test_a_thumbnail_the_embedder_cannot_read_is_left_out_of_coverage(tmp_path: Path) -> None:
-    """Lead review of #56: it is never going to be embedded, so counting it would hold the line on the page
-    for ever. Out of the count and out of the total, so the notice clears once the rest are done."""
-    embedder = CountingEmbedder(unreadable=["broken"])
-    embedding, _ = provider(tmp_path, model=ModelOnDisk(tmp_path / "m.onnx"), embedder=embedder)
-    embedding.catch_up(thumbnails(tmp_path / "thumbs", "broken", "fine"), threading.Event())
-
-    assert embedding.notice([wallpaper("broken"), wallpaper("fine")]) is None
-    notice = embedding.notice([wallpaper("broken"), wallpaper("fine"), wallpaper("waiting")])
-    assert notice is not None
-    assert "1 of 2 Pool wallpapers" in notice

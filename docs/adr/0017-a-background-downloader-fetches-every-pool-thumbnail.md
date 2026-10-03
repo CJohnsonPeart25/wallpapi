@@ -33,7 +33,7 @@ cached file that has no vector, and it still knows nothing about the **Pool**.
   around those two and nothing else, the shape of `refill.py`.
 - It is not a third duty for the similarity thread, so a fresh install's 85MiB model download cannot hold
   up thumbnail fetching. It never runs inside `refill_loop`, never on a request thread, and never on the
-  similarity thread. `test_thumbnail_thread.py` checks that every fetch is made from `wallpapi-thumbnails`.
+  similarity thread. `tests/test_threads.py` checks that every fetch is made from `wallpapi-thumbnails`.
 - It is started only by the `refill` flag on `create_app`, which `build_app` sets. That flag now starts
   three threads.
 

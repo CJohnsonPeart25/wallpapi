@@ -11,7 +11,7 @@ How a ticket goes from `ready-for-agent` to merged. Written down after the first
   "Agent Brief" and "Note from triaging" comments refine the body), the two most recent merged PRs for house
   style, then the code nearest the ticket.
 - Tests first, one module at a time: a real in-memory database and a fake only for the external collaborator
-  it talks to (`AGENTS.md` invariant 1). No test touches the network or loads the model.
+  it talks to (`AGENTS.md` invariant 14). No test touches the network or loads the model.
 
 ## Numbers are assigned up front
 

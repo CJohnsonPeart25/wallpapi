@@ -64,12 +64,14 @@ preview's **Verdict** rail across its foot. `base.css` undoes the card's size, p
 `wallpapi.js` keeps only the grid fit.
 
 **Vendored, byte-identical to the release files, licence headers kept.** Line-ending conversion is off
-for them in `.gitattributes`, and `tests/test_web_shell.py` pins each file's size and SHA-256.
+for them in `.gitattributes`. `scripts/vendor_assets.py` fetches them, and htmx, and checks each SHA-256
+before writing; the script is the only place a URL or hash is recorded, so an upgrade is an edit there and
+a run of `uv run python scripts/vendor_assets.py`.
 
-| File | Version | Source | Bytes | SHA-256 |
-| --- | --- | --- | --- | --- |
-| `pico.indigo.min.css` | Pico CSS 2.1.1 | `css/pico.indigo.min.css` at the `v2.1.1` tag of picocss/pico (identical from GitHub, jsDelivr and unpkg) | 83,336 | `3ff75cde84c76491549e1a7c64294c2c83cb2f92231ea44692f9ffc69897a811` |
-| `alpine.min.js` | Alpine.js 3.17.4 | `dist/cdn.min.js` in the `alpinejs@3.17.4` npm package | 55,891 | `232519394c6c8fdba6f362b1d9da16106db513cdbf899011f00daab4051df31c` |
+| File | Version | Source |
+| --- | --- | --- |
+| `pico.indigo.min.css` | Pico CSS 2.1.1 | `css/pico.indigo.min.css` at the `v2.1.1` tag of picocss/pico (identical from GitHub, jsDelivr and unpkg) |
+| `alpine.min.js` | Alpine.js 3.17.4 | `dist/cdn.min.js` in the `alpinejs@3.17.4` npm package |
 
 ## What survives from the prototype, and what was traded
 
