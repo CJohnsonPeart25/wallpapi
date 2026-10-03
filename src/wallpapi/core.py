@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from wallpapi import storage
 from wallpapi.allocation import ZONE_ORDER, allocate, varied_order
 from wallpapi.clock import Clock
 from wallpapi.files import write_atomically
@@ -27,8 +28,6 @@ from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 from wallpapi.similarity import SimilarityProvider
 from wallpapi.wallhaven import RateLimited, SearchPage, ThumbnailUnavailable, Wallhaven
-
-SCHEMA_VERSION = 10
 
 SFW_PURITY = "100"
 """Wallhaven's purity mask: SFW on, sketchy and NSFW off. Fixed; NSFW is what needs an API key."""
@@ -457,12 +456,6 @@ class SubmissionRefused:
     reason: Reason
 
 
-class _Connections(threading.local):
-    """One SQLite connection per thread: the threadpool hands each request a different one."""
-
-    connection: sqlite3.Connection | None = None
-
-
 class CoreService:
     def __init__(
         self,
@@ -480,7 +473,7 @@ class CoreService:
         self._similarity = similarity
         self._random = random_source
         self._clock = clock
-        self._connections = _Connections()
+        self._connections = storage.ThreadConnections(db_path)
 
         # The refill's own state, in memory: a walk half-finished at shutdown is worth nothing afterwards.
         # Locked because the refill thread writes it and request threads read it.
@@ -523,79 +516,17 @@ class CoreService:
         coverage.
         """
 
-        self._migrate()
+        storage.migrate(self._connect())
 
     # -- storage ---------------------------------------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
-        connection = self._connections.connection
-        if connection is None:
-            connection = sqlite3.connect(self._db_path, isolation_level=None)
-            connection.row_factory = sqlite3.Row
-            # Per-connection, and so re-applied every time: neither survives into a new connection.
-            connection.execute("PRAGMA foreign_keys = ON")
-            self._connections.connection = connection
-        return connection
+        return self._connections.get()
 
     @contextmanager
     def _write(self) -> Generator[sqlite3.Connection]:
-        """A write transaction, opened with an explicit `BEGIN IMMEDIATE`.
-
-        A transaction that starts as a reader and upgrades to a writer gets `SQLITE_BUSY_SNAPSHOT` with the
-        busy handler skipped, so `busy_timeout` would not save it.
-        """
-        connection = self._connect()
-        connection.execute("BEGIN IMMEDIATE")
-        try:
+        with storage.write(self._connect()) as connection:
             yield connection
-        except BaseException:
-            connection.execute("ROLLBACK")
-            raise
-        connection.execute("COMMIT")
-
-    def _migrate(self) -> None:
-        """Apply the numbered steps this database has not seen. A second Core service over one file finds
-        nothing.
-        """
-        connection = self._connect()
-        applied = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if applied >= SCHEMA_VERSION:
-            return
-        # Persists in the file, so it is set once here rather than per connection. Cannot run in a
-        # transaction.
-        connection.execute("PRAGMA journal_mode = WAL")
-        with self._write() as write:
-            if applied < 1:
-                for statement in _MIGRATION_1:
-                    write.execute(statement)
-            if applied < 2:
-                for statement in _MIGRATION_2:
-                    write.execute(statement)
-            if applied < 3:
-                for statement, parameters in _migration_3():
-                    write.execute(statement, parameters)
-            if applied < 4:
-                for statement in _MIGRATION_4:
-                    write.execute(statement)
-            if applied < 5:
-                for statement, parameters in _migration_5():
-                    write.execute(statement, parameters)
-            if applied < 6:
-                for statement, parameters in _migration_6():
-                    write.execute(statement, parameters)
-            if applied < 7:
-                for statement, mix_parameters in _migration_7():
-                    write.execute(statement, mix_parameters)
-            if applied < 8:
-                for statement, parameters in _migration_8():
-                    write.execute(statement, parameters)
-            if applied < 9:
-                for statement, parameters in _migration_9():
-                    write.execute(statement, parameters)
-            if applied < 10:
-                for statement, parameters in _migration_10():
-                    write.execute(statement, parameters)
-            write.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- settings --------------------------------------------------------------------------------------
 
@@ -2198,196 +2129,3 @@ ON CONFLICT (id) DO UPDATE SET
     full_url = excluded.full_url,
     page_url = excluded.page_url
 """
-
-_MIGRATION_1 = (
-    """
-CREATE TABLE wallpapers (
-    id            TEXT PRIMARY KEY,
-    width         INTEGER NOT NULL,
-    height        INTEGER NOT NULL,
-    ratio         TEXT NOT NULL,
-    category      TEXT NOT NULL,
-    purity        TEXT NOT NULL,
-    favourites    INTEGER NOT NULL,
-    colours       TEXT NOT NULL,
-    thumbnail_url TEXT NOT NULL,
-    full_url      TEXT NOT NULL,
-    page_url      TEXT NOT NULL
-)
-""",
-    """
-CREATE TABLE batches (
-    id           TEXT PRIMARY KEY,
-    created_at   TEXT NOT NULL,
-    size         INTEGER NOT NULL,
-    submitted_at TEXT
-)
-""",
-    """
-CREATE TABLE batch_wallpapers (
-    batch_id     TEXT NOT NULL REFERENCES batches (id),
-    wallpaper_id TEXT NOT NULL REFERENCES wallpapers (id),
-    position     INTEGER NOT NULL,
-    PRIMARY KEY (batch_id, wallpaper_id)
-)
-""",
-    """
-CREATE TABLE decision_log (
-    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-    wallpaper_id TEXT NOT NULL REFERENCES wallpapers (id),
-    batch_id     TEXT REFERENCES batches (id),
-    verdict      TEXT NOT NULL,
-    recorded_at  TEXT NOT NULL
-)
-""",
-    """
-CREATE TABLE settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-)
-""",
-    "INSERT INTO settings (key, value) VALUES ('batch_size', '8')",
-)
-"""Migration 1, one statement per entry.
-
-Not an `executescript`: that commits the open transaction first, taking the migration out of its `BEGIN
-IMMEDIATE`.
-"""
-
-
-_MIGRATION_2 = (
-    """
-CREATE TABLE draft_batch (
-    batch_id     TEXT NOT NULL REFERENCES batches (id),
-    wallpaper_id TEXT NOT NULL REFERENCES wallpapers (id),
-    verdict      TEXT NOT NULL,
-    PRIMARY KEY (batch_id, wallpaper_id)
-)
-""",
-)
-"""Migration 2, the **Draft Batch**, keyed one **Verdict** per **Wallpaper** per **Batch**."""
-
-
-_MIGRATION_4 = (
-    """
-CREATE TABLE library_files (
-    wallpaper_id TEXT PRIMARY KEY REFERENCES wallpapers (id),
-    path         TEXT NOT NULL,
-    written_at   TEXT NOT NULL
-)
-""",
-)
-"""Migration 4: the absolute path of every **Library** file written, as the writer returned it.
-
-Recorded rather than derived from the **Library** setting, which can change while the file does not move.
-"""
-
-
-def _migration_3() -> tuple[tuple[str, tuple[str, str]], ...]:
-    """Migration 3: seed the settings. `DO NOTHING`, so a value already chosen is kept."""
-    return tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
-
-
-_SEED_SETTING = "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING"
-
-
-_CREATE_POOL = """
-CREATE TABLE pool (
-    wallpaper_id TEXT PRIMARY KEY REFERENCES wallpapers (id),
-    fetched_at   TEXT NOT NULL,
-    source       TEXT NOT NULL
-)
-"""
-"""**Pool** membership as its own table: a **Wallpaper** leaves the **Pool** and keeps its `wallpapers`
-row.
-"""
-
-
-def _migration_5() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Migration 5: the **Pool** table, and the **Filters** and **Pool** target size as seeded rows."""
-    return ((_CREATE_POOL, ()), *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()))
-
-
-def _migration_6() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Migration 6: the **Zone** a **Batch** drew each **Wallpaper** from, and the similarity settings.
-
-    `zone` is a fact about the **Batch**, not a stored **Score**. NULL for a **Batch** minted before it.
-    """
-    return (
-        ("ALTER TABLE batch_wallpapers ADD COLUMN zone TEXT", ()),
-        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
-    )
-
-
-_CREATE_MIXES = """
-CREATE TABLE mixes (
-    name    TEXT PRIMARY KEY,
-    unknown INTEGER NOT NULL,
-    banger  INTEGER NOT NULL,
-    dud     INTEGER NOT NULL
-)
-"""
-"""**Mixes** as rows, one column per **Zone**: the three numbers mean nothing apart.
-
-No CHECK on the sum: `validated_mix` holds the rule, and a bad row is dropped on the way out.
-"""
-
-_SEED_MIX = """
-INSERT INTO mixes (name, unknown, banger, dud) VALUES (?, ?, ?, ?)
-ON CONFLICT (name) DO NOTHING
-"""
-"""`DO NOTHING`, so an edited **Explore** survives a re-run. A migration must not undo a setting."""
-
-
-def _migration_7() -> tuple[tuple[str, tuple[str | int, ...]], ...]:
-    """Migration 7: **Mixes** as a table, seeded with **Explore** and **Refine**, and the active one as a
-    setting.
-    """
-    return (
-        (_CREATE_MIXES, ()),
-        *((_SEED_MIX, (mix.name, mix.unknown, mix.banger, mix.dud)) for mix in DEFAULT_MIXES),
-        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
-    )
-
-
-def _migration_8() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Migration 8: seeded the **Revisit weight**. That setting is gone, so on a fresh database this seeds
-    nothing new, and migration 10 deletes the row.
-    """
-    return tuple((_SEED_SETTING, (key, value)) for key, value in _defaults().items())
-
-
-_RETUNE_SETTING = "UPDATE settings SET value = ? WHERE key = ? AND value = ?"
-"""Change a setting only where it still holds the value a previous migration seeded, so a choice survives."""
-
-
-def _migration_9() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Migration 9: the **Similarity radius** default moves from 0.5 to 0.15 (ADR 0013), only where
-    untouched.
-    """
-    radius = _defaults()[_SIMILARITY_RADIUS]
-    return (
-        (_RETUNE_SETTING, (radius, _SIMILARITY_RADIUS, str(SUPERSEDED_SIMILARITY_RADIUS))),
-        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
-    )
-
-
-_REVISIT_WEIGHT_KEY = "revisit_weight"
-"""The `settings` key migration 8 seeded, kept only so migration 10 can delete the row (ADR 0016)."""
-
-
-def _migration_10() -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """Migration 10: decide once (ADR 0016).
-
-    The **Pool** gives up everything the **Decision log** mentions; the log is indexed by **Wallpaper** for
-    admission; the **Revisit weight** row goes; the **Pool** target moves from 2000 to 500 where untouched. A
-    **Pool** above its new target drains rather than being trimmed.
-    """
-    target = _defaults()[_POOL_TARGET_SIZE]
-    return (
-        ("DELETE FROM pool WHERE wallpaper_id IN (SELECT wallpaper_id FROM decision_log)", ()),
-        ("CREATE INDEX IF NOT EXISTS decision_log_by_wallpaper ON decision_log (wallpaper_id)", ()),
-        ("DELETE FROM settings WHERE key = ?", (_REVISIT_WEIGHT_KEY,)),
-        (_RETUNE_SETTING, (target, _POOL_TARGET_SIZE, str(SUPERSEDED_POOL_TARGET_SIZE))),
-        *((_SEED_SETTING, (key, value)) for key, value in _defaults().items()),
-    )

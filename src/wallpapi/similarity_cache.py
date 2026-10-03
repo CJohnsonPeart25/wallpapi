@@ -1,5 +1,5 @@
 """The SQLite file a **Similarity provider** keeps its regenerable cache in, apart from the **Decision log**;
-connection rules are `CoreService._write`'s.
+its connections are `storage`'s.
 """
 
 from __future__ import annotations
@@ -10,11 +10,7 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-
-class _Connections(threading.local):
-    """One connection per thread: the threadpool hands each request a different thread."""
-
-    connection: sqlite3.Connection | None = None
+from wallpapi import storage
 
 
 class SidecarDatabase:
@@ -25,7 +21,7 @@ class SidecarDatabase:
     def __init__(self, path: Path, schema: Sequence[str]) -> None:
         self._path = path
         self._schema = tuple(schema)
-        self._connections = _Connections()
+        self._connections = storage.ThreadConnections(path)
         self._created = False
         self._creation_lock = threading.Lock()
 
@@ -43,13 +39,11 @@ class SidecarDatabase:
         return total
 
     def connect(self) -> sqlite3.Connection:
-        connection = self._connections.connection
-        if connection is None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(self._path, isolation_level=None)
-            connection.row_factory = sqlite3.Row
-            self._connections.connection = connection
-            self._create(connection)
+        if self._created:
+            return self._connections.get()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        connection = self._connections.get()
+        self._create(connection)
         return connection
 
     def _create(self, connection: sqlite3.Connection) -> None:
@@ -65,12 +59,6 @@ class SidecarDatabase:
 
     @contextmanager
     def write(self, connection: sqlite3.Connection | None = None) -> Generator[sqlite3.Connection]:
-        """A write transaction: see `CoreService._write`."""
-        handle = self.connect() if connection is None else connection
-        handle.execute("BEGIN IMMEDIATE")
-        try:
+        """A write transaction: see `storage.write`."""
+        with storage.write(self.connect() if connection is None else connection) as handle:
             yield handle
-        except BaseException:
-            handle.execute("ROLLBACK")
-            raise
-        handle.execute("COMMIT")

@@ -2,7 +2,7 @@
 
 Every test enters through the Core service with fakes behind it. The only reach past the seam is the raw
 connection the migration and legacy-Clearance tests need, because nothing the seam offers can produce an
-un-migrated database or a Clearance any more.
+older database's rows or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from tests.fakes import (
     FakeWallhavenClient,
     catalogue_of,
 )
+from wallpapi import storage
 from wallpapi.core import Batch, CoreService
 from wallpapi.library import LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
@@ -38,6 +39,9 @@ from wallpapi.rng import SeededRandom
 from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
+
+SOURCE = Path(__file__).resolve().parent.parent / "src" / "wallpapi"
+"""The package's source, for the tests that read it rather than run it."""
 
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 """Allowed through the socket guard: every `TestClient` on Windows makes one loopback `connect` for
@@ -250,23 +254,50 @@ def library_junction(link: Path, target: Path) -> None:
 
 @contextmanager
 def raw_connection(db_path: Path) -> Generator[sqlite3.Connection]:
-    connection = sqlite3.connect(db_path, isolation_level=None)
+    connection = storage.connect(db_path)
     try:
         yield connection
     finally:
         connection.close()
 
 
-def force_remigration(db_path: Path, *, to_version: int) -> None:
-    """Wind `user_version` back so the next Core service over this file applies the migrations after it."""
+def write_old_pool(db_path: Path, wallpapers: Sequence[Wallpaper]) -> None:
+    """Put each in `wallpapers` and the **Pool**, as an older database whose migrations stopped early holds
+    them."""
+    with raw_connection(db_path) as connection, storage.write(connection) as write:
+        for w in wallpapers:
+            write.execute(
+                "INSERT INTO wallpapers (id, width, height, ratio, category, purity, favourites, colours, "
+                "thumbnail_url, full_url, page_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    w.id,
+                    w.width,
+                    w.height,
+                    w.ratio,
+                    w.category,
+                    w.purity,
+                    w.favourites,
+                    ",".join(w.colours),
+                    w.thumbnail_url,
+                    w.full_url,
+                    w.page_url,
+                ),
+            )
+            write.execute(
+                "INSERT INTO pool (wallpaper_id, fetched_at, source) VALUES (?, ?, 'random')",
+                (w.id, FIXED_NOW.isoformat()),
+            )
+
+
+def write_log_entries(db_path: Path, entries: Mapping[str, Verdict | Clearance]) -> None:
+    """Append one **History**-style entry per **Wallpaper**, behind the seam."""
     with raw_connection(db_path) as connection:
-        connection.execute(f"PRAGMA user_version = {to_version}")
+        connection.executemany(
+            "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
+            [(w, entry.value, FIXED_NOW.isoformat()) for w, entry in entries.items()],
+        )
 
 
 def write_legacy_clearance(db_path: Path, *wallpaper_ids: str) -> None:
     """Append a **Clearance** for each, as a database from before ADR 0015 may hold."""
-    with raw_connection(db_path) as connection:
-        connection.executemany(
-            "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
-            [(w, Clearance.CLEARED.value, FIXED_NOW.isoformat()) for w in wallpaper_ids],
-        )
+    write_log_entries(db_path, dict.fromkeys(wallpaper_ids, Clearance.CLEARED))

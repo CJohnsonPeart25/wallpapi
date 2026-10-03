@@ -14,14 +14,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_harness
+from tests.conftest import SOURCE, make_harness
 from tests.fakes import catalogue_of
 from wallpapi.refill import JOIN_TIMEOUT, RefillThread
 from wallpapi.similarity_thread import SimilarityThread
 from wallpapi.thumbnail_thread import THREAD_NAME, ThumbnailThread
 from wallpapi.web.app import create_app
-
-SOURCE = Path(__file__).resolve().parent.parent / "src" / "wallpapi"
 
 
 def _running(name: str) -> bool:
