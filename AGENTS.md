@@ -24,8 +24,10 @@ Locked. The original spec issue lists it under "Technology"; if the two disagree
   `tests/test_web_shell.py` and recorded in the ADR; `.gitattributes` keeps checkout from rewriting them.
 - **Synchronous throughout** (ADR 0001): `httpx2.Client`, standard library `sqlite3`, background work on
   `threading.Thread`s started in the FastAPI lifespan. Migrations are `user_version` plus numbered steps.
-- **numpy**, and **onnxruntime** with **pillow** for the **Similarity provider** (ADR 0013): CPU, image tower
-  only, the model fetched once into `~/.wallpapi/models/` and checksummed.
+- **numpy** as a *direct* dependency: the matrix interface needs it, and onnxruntime would otherwise supply it
+  transitively, so tidying `pyproject.toml` could drop it silently.
+- **onnxruntime** with **pillow** for the **Similarity provider** (ADR 0013): CPU, image tower only, the model
+  fetched once into `~/.wallpapi/models/` and checksummed.
 - **Pydantic at the edges only**; dataclasses and enums inside. **pytest**, **pyright** strict, **ruff**.
 - Excluded: TypeScript/React/Svelte, SQLAlchemy/Alembic, pydantic-settings, FastHTML, Electron/Tauri, vector DBs.
 

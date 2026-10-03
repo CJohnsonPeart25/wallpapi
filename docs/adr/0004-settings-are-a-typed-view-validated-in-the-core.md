@@ -4,8 +4,8 @@ Date: 2026-09-27
 
 ## Status
 
-Retired by the settings module of epic #32 (step 5, #63), where one field table takes over validating and
-storing each setting from the **Core service**.
+Retired by epic #32: replaced when the settings module lands (#63), where one field table takes over
+validating and storing each setting from the **Core service**.
 
 ## Context
 

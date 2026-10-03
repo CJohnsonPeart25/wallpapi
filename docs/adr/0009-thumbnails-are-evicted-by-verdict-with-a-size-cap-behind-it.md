@@ -4,8 +4,8 @@ Date: 2026-09-27
 
 ## Status
 
-Retired by the thumbnails module of epic #32 (step 8, #66), whose eviction tests take over the rule this
-recorded: a size cap never evicts a **Wallpaper** with an **Explicit Verdict**.
+Retired by epic #32: replaced when the thumbnails module lands (#66), whose eviction tests take over the rule
+this recorded: a size cap never evicts a **Wallpaper** with an **Explicit Verdict**.
 
 ## Context
 
