@@ -1,8 +1,7 @@
 """The real Wallhaven client against recorded responses over a mock transport, and the socket guard.
 
 `fixtures/wallhaven_search.json` is a genuine `GET /api/v1/search` response captured on 2026-09-24 with
-`data` trimmed to three entries; `fixtures/wallhaven_wallpaper.json` is `GET /api/v1/w/oxkzwm` from
-2026-09-27 with `tags` trimmed to three. Expected values are read off Wallhaven's own field names, so a wrong
+`data` trimmed to three entries. Expected values are read off Wallhaven's own field names, so a wrong
 mapping disagrees with them rather than being recomputed.
 """
 
@@ -23,9 +22,6 @@ from wallpapi.wallhaven import RateLimited, ThumbnailUnavailable, WallhavenClien
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED: dict[str, Any] = json.loads((FIXTURES / "wallhaven_search.json").read_text(encoding="utf-8"))
-WALLPAPER_RECORDED: dict[str, Any] = json.loads(
-    (FIXTURES / "wallhaven_wallpaper.json").read_text(encoding="utf-8")
-)
 THUMBNAIL = "https://th.wallhaven.cc/small/ox/oxkzwm.jpg"
 
 
@@ -96,10 +92,6 @@ def _search(client: WallhavenClient) -> object:
     return client.search(sorting="random", purity="100")
 
 
-def _tags(client: WallhavenClient) -> object:
-    return client.fetch_tags("oxkzwm")
-
-
 def _thumbnail(client: WallhavenClient) -> object:
     return client.fetch_thumbnail(THUMBNAIL)
 
@@ -110,8 +102,6 @@ def _thumbnail(client: WallhavenClient) -> object:
         pytest.param(_search, "17", 17.0, id="search"),
         # An HTTP date is not parsed: the caller's own back-off answers "Wallhaven did not say".
         pytest.param(_search, "Wed, 21 Oct 2026 07:28:00 GMT", None, id="search, a date"),
-        # On wallhaven.cc/api too, so inside the same 45 a minute as the refill's searches.
-        pytest.param(_tags, "9", 9.0, id="tags"),
         pytest.param(_thumbnail, "90", 90.0, id="thumbnail"),
     ],
 )
@@ -143,26 +133,6 @@ def test_a_thumbnail_the_host_refuses_is_unavailable() -> None:
         client.fetch_thumbnail(THUMBNAIL)
 
     assert raised.value.status == 404
-
-
-def test_fetch_tags_reads_the_single_wallpaper_endpoint() -> None:
-    client, seen = answering(httpx2.Response(200, json=WALLPAPER_RECORDED))
-
-    tags = client.fetch_tags("oxkzwm")
-
-    assert seen[0].url.path == "/api/v1/w/oxkzwm"
-    assert [(tag.id, tag.name) for tag in tags] == [
-        (267, "Ford"),
-        (27713, "Ford Mustang Mach 1"),
-        (314, "car"),
-    ]
-
-
-def test_fetch_tags_tolerates_a_wallpaper_with_no_tags() -> None:
-    """Empty rather than a failure: the cache has to be able to say "asked, and there were none"."""
-    client, _ = answering(httpx2.Response(200, json={"data": {"id": "oxkzwm", "tags": []}}))
-
-    assert client.fetch_tags("oxkzwm") == ()
 
 
 def test_a_test_that_reaches_for_the_network_fails(no_network: list[str]) -> None:

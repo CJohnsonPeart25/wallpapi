@@ -13,10 +13,7 @@ from pydantic import BaseModel
 from wallpapi.model import Wallpaper
 
 API_SEARCH_URL = "https://wallhaven.cc/api/v1/search"
-"""The 45-calls-per-minute limit applies to `wallhaven.cc/api`: this URL and the next."""
-
-API_WALLPAPER_URL = "https://wallhaven.cc/api/v1/w/{wallpaper_id}"
-"""The single-**Wallpaper** endpoint, the only place Wallhaven returns tags."""
+"""The 45-calls-per-minute limit applies to `wallhaven.cc/api`."""
 
 REQUEST_TIMEOUT = 10.0
 """Seconds. Must stay below the shutdown join timeout (invariant 12)."""
@@ -58,14 +55,6 @@ class SearchPage:
 
     wallpapers: tuple[Wallpaper, ...]
     seed: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Tag:
-    """One of Wallhaven's labels on a **Wallpaper**; the id is what overlap is computed on."""
-
-    id: int
-    name: str
 
 
 class Wallhaven(Protocol):
@@ -124,21 +113,6 @@ class _SearchResponse(BaseModel):
     meta: _SearchMeta
 
 
-class _TagItem(BaseModel):
-    id: int
-    name: str
-
-
-class _WallpaperDetail(BaseModel):
-    """The single-**Wallpaper** payload, narrowed to its tags."""
-
-    tags: list[_TagItem] = []
-
-
-class _WallpaperResponse(BaseModel):
-    data: _WallpaperDetail
-
-
 def _to_wallpaper(item: _SearchItem) -> Wallpaper:
     """Wallhaven's field names onto the glossary's."""
     return Wallpaper(
@@ -193,15 +167,6 @@ class WallhavenClient:
         return SearchPage(
             wallpapers=tuple(_to_wallpaper(item) for item in payload.data), seed=payload.meta.seed
         )
-
-    def fetch_tags(self, wallpaper_id: str) -> tuple[Tag, ...]:
-        """One **Wallpaper**'s tags: one **API call** each, so not on the `Wallhaven` protocol."""
-        response = self._client.get(API_WALLPAPER_URL.format(wallpaper_id=wallpaper_id))
-        if response.status_code == TOO_MANY_REQUESTS:
-            raise RateLimited(_retry_after_seconds(response.headers.get("Retry-After")))
-        response.raise_for_status()
-        payload = _WallpaperResponse.model_validate(response.json())
-        return tuple(Tag(id=item.id, name=item.name) for item in payload.data.tags)
 
     def fetch_thumbnail(self, url: str) -> bytes:
         """The bytes behind a `thumbs.small` URL, from `th.wallhaven.cc`: not an **API call** (ADR 0017)."""
