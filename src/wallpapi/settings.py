@@ -465,7 +465,7 @@ def update(write: sqlite3.Connection, **fields: object) -> Settings | SettingsRe
 
 def form_values(current: Settings) -> dict[str, str]:
     """Every settings form field as the text the form shows, by key."""
-    return {field.key: field.text(field.__get__(current, Settings)) for field in FORM_FIELDS}
+    return {field.key: field.text(getattr(current, field.key)) for field in FORM_FIELDS}
 
 
 def _as_text(value: object) -> str:
