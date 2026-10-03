@@ -13,9 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness
-from wallpapi import settings, storage
-from wallpapi.core import Batch
+from tests.conftest import Harness, live
+from wallpapi import settings, storage, workflows
 from wallpapi.model import Mix
 from wallpapi.settings import (
     EXPLORE_MIX,
@@ -257,16 +256,13 @@ def test_every_mix_says_whether_it_can_be_deleted(memory: sqlite3.Connection) ->
 
 def test_a_new_batch_size_applies_to_the_next_batch_minted_and_not_the_live_one(harness: Harness) -> None:
     """Rebuilding the live **Batch** to fit would discard the **Draft Batch** marked against it."""
-    live = harness.core.get_next_batch()
-    assert isinstance(live, Batch)
+    opened = live(harness)
 
-    assert isinstance(harness.core.update_settings(batch_size=2), Settings)
-    still_live = harness.core.get_next_batch()
-    assert isinstance(still_live, Batch)
-    assert (still_live.id, len(still_live.wallpapers)) == (live.id, 8)
+    assert isinstance(workflows.save_settings(harness.modules, batch_size=2), Settings)
+    still_live = live(harness)
+    assert (still_live.id, len(still_live.wallpapers)) == (opened.id, 8)
 
-    harness.core.submit_batch(live.id)
+    workflows.submit(harness.modules, opened.id)
 
-    following = harness.core.get_next_batch()
-    assert isinstance(following, Batch)
+    following = live(harness)
     assert (following.size, len(following.wallpapers)) == (2, 2)
