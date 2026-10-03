@@ -4,6 +4,12 @@ A workflow opens the write, hands the handle to each module it calls, and runs w
 transaction after it commits: reconciling the **Library**, then evicting thumbnails. Both report their
 failures rather than raise, so nothing after a commit can undo or hide it. A workflow decides nothing about
 the data: every refusal, filter and policy is a module's; a workflow orders the calls and passes results back.
+
+A workflow owns every transaction that spans more than one module's tables or has a post-commit tail. A
+module may open its own short write over only its own tables when nothing composes it into a larger
+transaction: `Batches.next` minting a **Batch** (re-read under the lock, ADR 0002), `Refill.step` admitting a
+page after its network call, `EmbeddingCache` in its own file, and the **Library**'s per-file records (ADR
+0006).
 """
 
 from __future__ import annotations
