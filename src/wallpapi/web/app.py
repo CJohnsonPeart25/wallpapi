@@ -172,8 +172,9 @@ def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
 def _stored_fields(core: CoreService) -> dict[str, str]:
     """Every settings form field as text, read from the Core service.
 
-    One place that knows the form's field names, so adding a setting is a field on `Settings`, a keyword on
-    `update_settings`, an entry here and an input in the template — and nothing else.
+    Adding a setting takes six edits: its key, `Settings` field and refusal reason in `core.py`; its read in
+    `get_settings`; its validator; its keyword on `update_settings`; an entry here plus the settings POST's
+    `Form()` parameter; and the input and refusal message in `settings.html`.
     """
     current = core.get_settings()
     return {
