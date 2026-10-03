@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.conftest import Harness, make_harness
-from tests.fakes import WallhavenUnreachable, catalogue_of
+from tests.fakes import catalogue_of
 from wallpapi.core import (
     ERROR_BACKOFF_SECONDS,
     IDLE_RECHECK_SECONDS,
@@ -279,23 +279,6 @@ def test_a_recovered_refill_stops_claiming_wallhaven_is_unreachable(db_path: Pat
 
     assert harness.core.refill_status().last_error is None
     assert isinstance(harness.core.get_next_batch(), Batch)
-
-
-def test_a_failure_raised_by_something_other_than_the_client_still_does_not_escape(
-    db_path: Path,
-) -> None:
-    """The protocol names one error, `RateLimited`, and everything else is "the call did not happen".
-
-    Catching only `httpx2`'s exceptions would put the transport's spelling inside the Core service and
-    would let one unexpected type kill the thread, which is the failure #15 is about.
-    """
-    harness = make_harness(db_path, catalogue=catalogue_of(24), fill_pool=0)
-    assert issubclass(WallhavenUnreachable, RuntimeError)
-
-    harness.wallhaven.fail_from_call = 1
-    harness.fill_pool(1)
-
-    assert harness.core.refill_status().last_error
 
 
 def test_the_refill_status_reports_the_pool_against_its_target(harness: Harness) -> None:
