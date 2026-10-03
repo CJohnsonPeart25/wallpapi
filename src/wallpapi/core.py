@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
-import re
 import sqlite3
 import threading
 from collections import deque
@@ -13,8 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
-from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
+from pathlib import Path
 
 from wallpapi import batches, decisions, similarity, storage
 from wallpapi import pool as pool_module
@@ -27,8 +24,8 @@ from wallpapi.batches import SubmissionRefused as SubmissionRefused
 from wallpapi.batches import Submitted as Submitted
 from wallpapi.clock import Clock
 from wallpapi.decisions import ResolvedVerdict
-from wallpapi.files import write_atomically
-from wallpapi.library import LibraryWriter
+from wallpapi.files import url_suffix, write_atomically
+from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper
 from wallpapi.pool import wallpaper_from_row
 from wallpapi.rng import SeededRandom
@@ -70,26 +67,6 @@ THUMBNAIL_JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
 
 BYTES_IN_A_MEGABYTE = 1024 * 1024
 """Mebibytes, because matching what Explorer shows matters more than matching SI."""
-
-
-@dataclass(frozen=True, slots=True)
-class LibraryReconciliation:
-    """What one **Library** reconciliation did. It runs after commit and cannot raise, so `failed` is the
-    report.
-    """
-
-    written: tuple[str, ...]
-    removed: tuple[str, ...]
-    failed: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class FavouriteDownload:
-    """What one "download all **Favourites**" pass did. It never deletes; the settings page says all three."""
-
-    written: tuple[str, ...]
-    skipped: tuple[str, ...]
-    failed: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +145,6 @@ class CoreService:
     ) -> None:
         self._db_path = db_path
         self._wallhaven = wallhaven
-        self._library = library
         self._similarity = similarity
         self._clock = clock
         self._connections = storage.ThreadConnections(db_path)
@@ -192,6 +168,8 @@ class CoreService:
         """The background search that keeps the **Pool** stocked: the thread drives it, the page reads it."""
         self.batches = batches.Batches(similarity, self.refill.status, clock, random_source)
         """Minting and submitting **Batches**, with the draw's own random source."""
+        self.library = Library(library, clock)
+        """Reconciliation and the **Favourite** download, run after the **Decision log** commits."""
 
     # -- storage ---------------------------------------------------------------------------------------
 
@@ -326,110 +304,12 @@ class CoreService:
     # -- library ---------------------------------------------------------------------------------------
 
     def reconcile_library(self) -> LibraryReconciliation:
-        """Make the **Library** folder agree with the **Decision log**, and report what that took.
-
-        Idempotent and derived: a **Favourite** with no recorded file gets one, a recorded file whose
-        **Wallpaper** is no longer a **Favourite** is deleted. Failures are collected rather than raised,
-        because this runs after the **Decision log** has committed. Nothing here stats a path.
-        """
-        library_path = self.get_settings().library_path
-        favourites, rows = self._library_candidates()
-
-        written: list[str] = []
-        removed: list[str] = []
-        failed: list[str] = []
-        for row in rows:
-            wallpaper_id = str(row["wallpaper_id"])
-            recorded = None if row["path"] is None else Path(str(row["path"]))
-            wanted = wallpaper_id in favourites
-            try:
-                if wanted and recorded is None:
-                    if self._add_to_library(wallpaper_id, str(row["full_url"]), library_path):
-                        written.append(wallpaper_id)
-                    else:
-                        failed.append(wallpaper_id)
-                elif not wanted and recorded is not None:
-                    deleted = self._drop_from_library(wallpaper_id, recorded, library_path)
-                    # A row outside the **Library** is dropped with its file left where it is.
-                    if deleted:
-                        removed.append(wallpaper_id)
-            except Exception:
-                # The writer declares no error type. Leaving the row as it was makes the next call retry.
-                failed.append(wallpaper_id)
-        return LibraryReconciliation(written=tuple(written), removed=tuple(removed), failed=tuple(failed))
+        """Make the **Library** folder agree with the **Decision log**: `Library.reconcile`."""
+        return self.library.reconcile(self._connect(), self.get_settings().library_path)
 
     def download_favourites(self) -> FavouriteDownload:
-        """Write a **Library** file for every **Favourite** that has not got one. Never deletes.
-
-        The one place wallpapi asks the folder anything: whether a recorded path is still there. A
-        **Favourite** counts as missing its file with no record, a recorded path not on the disk, or one no
-        longer confined; it is written into the **Library path** of today and the record replaced.
-        """
-        library_path = self.get_settings().library_path
-        favourites, rows = self._library_candidates()
-
-        written: list[str] = []
-        skipped: list[str] = []
-        failed: list[str] = []
-        for row in rows:
-            wallpaper_id = str(row["wallpaper_id"])
-            if wallpaper_id not in favourites:
-                continue
-            recorded = None if row["path"] is None else Path(str(row["path"]))
-            # The guard first, so the only paths ever stat-ed are inside the **Library** folder.
-            held = None if recorded is None else confined_to_library(recorded, library_path)
-            if held is not None and held.exists():
-                skipped.append(wallpaper_id)
-                continue
-            try:
-                if self._add_to_library(wallpaper_id, str(row["full_url"]), library_path):
-                    written.append(wallpaper_id)
-                else:
-                    failed.append(wallpaper_id)
-            except Exception:
-                # As in `reconcile_library`: the writer declares no error type.
-                failed.append(wallpaper_id)
-        return FavouriteDownload(written=tuple(written), skipped=tuple(skipped), failed=tuple(failed))
-
-    def _library_candidates(self) -> tuple[set[str], list[sqlite3.Row]]:
-        """The **Favourites**, and every row a reconciliation might act on: a **Favourite**, or one holding a
-        recorded file.
-        """
-        connection = self._connect()
-        favourites = decisions.favourites(connection)
-        # SQLite's parameter limit is 32,766 here, well above any count of **Favourites**.
-        placeholders = ",".join("?" * len(favourites))
-        rows = connection.execute(_LIBRARY_CANDIDATES.format(favourites=placeholders), favourites).fetchall()
-        return set(favourites), rows
-
-    def _add_to_library(self, wallpaper_id: str, source_url: str, library_path: Path) -> bool:
-        """Download one **Favourite** and record where it landed, or return `False` before fetching anything.
-
-        The confinement check comes first, so a refusal never costs a download.
-        """
-        name = library_file_name(wallpaper_id, source_url)
-        if name is None:
-            return False
-        destination = confined_to_library(library_path / name, library_path)
-        if destination is None:
-            return False
-        written = self._library.write(wallpaper_id, source_url, destination)
-        with self._write() as write:
-            write.execute(_RECORD_LIBRARY_FILE, (wallpaper_id, str(written), self._clock.now().isoformat()))
-        return True
-
-    def _drop_from_library(self, wallpaper_id: str, recorded: Path, library_path: Path) -> bool:
-        """Forget a recorded **Library** file, deleting it only if it is still confined (invariant 9).
-
-        The row goes either way, so a refusal happens once rather than on every submission. Returns whether
-        the file was handed to the writer; a failed deletion raises with the row intact, to be retried.
-        """
-        confined = confined_to_library(recorded, library_path)
-        if confined is not None:
-            self._library.remove(confined)
-        with self._write() as write:
-            write.execute("DELETE FROM library_files WHERE wallpaper_id = ?", (wallpaper_id,))
-        return confined is not None
+        """Write a **Library** file for every **Favourite** without one: `Library.download_favourites`."""
+        return self.library.download_favourites(self._connect(), self.get_settings().library_path)
 
     # -- thumbnails ------------------------------------------------------------------------------------
 
@@ -451,7 +331,7 @@ class CoreService:
             return None
 
         source_url = str(row["thumbnail_url"])
-        destination = self.thumbnail_dir / f"{wallpaper_id}{_url_suffix(source_url)}"
+        destination = self.thumbnail_dir / f"{wallpaper_id}{url_suffix(source_url)}"
         if destination.exists():
             return destination
 
@@ -521,7 +401,7 @@ class CoreService:
             wallpaper_id, source_url = str(row["id"]), str(row["thumbnail_url"])
             if wallpaper_id in self._thumbnails_given_up:
                 continue
-            destination = self.thumbnail_dir / f"{wallpaper_id}{_url_suffix(source_url)}"
+            destination = self.thumbnail_dir / f"{wallpaper_id}{url_suffix(source_url)}"
             if not destination.exists():
                 missing.append((wallpaper_id, destination, source_url))
         return missing
@@ -665,82 +545,6 @@ def thumbnail_loop(core: CoreService, stop_event: threading.Event) -> None:
         core.thumbnail_step()
 
 
-LIBRARY_FILE_NAME = re.compile(r"[A-Za-z0-9]+\.[a-z0-9]{1,5}")
-"""The only shape a **Library** file name may take: a Wallhaven ID, a dot, one short extension.
-
-A name is never a path: `..`, separators, spaces and a second dot are all refused. ASCII by construction,
-because `str.isalnum` counts `²`.
-"""
-
-DEFAULT_LIBRARY_SUFFIX = ".jpg"
-"""What a `full_url` with no recognisable extension is saved as: Wallhaven serves JPEG nearly always."""
-
-
-def library_file_name(wallpaper_id: str, source_url: str) -> str | None:
-    """What a **Library** file is called, or `None` if this **Wallpaper** cannot have one.
-
-    A bad suffix falls back to `.jpg`; a bad ID names nothing. The suffix is Wallhaven's to get wrong, and the
-    ID is what the file is for.
-    """
-    named = f"{wallpaper_id}{_url_suffix(source_url, default=DEFAULT_LIBRARY_SUFFIX)}"
-    if LIBRARY_FILE_NAME.fullmatch(named):
-        return named
-    fallback = f"{wallpaper_id}{DEFAULT_LIBRARY_SUFFIX}"
-    return fallback if LIBRARY_FILE_NAME.fullmatch(fallback) else None
-
-
-def confined_to_library(path: Path, library_root: Path) -> Path | None:
-    """The resolved `path`, if wallpapi may write or delete it — otherwise `None`. The one guard for both.
-
-    The name fits `LIBRARY_FILE_NAME`, and the path, fully resolved (`..` collapsed, every symlink and
-    junction followed), lies strictly inside the fully resolved **Library** folder. Resolving is the point: a
-    link in the folder is inside it syntactically and outside it in fact. Compared through `os.path.normcase`
-    and by component, because NTFS ignores case and a string prefix would put `Library2` inside `Library`.
-
-    The resolved path is returned because it is the one the caller must use: the atomic write's temp file is a
-    sibling of whatever it is handed. `strict=False` because the folder need not exist yet.
-    """
-    try:
-        resolved = path.resolve(strict=False)
-        root = library_root.resolve(strict=False)
-    except OSError, ValueError:
-        # A hand-edited row can hold characters Windows will not even parse. Unresolvable is refused.
-        return None
-    if not LIBRARY_FILE_NAME.fullmatch(resolved.name):
-        return None
-    here = os.path.normcase(str(resolved))
-    there = os.path.normcase(str(root))
-    if here == there:
-        return None
-    try:
-        if os.path.commonpath((here, there)) != there:
-            return None
-    except ValueError:
-        # Different drives, or one of the two not absolute. Either way there is no "inside" to be in.
-        return None
-    return resolved
-
-
-_LIBRARY_CANDIDATES = """
-SELECT w.id AS wallpaper_id, w.full_url AS full_url, f.path AS path
-FROM wallpapers AS w
-LEFT JOIN library_files AS f ON f.wallpaper_id = w.id
-WHERE f.wallpaper_id IS NOT NULL OR w.id IN ({favourites})
-ORDER BY w.id
-"""
-"""Everything a reconciliation might act on: a **Favourite** now, or holding a recorded file.
-
-`{favourites}` is placeholders built here; the ids from `decisions.favourites` are bound as parameters.
-"""
-
-_RECORD_LIBRARY_FILE = """
-INSERT INTO library_files (wallpaper_id, path, written_at) VALUES (?, ?, ?)
-ON CONFLICT (wallpaper_id) DO UPDATE SET path = excluded.path, written_at = excluded.written_at
-"""
-"""An upsert, so an unexpected existing row is overwritten rather than an `IntegrityError` retried for
-ever.
-"""
-
 _AWAITING_A_VERDICT = """
 SELECT wallpaper_id FROM pool
 UNION
@@ -781,11 +585,6 @@ def _cached_thumbnails(directory: Path) -> list[_CachedThumbnail]:
 
 _NOTHING_EVICTED = ThumbnailEviction(evicted=(), remaining_bytes=0, over_cap=False)
 """An empty or absent **Thumbnail cache**: nothing to delete and nothing taking up room."""
-
-
-def _url_suffix(url: str, *, default: str = ".jpg") -> str:
-    """The file extension of a URL's path, ignoring any query string."""
-    return PurePosixPath(urlsplit(url).path).suffix or default
 
 
 _SELECT_POOL_THUMBNAILS = """

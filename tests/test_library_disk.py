@@ -9,16 +9,16 @@ mocked transport.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx2
 import pytest
 
-from tests.conftest import Harness, library_junction, library_symlink, make_harness
+from tests.conftest import LibraryRig, library_junction, library_rig, library_symlink
 from tests.fakes import catalogue_of
-from wallpapi.core import Batch, confined_to_library, library_file_name
-from wallpapi.library import DownloadingLibraryWriter
+from wallpapi.library import DownloadingLibraryWriter, confined_to_library, library_file_name
 from wallpapi.model import Verdict
 
 IMAGE_BYTES = b"\xff\xd8\xff\xe0 full resolution, allegedly"
@@ -227,20 +227,19 @@ def test_a_link_is_never_removed(tmp_path: Path, make_link: Callable[[Path, Path
     assert (outside / "precious.jpg").read_bytes() == b"not wallpapi's"
 
 
-# -- the writer behind the Core service --------------------------------------------------------------
+# -- the Library with the real writer ----------------------------------------------------------------
 
 
-def favourited(tmp_path: Path, count: int) -> tuple[Harness, list[httpx2.Request], Path, list[str]]:
-    """A Core service with the real writer, whose whole **Batch** of `count` was just **Favourited**."""
+@contextmanager
+def favourited(tmp_path: Path, count: int) -> Generator[tuple[LibraryRig, list[httpx2.Request], list[str]]]:
+    """The **Library** with the real writer, `count` **Favourites** just reconciled onto the disk."""
     writer, seen = downloading_writer()
-    library_path = tmp_path / "Library"
-    harness = make_harness(tmp_path / "wallpapi.db", catalogue=catalogue_of(count), library=writer)
-    harness.core.update_settings(batch_size=count, library_path=library_path)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.set_all_draft_verdicts(batch.id, Verdict.FAVOURITE)
-    harness.core.submit_batch(batch.id)
-    return harness, seen, library_path, sorted(w.id for w in batch.wallpapers)
+    wallpapers = catalogue_of(count)
+    ids = [w.id for w in wallpapers]
+    with library_rig(tmp_path, writer, wallpapers) as rig:
+        rig.decide(Verdict.FAVOURITE, *ids)
+        rig.reconcile()
+        yield rig, seen, ids
 
 
 def test_a_library_deleted_in_explorer_changes_nothing_until_one_download_brings_it_back(
@@ -250,72 +249,89 @@ def test_a_library_deleted_in_explorer_changes_nothing_until_one_download_brings
     **Decision log**; I want all my **Favourites** back with a single download." Reconciling does not
     notice the deletion, because the **Library** is never read back; the download checks only the paths
     wallpapi recorded."""
-    harness, seen, library_path, ids = favourited(tmp_path, 3)
-    assert sorted(p.name for p in library_path.iterdir()) == [f"{i}.jpg" for i in ids]
-    before = harness.core.list_history()
+    with favourited(tmp_path, 3) as (rig, seen, ids):
+        library_path = rig.library_path
+        assert sorted(p.name for p in library_path.iterdir()) == [f"{i}.jpg" for i in ids]
 
-    for file in library_path.iterdir():
-        file.unlink()
-    reconciled = harness.core.reconcile_library()
+        for file in library_path.iterdir():
+            file.unlink()
+        reconciled = rig.reconcile()
 
-    assert (reconciled.written, reconciled.removed, reconciled.failed) == ((), (), ())
-    assert len(seen) == 3
-    assert harness.core.list_history() == before
-    assert all(r.verdict is Verdict.FAVOURITE for r in harness.core.resolve_verdicts(ids).values())
+        assert (reconciled.written, reconciled.removed, reconciled.failed) == ((), (), ())
+        assert len(seen) == 3
 
-    pulled = harness.core.download_favourites()
+        pulled = rig.download_favourites()
 
-    assert sorted(pulled.written) == ids
-    assert pulled.failed == ()
-    assert sorted(p.name for p in library_path.iterdir()) == [f"{i}.jpg" for i in ids]
-    assert all(p.read_bytes() == IMAGE_BYTES for p in library_path.iterdir())
-    assert len(seen) == 6
+        assert sorted(pulled.written) == ids
+        assert pulled.failed == ()
+        assert sorted(p.name for p in library_path.iterdir()) == [f"{i}.jpg" for i in ids]
+        assert all(p.read_bytes() == IMAGE_BYTES for p in library_path.iterdir())
+        assert len(seen) == 6
 
 
 def test_a_favourite_whose_file_is_still_there_is_skipped(tmp_path: Path) -> None:
     """Only what is missing is fetched, and the folder is never listed: a file the user put there by hand
     is neither noticed nor counted."""
-    harness, seen, library_path, (kept, deleted) = favourited(tmp_path, 2)
-    (library_path / f"{deleted}.jpg").unlink()
-    (library_path / "a-photo-of-the-users.jpg").write_bytes(b"theirs")
+    with favourited(tmp_path, 2) as (rig, seen, (kept, deleted)):
+        (rig.library_path / f"{deleted}.jpg").unlink()
+        (rig.library_path / "a-photo-of-the-users.jpg").write_bytes(b"theirs")
 
-    pulled = harness.core.download_favourites()
+        pulled = rig.download_favourites()
 
-    assert pulled.written == (deleted,)
-    assert pulled.skipped == (kept,)
-    assert len(seen) == 3
-    assert (library_path / "a-photo-of-the-users.jpg").read_bytes() == b"theirs"
-    assert harness.core.download_favourites().written == ()
+        assert pulled.written == (deleted,)
+        assert pulled.skipped == (kept,)
+        assert len(seen) == 3
+        assert (rig.library_path / "a-photo-of-the-users.jpg").read_bytes() == b"theirs"
+        assert rig.download_favourites().written == ()
 
 
 def test_the_library_follows_its_setting_when_the_favourites_are_pulled_again(tmp_path: Path) -> None:
     """The old files are neither moved nor deleted, since wallpapi will not reach outside the folder it is
     pointed at; everything **Favourite** is written where the setting points now."""
-    harness, _, original, ids = favourited(tmp_path, 2)
-    moved = tmp_path / "Moved"
+    with favourited(tmp_path, 2) as (rig, _, ids):
+        original = rig.library_path
+        rig.library_path = tmp_path / "Moved"
 
-    harness.core.update_settings(library_path=moved)
-    pulled = harness.core.download_favourites()
+        pulled = rig.download_favourites()
 
-    assert pulled.skipped == ()
-    assert sorted(pulled.written) == ids
-    assert sorted(p.name for p in moved.iterdir()) == [f"{i}.jpg" for i in ids]
-    assert sorted(p.name for p in original.iterdir()) == [f"{i}.jpg" for i in ids]
+        assert pulled.skipped == ()
+        assert sorted(pulled.written) == ids
+        assert sorted(p.name for p in rig.library_path.iterdir()) == [f"{i}.jpg" for i in ids]
+        assert sorted(p.name for p in original.iterdir()) == [f"{i}.jpg" for i in ids]
+
+
+def test_a_recorded_path_outside_the_library_is_dropped_from_the_record_and_left_on_disk(
+    tmp_path: Path,
+) -> None:
+    """Invariant 9. The file is untouched where it is; the record is gone, because **Favouriting** it again
+    writes a new file where the setting points today, which a surviving row would have stopped."""
+    with favourited(tmp_path, 1) as (rig, seen, (shown,)):
+        abandoned = rig.library_path / f"{shown}.jpg"
+        rig.library_path = tmp_path / "Moved"
+
+        rig.decide(Verdict.LIKE, shown)
+        reconciled = rig.reconcile()
+
+        assert (reconciled.written, reconciled.removed, reconciled.failed) == ((), (), ())
+        assert abandoned.read_bytes() == IMAGE_BYTES
+
+        rig.decide(Verdict.FAVOURITE, shown)
+
+        assert rig.reconcile().written == (shown,)
+        assert (rig.library_path / f"{shown}.jpg").read_bytes() == IMAGE_BYTES
+        assert abandoned.read_bytes() == IMAGE_BYTES
+        assert len(seen) == 2
 
 
 def test_a_recorded_file_already_gone_is_dropped_without_being_looked_for(tmp_path: Path) -> None:
     """Deleted in Explorer, then the **Favourite** taken back: nothing goes looking for it and nothing is
-    raised. The row goes and the **Decision log** keeps both entries."""
-    harness, seen, library_path, (shown,) = favourited(tmp_path, 1)
-    (library_path / f"{shown}.jpg").unlink()
+    raised. The row goes."""
+    with favourited(tmp_path, 1) as (rig, seen, (shown,)):
+        (rig.library_path / f"{shown}.jpg").unlink()
 
-    assert harness.core.edit_verdict(shown, Verdict.LIKE) is None
+        rig.decide(Verdict.LIKE, shown)
 
-    assert list(library_path.iterdir()) == []
-    assert len(seen) == 1
-    assert [e.entry for e in harness.core.list_history(wallpaper_id=shown)] == [
-        Verdict.FAVOURITE,
-        Verdict.LIKE,
-    ]
-    assert harness.core.resolve_verdicts([shown])[shown].verdict is Verdict.LIKE
-    assert harness.core.reconcile_library() == harness.core.reconcile_library()
+        assert rig.reconcile().removed == (shown,)
+        assert list(rig.library_path.iterdir()) == []
+        assert len(seen) == 1
+        assert rig.reconcile() == rig.reconcile()
