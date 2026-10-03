@@ -22,7 +22,6 @@ from tests.fakes import catalogue_of, wallpaper
 from wallpapi.main import build_similarity
 from wallpapi.similarity import NOTHING_TO_CATCH_UP, MetadataSimilarityProvider
 from wallpapi.similarity_embedding import CAUGHT_UP, EmbeddingCache, EmbeddingSimilarityProvider
-from wallpapi.similarity_tags import TagSimilarityProvider
 
 EAST = np.array([1.0, 0.0], dtype=np.float32)
 NORTH = np.array([0.0, 1.0], dtype=np.float32)
@@ -36,14 +35,13 @@ NORTH = np.array([0.0, 1.0], dtype=np.float32)
     [
         (None, EmbeddingSimilarityProvider),
         ("metadata", MetadataSimilarityProvider),
-        ("tags", TagSimilarityProvider),
         ("embedding", EmbeddingSimilarityProvider),
     ],
 )
 def test_each_name_selects_its_provider_and_unset_is_embedding(
     name: str | None, expected: type[object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """All three look identical from the page, so a typo wiring the baseline back in would be silent."""
+    """Both look identical from the page, so a typo wiring the baseline back in would be silent."""
     if name is None:
         monkeypatch.delenv("WALLPAPI_SIMILARITY", raising=False)
     else:
@@ -57,7 +55,7 @@ def test_an_unrecognised_name_refuses_rather_than_falling_back(
 ) -> None:
     monkeypatch.setenv("WALLPAPI_SIMILARITY", "clip")
 
-    with pytest.raises(ValueError, match="metadata, tags or embedding"):
+    with pytest.raises(ValueError, match="metadata or embedding"):
         build_similarity(tmp_path)
 
 
@@ -71,12 +69,10 @@ def test_selecting_a_provider_touches_no_disk_until_it_is_used(
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("name", ["metadata", "tags"])
+@pytest.mark.parametrize("name", ["metadata"])
 def test_the_providers_that_read_no_thumbnails_keep_nothing_up_and_say_nothing(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The tag provider's upkeep would spend the refill's 45 **API calls** a minute, which is a decision
-    for the person running wallpapi; so its `catch_up` does nothing, selected or not."""
     monkeypatch.setenv("WALLPAPI_SIMILARITY", name)
     provider = build_similarity(tmp_path)
 
