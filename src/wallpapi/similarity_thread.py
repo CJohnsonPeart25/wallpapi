@@ -1,7 +1,6 @@
-"""The background thread that keeps the **Similarity provider**'s cache up to date.
+"""The background thread that keeps the **Similarity provider**'s cache up to date, shaped like `refill.py`.
 
-The same shape as `refill.py`. A thread of its own so an 85MiB model download never sits in front of the
-refill's first search.
+A thread of its own so an 85MiB model download never sits in front of the refill's first search.
 """
 
 from __future__ import annotations
@@ -16,10 +15,8 @@ JOIN_TIMEOUT = DOWNLOAD_TIMEOUT + 5.0
 
 
 def similarity_loop(core: CoreService, stop_event: threading.Event) -> None:
-    """Take one step, wait as long as the provider asked, repeat until stopped.
-
-    Steps first, unlike `refill_loop`: on a fresh install the first step starts the download.
-    `similarity_step` never raises, so the thread cannot die.
+    """Take one step, wait as long as the provider asked, repeat. Steps first, since on a fresh install the
+    first step starts the download; `similarity_step` never raises.
     """
     while not stop_event.is_set():
         wait = core.similarity_step(stop_event)

@@ -1,7 +1,5 @@
-"""The clock, injected so that time is something tests move rather than wait for.
-
-Every timestamp in the **Decision log** comes from here, never from `datetime.now()`. `monotonic` is separate
-so the rate limiter is not confused by a wall clock that jumps.
+"""The clock, injected so tests move time rather than wait for it. `monotonic` is separate so the rate limiter
+ignores wall-clock jumps.
 """
 
 from __future__ import annotations
@@ -19,13 +17,11 @@ class Clock(Protocol):
         ...
 
     def monotonic(self) -> float:
-        """Seconds from an arbitrary fixed point, for measuring elapsed time."""
+        """Seconds from an arbitrary fixed point."""
         ...
 
 
 class SystemClock:
-    """The real clock."""
-
     def now(self) -> dt.datetime:
         return dt.datetime.now(dt.UTC)
 

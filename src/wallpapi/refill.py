@@ -1,7 +1,7 @@
 """The background **Pool** refill thread: a loop on another thread and a way to stop it.
 
-Every decision belongs to the Core service, where a test reaches it without a thread. Every wait is
-`stop_event.wait(n)`, never `time.sleep(n)` (invariant 12).
+Every decision belongs to the Core service. Every wait is `stop_event.wait(n)`, never `time.sleep(n)`
+(invariant 12).
 """
 
 from __future__ import annotations
@@ -18,9 +18,8 @@ JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
 
 
 def refill_loop(core: CoreService, stop_event: threading.Event) -> None:
-    """Wait as long as the Core service says, take one step, repeat until stopped.
-
-    `refill_step` never raises, so the thread cannot die.
+    """Wait as long as the Core service says, take one step, repeat. `refill_step` never raises, so the thread
+    cannot die.
     """
     with core.refill_running():
         while not stop_event.is_set():
@@ -33,10 +32,7 @@ def refill_loop(core: CoreService, stop_event: threading.Event) -> None:
 
 
 class RefillThread:
-    """Start and stop `refill_loop`. Owned by the FastAPI lifespan.
-
-    One thread, which is why the app runs single-worker.
-    """
+    """Start and stop `refill_loop`. Owned by the FastAPI lifespan; one thread, hence single-worker."""
 
     def __init__(self, core: CoreService) -> None:
         self._core = core

@@ -1,8 +1,7 @@
-"""Wallhaven's 45-calls-per-minute budget, as a pure function.
+"""Wallhaven's 45-calls-per-minute budget, as pure functions over call timestamps.
 
-The limiter says how long the caller must wait and never waits itself; the caller does the waiting with a
-cancellable `stop_event.wait(n)` (invariant 12). It counts **API calls** only: thumbnails and full-resolution
-images come from other hosts.
+The limiter says how long to wait and never waits itself, so the caller's wait stays a cancellable
+`stop_event.wait(n)` (invariant 12).
 """
 
 from __future__ import annotations
@@ -10,10 +9,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 CALLS_PER_MINUTE = 45
-"""Wallhaven's documented limit for `wallhaven.cc/api`."""
 
 WINDOW_SECONDS = 60.0
-"""The minute the limit is counted over."""
 
 
 def wait_needed(
@@ -23,11 +20,8 @@ def wait_needed(
     limit: int = CALLS_PER_MINUTE,
     window: float = WINDOW_SECONDS,
 ) -> float:
-    """Seconds to wait before another **API call** may be made, or zero if one may be made now.
-
-    `call_times` and `now` are monotonic seconds, so a wall clock stepping backwards cannot empty the window.
-    A sliding window, not a bucket that refills on the minute: a bucket would allow 90 calls in two seconds
-    across a minute boundary.
+    """Seconds to wait before another **API call** may be made, or zero. A sliding window, not a per-minute
+    bucket.
     """
     inside = sorted(t for t in call_times if now - t < window)
     if len(inside) < limit:
@@ -38,19 +32,11 @@ def wait_needed(
 
 
 THUMBNAIL_GAP_SECONDS = 0.25
-"""The fixed gap between two thumbnail fetches. A constant, never a setting.
-
-`th.wallhaven.cc` has no published limit, so the only promise is spacing: about four a second, like one person
-browsing.
-"""
+"""The fixed gap between thumbnail fetches: a constant, never a setting."""
 
 
 def gap_needed(last_fetch: float | None, *, now: float, gap: float = THUMBNAIL_GAP_SECONDS) -> float:
-    """Seconds to wait before the next thumbnail fetch, or zero. `None` means nothing has been fetched yet.
-
-    The thumbnail hosts' counterpart to `wait_needed`: a gap, not a window, because there is nothing published
-    to count against.
-    """
+    """Seconds to wait before the next thumbnail fetch, or zero. A gap, not a window."""
     if last_fetch is None:
         return 0.0
     return max(0.0, last_fetch + gap - now)

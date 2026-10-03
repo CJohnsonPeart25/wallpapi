@@ -21,7 +21,6 @@ from wallpapi.similarity import NOTHING_TO_CATCH_UP, MetadataSimilarityProvider,
 from wallpapi.similarity_cache import SidecarDatabase
 
 MODEL_REPO = "Xenova/clip-vit-base-patch32"
-"""OpenAI's `clip-vit-base-patch32`, exported by Xenova as separate text and vision files."""
 
 MODEL_REVISION = "d15189d7028b43f1d3e65039190477f6af591c2a"
 """Pinned to a commit, so the file cannot change under the recorded checksum."""
@@ -35,17 +34,13 @@ MODEL_SHA256 = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299
 MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MODEL_FILE}"
 
 IMAGE_SIZE = 224
-"""CLIP ViT-B/32's input size, baked into the export."""
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
-"""OpenAI's CLIP preprocessing constants: part of the model, not a preference."""
 
 EMBED_BATCH = 16
-"""Thumbnails per model run, and so how often `catch_up` looks at its `stop_event`."""
 
 CAUGHT_UP = 30.0
-"""Seconds to wait once every cached thumbnail has an embedding; the downloader keeps adding."""
 
 DOWNLOAD_CHUNK = 1 << 20
 """A MiB at a time, which is how often the download looks at its `stop_event` (invariant 12)."""
@@ -57,25 +52,21 @@ _PENDING = (
     "Image similarity is still starting up — wallpapers are being compared by colour and category until "
     "its model is ready."
 )
-"""What the page says before the provider can embed anything."""
 
 _FAILED = (
     "Image similarity could not fetch its model ({failure}) — wallpapers are being compared by colour "
     "and category instead."
 )
-"""After the fetch failed; the failure is quoted because no network and a bad checksum read differently."""
 
 _COVERAGE = (
     "Image similarity covers {embedded:,} of {pool:,} Pool wallpapers so far — the rest are compared by "
     "colour and category until their thumbnails are embedded."
 )
-"""Once the model works, while part of the **Pool** has no **Embedding** yet."""
 
 _UNUSABLE = (
     "Image similarity could not open its model ({failure}) — wallpapers are being compared by colour and "
     "category instead. Deleting the file under `models/` will fetch it again."
 )
-"""When the file is there but ONNX Runtime will not open it."""
 
 
 class ModelSource(Protocol):
@@ -87,8 +78,6 @@ class ModelSource(Protocol):
 
 
 class EmbeddingWriter(Protocol):
-    """The write side of the cache, apart from `EmbeddingSource` so a test can read from a dict."""
-
     def store(self, wallpaper_id: str, vector: NDArray[np.float32]) -> None: ...
 
     def embedded_ids(self) -> set[str]: ...
@@ -103,9 +92,7 @@ class EmbeddingSource(Protocol):
 
 
 class Embedder(Protocol):
-    """Turns thumbnail files into L2-normalised embeddings, one row each; injected so no test needs a
-    model.
-    """
+    """Turns thumbnail files into L2-normalised embeddings; injected so no test needs a model."""
 
     def __call__(self, images: Sequence[Path]) -> NDArray[np.float32]: ...
 
@@ -188,13 +175,11 @@ class EmbeddingSimilarityProvider:
         self._baseline = MetadataSimilarityProvider() if baseline is None else baseline
         self._model = model
         self._embedder = embedder
-        # Written to is the read cache when that is an `EmbeddingCache`; a test's read side may be a dict.
         self._cache = cache if cache is not None else vectors if isinstance(vectors, EmbeddingCache) else None
         self._batch = batch
-        # Pending means a model source and nothing to run it with; an injected embedder is full strength.
+        # Pending: a model source and nothing to run it with.
         self._state: str | None = _PENDING if model is not None and embedder is None else None
         self._unreadable: set[str] = set()
-        # Read on request threads, written on the background one.
         self._lock = threading.Lock()
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
@@ -226,7 +211,6 @@ class EmbeddingSimilarityProvider:
         if self._model is None or self._cache is None:
             return NOTHING_TO_CATCH_UP
         if self._embedder is None and not self._ready(stop_event):
-            # A failed download is not retried for ever: the usual cause is being offline.
             return NOTHING_TO_CATCH_UP
 
         pending = self._pending(thumbnails)
@@ -252,9 +236,7 @@ class EmbeddingSimilarityProvider:
         return _COVERAGE.format(embedded=embedded, pool=len(embeddable))
 
     def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
-        """The cached CLIP rows of `pool`, in its order; a zero row for no **Embedding** or a vector of the
-        wrong width.
-        """
+        """The cached CLIP rows of `pool`, in its order; a zero row where there is no **Embedding**."""
         held = self._vectors.vectors_for([w.id for w in pool])
         width = next(iter(held.values())).size if held else 0
         rows, _ = _rows([w.id for w in pool], held, width)
@@ -267,9 +249,8 @@ class EmbeddingSimilarityProvider:
         try:
             path = self._model.ensure(stop_event)
         except _Cancelled:
-            # Shutdown, not a failure.
             return False
-        except Exception as failure:  # see the docstring: this must never raise
+        except Exception as failure:  # `catch_up` must never raise
             with self._lock:
                 self._state = _FAILED.format(failure=failure)
             return False
@@ -280,7 +261,7 @@ class EmbeddingSimilarityProvider:
         try:
             # Opened here so an unopenable file is a line on the page, not every embedding failing silently.
             embedder.warm()
-        except Exception as failure:  # see the docstring: this must never raise
+        except Exception as failure:  # `catch_up` must never raise
             with self._lock:
                 self._state = _UNUSABLE.format(failure=failure)
             return False
@@ -291,7 +272,7 @@ class EmbeddingSimilarityProvider:
         return True
 
     def _pending(self, thumbnails: Path) -> list[Path]:
-        """Every cached thumbnail with no embedding yet, oldest first, so a restart resumes where it was."""
+        """Every cached thumbnail with no embedding yet, oldest first."""
         if self._cache is None or not thumbnails.is_dir():
             return []
         skip = self._cache.embedded_ids() | self._unreadable
@@ -299,7 +280,7 @@ class EmbeddingSimilarityProvider:
         return sorted(files, key=lambda path: path.stat().st_mtime)
 
     def _embed(self, batch: Sequence[Path]) -> None:
-        """One batch through the model and into the cache; a file that will not open costs itself only."""
+        """One batch through the model and into the cache."""
         if self._embedder is None or self._cache is None:
             return
         try:
@@ -312,15 +293,13 @@ class EmbeddingSimilarityProvider:
             self._cache.store(path.stem, vector)
 
     def _embed_one(self, path: Path) -> None:
-        """Retry a failed batch one file at a time, so one truncated thumbnail cannot stop the **Pool** being
-        embedded.
-        """
+        """Retry a failed batch one file at a time, so one truncated thumbnail is the only casualty."""
         if self._embedder is None or self._cache is None:
             return
         try:
             vectors = self._embedder([path])
         except Exception:  # a thumbnail Pillow cannot read is skipped, not fatal
-            # In memory only, so the next pass does not spin on it and a restart retries it.
+            # In memory only: a restart retries it.
             with self._lock:
                 self._unreadable.add(path.stem)
             return
@@ -369,7 +348,7 @@ class OnnxClipEmbedder:
             )
             self._session = session
             self._input_name = session.get_inputs()[0].name
-            # `image_embeds` is the projected vector CLIP compares in; `_as_vectors` handles its absence.
+
             names = [output.name for output in session.get_outputs()]
             self._output_index = names.index("image_embeds") if "image_embeds" in names else 0
         return self._session
@@ -427,7 +406,7 @@ class DownloadedModel:
 
 
 class _Cancelled(Exception):
-    """Shutdown arrived mid download: not worth putting on the page."""
+    """Shutdown arrived mid download."""
 
 
 class _OnnxNode(Protocol):
@@ -435,7 +414,7 @@ class _OnnxNode(Protocol):
 
 
 class _OnnxSession(Protocol):
-    """Just enough of `onnxruntime.InferenceSession` to type, since onnxruntime ships no `py.typed`."""
+    """Just enough of `onnxruntime.InferenceSession` to type: it ships no `py.typed`."""
 
     def get_inputs(self) -> Sequence[_OnnxNode]: ...
     def get_outputs(self) -> Sequence[_OnnxNode]: ...

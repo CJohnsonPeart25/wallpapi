@@ -9,9 +9,7 @@ from enum import StrEnum
 
 @dataclass(frozen=True, slots=True)
 class Wallpaper:
-    """One Wallhaven image, shaped like a row of its search response. Frozen: a value, never mutated
-    downstream.
-    """
+    """One Wallhaven image, shaped like a row of its search response."""
 
     id: str
     width: int
@@ -36,10 +34,8 @@ class Verdict(StrEnum):
 
 
 class Clearance(StrEnum):
-    """The legacy **Decision log** entry that withdrew an **Explicit Verdict** (ADR 0015).
-
-    Read and never written: the log is append-only, so an older database may hold one, and it resolves to
-    nothing. Not a fifth **Verdict**.
+    """The legacy **Decision log** entry that withdrew an **Explicit Verdict** (ADR 0015); read, never
+    written, and it resolves to nothing.
     """
 
     CLEARED = "cleared"
@@ -49,9 +45,8 @@ class Clearance(StrEnum):
 class DecisionEntry:
     """One appended row of the **Decision log**.
 
-    `seq` orders and resolves the log; `recorded_at` is display-only because one submit shares it (invariant
-    4). `entry` is not named `verdict` because the log also holds legacy **Clearances**. `batch_id` is `NULL`
-    for an entry from **History**.
+    `seq` orders and resolves the log; `recorded_at` is display-only (invariant 4). `entry` is not named
+    `verdict` because the log also holds legacy **Clearances**.
     """
 
     seq: int
@@ -73,8 +68,7 @@ class Zone(StrEnum):
 class Mix:
     """The **Zone** percentages a **Batch** is built from, under a name the user switches by.
 
-    Does not validate itself: `core.validated_mix` does, because a form must get a refusal next to the field,
-    not a traceback.
+    Does not validate itself: `core.validated_mix` does, because a form must get a refusal, not a traceback.
     """
 
     name: str

@@ -1,7 +1,5 @@
-"""Putting a file on disk without ever leaving a half-written one there.
-
-Shared by the **Thumbnail cache** and the **Library**, which are separate concerns and import neither each
-other.
+"""Putting a file on disk without ever leaving a half-written one there; shared by the **Thumbnail cache** and
+the **Library**.
 """
 
 from __future__ import annotations
@@ -16,8 +14,7 @@ def write_atomically(destination: Path, chunks: bytes | Iterable[bytes]) -> None
     """Write via a temp file beside `destination`, then `os.replace` it into place.
 
     The temp file is a sibling because `os.replace` is atomic only within one filesystem and raises across
-    drives on Windows. The parent folder is created on first write. Chunks as well as `bytes`, so a streamed
-    download is not assembled in memory first.
+    drives on Windows. The parent folder is created on first write.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f"{destination.name}.{uuid4().hex}.part")

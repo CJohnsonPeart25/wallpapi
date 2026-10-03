@@ -1,10 +1,8 @@
 """A **Similarity provider** that reads Wallhaven's tags.
 
-Tags come only from `GET /api/v1/w/{id}`, one **API call** per **Wallpaper** out of the refill's 45 a minute,
-so fetching is a step somebody runs on purpose, never wired into the refill. A pair where both sides have tags
-scores `TAG_SHARE * jaccard + (1 - TAG_SHARE) * baseline`; any other pair scores the baseline alone, so an
-untagged **Wallpaper** is not called unlike everything. Jaccard, not cosine, because it notices a size
-mismatch between tag sets.
+Tags cost one **API call** per **Wallpaper** from the refill's 45 a minute, so fetching is a step somebody
+runs on purpose and is never wired into the refill. A pair with tags on both sides scores `TAG_SHARE * jaccard
++ (1 - TAG_SHARE) * baseline`; any other pair scores the baseline alone.
 """
 
 from __future__ import annotations
@@ -24,20 +22,14 @@ from wallpapi.similarity_cache import SidecarDatabase
 from wallpapi.wallhaven import Tag
 
 TAG_SHARE = 0.6
-"""How much the tags are worth when both sides have them, the baseline taking the rest. Not tuned against
-anything.
-"""
+"""How much the tags are worth when both sides have them, the baseline taking the rest. Not tuned."""
 
 
 class TagSource(Protocol):
-    """Where the provider gets tag sets from, plural so there is one call per matrix and never a loop
-    (invariant 2).
-    """
+    """Where the provider gets tag sets from, plural so there is one call per matrix (invariant 2)."""
 
     def tags_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, tuple[int, ...]]:
-        """The tag ids of each **Wallpaper** that has any, keyed by id; one never fetched or with no tags is
-        absent.
-        """
+        """The tag ids of each **Wallpaper** that has any, keyed by id; one with none is absent."""
         ...
 
 
@@ -60,10 +52,8 @@ _SCHEMA = (
 
 
 class TagCache:
-    """Wallhaven's tags, kept for good in a SQLite file of the provider's own: a re-fetch costs one of 45
-    calls a minute.
-
-    `fetched` is a table of its own so a **Wallpaper** with no tags is not asked about again on every run.
+    """Wallhaven's tags in a SQLite file of the provider's own; `fetched` is a table of its own so a
+    **Wallpaper** with no tags is not asked about again.
     """
 
     def __init__(self, path: Path) -> None:
@@ -77,9 +67,7 @@ class TagCache:
         return self._db.size_bytes()
 
     def tags_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, tuple[int, ...]]:
-        """Every tag id held for the named **Wallpapers**, in chunked queries: SQLite's parameter limit is
-        32,766.
-        """
+        """Every tag id held for the named **Wallpapers**, chunked under SQLite's parameter limit."""
         requested = list(dict.fromkeys(wallpaper_ids))
         found: dict[str, list[int]] = {}
         connection = self._db.connect()
@@ -122,11 +110,8 @@ class TagCache:
 
 
 class TagSimilarityProvider:
-    """Tag overlap blended with the baseline.
-
-    The indicator matrix has columns only for the decided set's tags: a tag no decided **Wallpaper** carries
-    adds nothing to an intersection, and the union needs only each side's own count. One matmul, no loop over
-    pairs.
+    """Tag overlap blended with the baseline. Columns are the decided set's tags only; one matmul, no loop
+    over pairs.
     """
 
     def __init__(
@@ -167,16 +152,14 @@ class TagSimilarityProvider:
         return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
-        """Nothing: filling the cache is one **API call** per **Wallpaper**, and a provider may not quietly
-        spend the refill's budget.
+        """Nothing: filling the cache is one **API call** per **Wallpaper**, which a provider may not spend
+        quietly.
         """
         del thumbnails, stop_event
         return NOTHING_TO_CATCH_UP
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
-        """Nothing: an untagged **Wallpaper** falls back to the baseline, and nothing in the app moves a
-        coverage count.
-        """
+        """Nothing: an untagged **Wallpaper** falls back to the baseline."""
         del pool
         return None
 

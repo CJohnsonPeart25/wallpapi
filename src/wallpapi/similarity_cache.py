@@ -1,7 +1,7 @@
-"""The SQLite file a **Similarity provider** keeps its own regenerable cache in.
+"""The SQLite file a **Similarity provider** keeps its own regenerable cache in, apart from the **Decision
+log**.
 
-Apart from `wallpapi.db`, whose **Decision log** is irreplaceable; one file per provider, so removing a
-provider is deleting a file. Connection rules are `CoreService._write`'s.
+One file per provider, so removing a provider is deleting a file. Connection rules are `CoreService._write`'s.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ class _Connections(threading.local):
 class SidecarDatabase:
     """A small SQLite file beside `wallpapi.db`, owned by one **Similarity provider**.
 
-    `schema` is applied on every first use, all `CREATE ... IF NOT EXISTS`; a cache whose shape changed is
-    deleted and refilled, so there is no migration.
+    `schema` is applied on every first use and is all `CREATE ... IF NOT EXISTS`: a cache whose shape changed
+    is deleted, so no migration.
     """
 
     def __init__(self, path: Path, schema: Sequence[str]) -> None:
@@ -57,9 +57,7 @@ class SidecarDatabase:
         return connection
 
     def _create(self, connection: sqlite3.Connection) -> None:
-        """Set WAL and apply the schema once per process, under a lock so two first connections do not both
-        set the journal mode.
-        """
+        """Set WAL and apply the schema once per process, under a lock."""
         with self._creation_lock:
             if self._created:
                 return
@@ -71,9 +69,7 @@ class SidecarDatabase:
 
     @contextmanager
     def write(self, connection: sqlite3.Connection | None = None) -> Generator[sqlite3.Connection]:
-        """A write transaction: see `CoreService._write`. `connection` is passed only by `_create`, which
-        `connect` calls.
-        """
+        """A write transaction: see `CoreService._write`."""
         handle = self.connect() if connection is None else connection
         handle.execute("BEGIN IMMEDIATE")
         try:

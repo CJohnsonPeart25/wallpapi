@@ -1,7 +1,5 @@
-"""**Allocation**: turning a **Mix** into **Batch** slots, and ordering the **Unknowns**. Pure arithmetic.
-
-Whole-number slots are guaranteed (`floor(percentage * size / 100)`); the leftovers are rolled, weighted by
-the remainders. All in integers, `divmod(percentage * size, 100)`.
+"""**Allocation**: turning a **Mix** into **Batch** slots, and ordering the **Unknowns**. Pure arithmetic, all
+in integers.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ from wallpapi.rng import SeededRandom
 
 ZONE_ORDER: tuple[Zone, ...] = (Zone.UNKNOWN, Zone.BANGER, Zone.DUD)
 """The order the **Zones** are visited in and a shortfall is filled from. Fixed, so a seed allocates the same
-way whatever the **Mix**.
+way.
 """
 
 PERCENT = 100
@@ -27,9 +25,8 @@ def allocate(mix: Mix, size: int, random: SeededRandom) -> dict[Zone, int]:
     """How many of a **Batch** of `size` each **Zone** is asked for; every **Zone** is present and the counts
     sum to `size`.
 
-    Leftovers are rolled by the remainders as they stood before rolling, which keeps a **Zone**'s expected
-    share exact (largest-remainder would cap it). Too few eligible **Wallpapers** is the Core service's
-    shortfall, not this.
+    Whole slots are guaranteed; leftovers are rolled by the remainders, which keeps each **Zone**'s expected
+    share exact.
     """
     if size <= 0:
         return dict.fromkeys(ZONE_ORDER, 0)
@@ -74,9 +71,8 @@ def varied_order(
 ) -> list[int]:
     """The **Unknowns** in draw order, one from each of `k` look-alike groups first (ADR 0018).
 
-    `vectors` is `len(unknowns)` x d, a zero row meaning no **Embedding**. Returns a permutation of the rows:
-    a pick per cluster, then the other embedded rows, then the unembedded. With `k` zero or too few embedded
-    rows the order is unchanged.
+    `vectors` has a zero row for no **Embedding**. A permutation of the rows: a pick per cluster, then the
+    other embedded rows, then the unembedded.
     """
     norms = np.linalg.norm(vectors, axis=1)
     embedded = [index for index in range(len(vectors)) if norms[index] > 0.0]
@@ -100,7 +96,7 @@ def varied_order(
 
 def _spherical_kmeans(points: NDArray[np.float64], k: int, random: SeededRandom) -> list[list[int]]:
     """`k` clusters of unit-length `points` by cosine. An empty centre stays put: re-seeding at the farthest
-    point would pick CLIP's outliers.
+    point picks outliers.
     """
     centres = points[_kmeans_plus_plus(points, k, random)]
     assigned = np.zeros(len(points), dtype=np.int64)
@@ -115,9 +111,7 @@ def _spherical_kmeans(points: NDArray[np.float64], k: int, random: SeededRandom)
 
 
 def _kmeans_plus_plus(points: NDArray[np.float64], k: int, random: SeededRandom) -> list[int]:
-    """`k` distinct starting rows: the first uniform, each next in proportion to squared cosine distance from
-    the nearest.
-    """
+    """`k` distinct starting rows: the first uniform, each next in proportion to squared cosine distance."""
     chosen = [min(int(random.fraction() * len(points)), len(points) - 1)]
     nearest = 1.0 - points @ points[chosen[0]]
     while len(chosen) < k:
@@ -142,8 +136,8 @@ def _proportional(weights: NDArray[np.float64], chosen: Sequence[int], random: S
 
 
 def weighted_order[T](items: Sequence[T], weights: Sequence[float], random: SeededRandom) -> list[T]:
-    """A random permutation of `items` in which a heavier item tends to come sooner (Efraimidis and Spirakis);
-    weight zero sorts last.
+    """A random permutation of `items` in which a heavier item tends to come sooner; weight zero sorts
+    last.
     """
     keyed = [
         (_key(random.fraction(), weight), index, item)

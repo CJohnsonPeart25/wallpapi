@@ -1,7 +1,6 @@
 """The entry point: `uv run python -m wallpapi`, and the one place the real dependencies are wired together.
 
-Bound to `127.0.0.1` and single-worker: `--workers N` would mean N writers and N refill threads on one SQLite
-file.
+Bound to `127.0.0.1` and single-worker: `--workers N` is N writers and N refill threads on one SQLite file.
 """
 
 from __future__ import annotations
@@ -31,16 +30,10 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 
 DEFAULT_SIMILARITY = "embedding"
-"""The **Similarity provider** wired in unless `WALLPAPI_SIMILARITY` says otherwise (ADR 0013).
-
-`embedding` fetches its own model on first boot and falls back to the baseline until its cache fills.
-`metadata` is the baseline; `tags` needs its cache filled by hand.
-"""
+"""The **Similarity provider** wired in unless `WALLPAPI_SIMILARITY` says otherwise (ADR 0013)."""
 
 MODEL_FILENAME = "clip-vit-b32-vision-quantized.onnx"
-"""The image tower's name on disk, under `models/` in the wallpapi home. Named for what it is, so a new model
-is a new file.
-"""
+"""The image tower's name on disk, under `models/` in the wallpapi home."""
 
 
 def wallpapi_home() -> Path:
@@ -50,11 +43,7 @@ def wallpapi_home() -> Path:
 
 
 def build_similarity(root: Path) -> SimilarityProvider:
-    """Which **Similarity provider** to wire in, from `WALLPAPI_SIMILARITY` (ADR 0013).
-
-    Each owns its own SQLite cache beside `wallpapi.db`. An unrecognised name raises rather than quietly
-    running a different provider.
-    """
+    """Which **Similarity provider** to wire in, from `WALLPAPI_SIMILARITY`; an unrecognised name raises."""
     choice = os.environ.get("WALLPAPI_SIMILARITY", DEFAULT_SIMILARITY).strip().lower()
     if choice == "metadata":
         return MetadataSimilarityProvider()

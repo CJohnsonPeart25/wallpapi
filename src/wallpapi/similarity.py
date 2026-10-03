@@ -24,9 +24,7 @@ class SimilarityProvider(Protocol):
     """How alike **Wallpapers** are."""
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
-        """A `len(pool)` x `len(decided)` matrix of similarities in `[0, 1]`; 1.0 is the same
-        **Wallpaper**.
-        """
+        """A `len(pool)` x `len(decided)` matrix of similarities in `[0, 1]`."""
         ...
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
@@ -38,28 +36,19 @@ class SimilarityProvider(Protocol):
         ...
 
     def notice(self, pool: Sequence[Wallpaper]) -> str | None:
-        """One line for the page when this provider is not at full strength, or `None`: a fallback **Score**
-        looks like a real one.
-        """
+        """One line for the page when not at full strength, or `None`: a fallback **Score** looks real."""
         ...
 
     def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
-        """Each of `pool`'s positions as a `len(pool)` x d array (zero row for no **Embedding**), or `None` if
-        this provider has none.
-        """
+        """Each of `pool`'s positions as a `len(pool)` x d array (a zero row for none), or `None`."""
         ...
 
 
 HUE_BINS = 12
-
 TONE_BINS = 2
-
 TONE_SPLIT = 0.5
-
 NEUTRAL_BINS = 4
-
 SATURATION_FLOOR = 0.15
-
 CHROMATIC_BINS = HUE_BINS * TONE_BINS
 
 COLOURLESS_BIN = CHROMATIC_BINS + NEUTRAL_BINS
@@ -68,17 +57,14 @@ COLOURLESS_BIN = CHROMATIC_BINS + NEUTRAL_BINS
 BIN_COUNT = COLOURLESS_BIN + 1
 
 CATEGORY_SHARE = 0.25
-"""What a matching category is worth, the colours taking the rest: weak evidence, as one in three match by
-chance.
-"""
+"""What a matching category is worth, the colours taking the rest: weak evidence."""
 
 
 class MetadataSimilarityProvider:
     """The baseline: dominant colours and category off the search response. No **API call**.
 
-    Colour similarity is the cosine of unit-length histograms over `BIN_COUNT` bins, blended with
-    `CATEGORY_SHARE` for a matching category. Deliberately crude, and vectorised: one matmul, no loop over
-    pairs.
+    Colour cosine over `BIN_COUNT` histogram bins blended with `CATEGORY_SHARE`. Crude, and vectorised: one
+    matmul, no loop over pairs.
     """
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
