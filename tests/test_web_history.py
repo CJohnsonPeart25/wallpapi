@@ -165,20 +165,6 @@ def test_the_empty_page_says_so_rather_than_rendering_nothing(db_path: Path) -> 
     assert "Nothing resolves to ban yet" in filtered.text
 
 
-def test_every_page_links_to_the_other_two(db_path: Path) -> None:
-    """One nav, three pages. **History** is reachable without typing a URL, and so is the way back."""
-    harness = make_harness(db_path, catalogue=catalogue_of(1))
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        pages = [client.get(path).text for path in ("/", "/history", "/settings")]
-
-    for body in pages:
-        assert 'href="/history"' in body
-        assert 'href="/settings"' in body
-        assert 'href="/"' in body
-
-
 # -- On the shared shell (#41) ---------------------------------------------------------------------------
 
 CLASS_ATTRIBUTE = re.compile(r'class="([^"]*)"')

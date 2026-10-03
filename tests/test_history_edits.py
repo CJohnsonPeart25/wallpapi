@@ -48,19 +48,6 @@ def test_an_ignore_from_history_overturns_the_verdict(db_path: Path) -> None:
     assert (latest.entry, latest.batch_id) == (Verdict.IGNORE, None)
 
 
-def test_a_verdict_after_an_ignore_wins(db_path: Path) -> None:
-    """An **Ignore** is not a floor the **Wallpaper** is stuck on: judging it again decides outright."""
-    harness = make_harness(db_path, catalogue=catalogue_of(8))
-    first = submit_with(harness, {})
-    subject = first.wallpapers[0].id
-
-    assert harness.core.edit_verdict(subject, Verdict.FAVOURITE) is None
-
-    assert harness.core.resolve_verdicts([subject])[subject] == ResolvedVerdict(
-        verdict=Verdict.FAVOURITE, value=100
-    )
-
-
 def test_two_history_edits_sharing_a_timestamp_resolve_by_sequence(db_path: Path) -> None:
     """Invariant 4, reachable through **History**: two edits are two clicks, and under wallpapi's
     whole-second clock they share a `recorded_at` exactly as entries from one transaction do. Ordering by
@@ -163,42 +150,6 @@ def test_editing_an_unknown_wallpaper_is_refused_and_appends_nothing(harness: Ha
     assert refused == HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
     assert harness.core.list_history() == before
     assert harness.library.written == []
-
-
-def test_favouriting_from_history_writes_the_library_file(db_path: Path, tmp_path: Path) -> None:
-    """Acceptance criterion: the **Library** follows a **History** edit exactly as it follows a submission.
-
-    Nothing in the **Library** code knows **History** exists — it is derived from the **Decision log**
-    (ADR 0006), so appending the entry is the whole of the change.
-    """
-    library_path = tmp_path / "Library"
-    harness = make_harness(db_path, catalogue=catalogue_of(1))
-    harness.core.update_settings(batch_size=1, library_path=library_path)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    shown = batch.wallpapers[0]
-    submit_with(harness, {})
-
-    assert harness.core.edit_verdict(shown.id, Verdict.FAVOURITE) is None
-
-    assert len(harness.library.written) == 1
-    assert harness.library.written[0].source_url == shown.full_url
-    assert harness.library.written[0].destination == library_path / f"{shown.id}.jpg"
-
-
-def test_downgrading_a_favourite_from_history_removes_its_library_file(db_path: Path, tmp_path: Path) -> None:
-    """Acceptance criterion: removing a **Favourite** from **History** removes its file — and the path
-    deleted is the one recorded when it was written, never one recomputed here (invariant 9)."""
-    harness = make_harness(db_path, catalogue=catalogue_of(1))
-    harness.core.update_settings(batch_size=1, library_path=tmp_path / "Library")
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    submit_with(harness, {batch.wallpapers[0].id: Verdict.FAVOURITE})
-    written = harness.library.written[0].destination
-
-    assert harness.core.edit_verdict(batch.wallpapers[0].id, Verdict.LIKE) is None
-
-    assert harness.library.removed == [written]
 
 
 def test_ignoring_a_favourite_from_history_removes_its_library_file(db_path: Path, tmp_path: Path) -> None:

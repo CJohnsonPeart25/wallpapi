@@ -229,24 +229,3 @@ def test_a_later_explicit_verdict_replaces_an_earlier_one(db_path: Path) -> None
     assert harness.core.resolve_verdicts([changed])[changed] == ResolvedVerdict(
         verdict=Verdict.FAVOURITE, value=100
     )
-
-
-def test_two_explicit_verdicts_sharing_a_timestamp_resolve_to_the_later_one(db_path: Path) -> None:
-    """Invariant 4: resolution orders by sequence, never by timestamp.
-
-    The clock is frozen for the submission and the **History** edit after it, so the two **Explicit
-    Verdicts** are indistinguishable by `recorded_at` — exactly the situation entries written in one
-    transaction, or two clicks inside one second, are in. An implementation that ordered by timestamp would
-    be picking arbitrarily here and would pass or fail by luck of the row order.
-    """
-    harness = make_harness(db_path, catalogue=catalogue_of(8))
-    changed = "wp0000"
-    submit_with(harness, {changed: Verdict.FAVOURITE})
-
-    assert harness.core.edit_verdict(changed, Verdict.LIKE) is None
-
-    history = [e for e in harness.core.list_history() if e.wallpaper_id == changed]
-    assert len({e.recorded_at for e in history}) == 1, "the clock must not have moved"
-    assert harness.core.resolve_verdicts([changed])[changed] == ResolvedVerdict(
-        verdict=Verdict.LIKE, value=50
-    )

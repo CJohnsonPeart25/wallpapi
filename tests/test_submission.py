@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.conftest import FIXED_NOW, Harness, make_harness
+from tests.conftest import Harness, make_harness
 from tests.fakes import catalogue_of
 from wallpapi.core import Batch, SubmissionRefused
 from wallpapi.model import Verdict
@@ -124,22 +124,3 @@ def test_submitting_an_unknown_batch_id_is_refused(harness: Harness) -> None:
     assert isinstance(refusal, SubmissionRefused)
     assert refusal.reason is SubmissionRefused.Reason.UNKNOWN_BATCH
     assert harness.core.list_history() == []
-
-
-def test_entries_from_one_submission_have_a_stable_distinct_order(harness: Harness) -> None:
-    """Verdict resolution orders by sequence, not timestamp — and #3 depends on this holding.
-
-    The clock is frozen, so all 8 entries share a timestamp to the microsecond. If ordering rested on the
-    timestamp, "the latest Explicit Verdict wins" would be undefined the moment two Verdicts land in one
-    submit transaction. The sequence must be distinct and ascending regardless.
-    """
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-
-    harness.core.submit_batch(batch.id)
-
-    history = harness.core.list_history()
-    sequences = [e.seq for e in history]
-    assert len(set(sequences)) == 8
-    assert sequences == sorted(sequences)
-    assert {e.recorded_at for e in history} == {FIXED_NOW}

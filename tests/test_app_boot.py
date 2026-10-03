@@ -64,3 +64,6 @@ def test_every_page_boots_on_the_shell(db_path: Path) -> None:
         assert response.status_code == 200, path
         assert "<nav" in response.text, path
         assert '<main class="container-fluid">' in response.text, path
+        assert 'href="/history"' in response.text, path
+        assert 'href="/settings"' in response.text, path
+        assert 'href="/"' in response.text, path

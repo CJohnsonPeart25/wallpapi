@@ -138,27 +138,6 @@ def test_a_refused_post_keeps_what_was_typed(db_path: Path) -> None:
     assert 'value="Wallpapers"' in response.text
 
 
-def test_the_batch_page_links_to_the_settings_page(db_path: Path) -> None:
-    """Otherwise the page exists and nothing reaches it."""
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        response = client.get("/")
-
-    assert 'href="/settings"' in response.text
-
-
-def test_the_settings_page_links_back_to_the_batch_page(db_path: Path) -> None:
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        response = client.get("/settings")
-
-    assert 'href="/"' in response.text
-
-
 def test_a_batch_size_saved_from_the_page_reaches_the_next_batch(db_path: Path, tmp_path: Path) -> None:
     """End to end: the acceptance criterion as a user would meet it.
 

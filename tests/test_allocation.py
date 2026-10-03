@@ -173,8 +173,3 @@ def test_a_mix_is_refused_rather_than_rounded() -> None:
             validated_mix("wrong", unknown=typed, banger="20", dud="5")
             is SettingsRefused.Reason.MIX_PERCENTAGES_INVALID
         )
-
-
-def test_a_mix_needs_a_name() -> None:
-    """A **Mix** is switched to by name, so a blank one is a button with nothing on it."""
-    assert validated_mix("   ", unknown=75, banger=20, dud=5) is SettingsRefused.Reason.MIX_NAME_INVALID

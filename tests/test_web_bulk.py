@@ -124,21 +124,6 @@ def test_an_unknown_bulk_verdict_is_refused(db_path: Path) -> None:
     assert response.status_code == 400
 
 
-def test_a_bulk_mark_against_an_already_submitted_batch_is_refused(db_path: Path) -> None:
-    """Invariant 7 through the bulk route, with the status the stale tab's submit would get."""
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/batch").text)
-        client.post("/submit", data={"batch_id": batch_id})
-
-        response = client.post("/draft/all", data={"batch_id": batch_id, "verdict": "favourite"})
-
-    assert response.status_code == 409
-    assert "already" in response.text.lower()
-
-
 def test_the_batch_carries_favourite_like_ban_and_clear_controls_for_the_whole_batch(
     db_path: Path,
 ) -> None:

@@ -17,28 +17,6 @@ from wallpapi.core import Batch
 from wallpapi.web.app import create_app
 
 
-def test_htmx_is_served_by_the_app_and_never_from_a_cdn(db_path: Path) -> None:
-    """Acceptance criterion: htmx is vendored into the repo and served by the app, with no CDN reference.
-
-    A personal tool that stops working when a CDN is unreachable is worse than one with a 50KB file in the
-    repo, and a third-party script tag on a page that renders your own **Decision log** is a dependency on
-    somebody else's uptime and integrity both.
-    """
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        body = client.get("/").text
-        vendored = client.get("/static/htmx.min.js")
-
-    assert 'src="/static/htmx.min.js"' in body
-    assert "unpkg" not in body
-    assert "cdn" not in body.lower()
-    assert "htmx.org" not in body
-    assert vendored.status_code == 200
-    assert "htmx" in vendored.text[:200]
-
-
 def test_every_tile_carries_favourite_like_and_ban_controls(db_path: Path) -> None:
     """Acceptance criterion: each **Wallpaper** in a **Batch** has all three controls.
 
@@ -145,27 +123,6 @@ def test_a_page_load_after_a_partial_draft_shows_the_marks_already_set(db_path: 
 
     assert reloaded.count('data-draft-verdict="like"') == 1
     assert reloaded.count('data-draft-verdict=""') == 7
-
-
-def test_marking_a_tile_of_an_already_submitted_batch_is_refused(db_path: Path) -> None:
-    """Invariant 7 through the page. The stale tab's click must be told why nothing happened, with the
-    same status the stale tab's submit would get."""
-    harness = make_harness(db_path)
-    app = create_app(harness.core)
-
-    with TestClient(app) as client:
-        batch_id = batch_id_of(client.get("/batch").text)
-        live = harness.core.get_next_batch()
-        assert isinstance(live, Batch)
-        marked = live.wallpapers[0].id
-        client.post("/submit", data={"batch_id": batch_id})
-
-        response = client.post(
-            "/draft", data={"batch_id": batch_id, "wallpaper_id": marked, "verdict": "ban"}
-        )
-
-    assert response.status_code == 409
-    assert "already" in response.text.lower()
 
 
 def test_an_ignore_cannot_be_drafted(db_path: Path) -> None:

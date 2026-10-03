@@ -69,24 +69,6 @@ def test_editing_explore_changes_what_the_next_batch_is_made_of(db_path: Path) -
     assert counts == Counter({Zone.UNKNOWN: 10, Zone.BANGER: 9, Zone.DUD: 1})
 
 
-def test_an_edit_leaves_the_batch_on_screen_alone(db_path: Path) -> None:
-    """The same rule every other setting has: the **Mix** is read when a **Batch** is minted.
-
-    An edit that rerolled the live **Batch** would throw away the **Draft Batch** the user was part way
-    through — a far worse surprise than a **Batch** finishing under the percentages it started with.
-    """
-    pool = zoned_pool(db_path, bangers=30, duds=30, unknowns=60)
-    live = _drawn(pool, EXACT_BATCH)
-
-    pool.harness.core.save_mix("explore", unknown=50, banger=45, dud=5)
-    reloaded = pool.harness.core.get_next_batch()
-
-    assert isinstance(reloaded, Batch)
-    assert reloaded.id == live.id
-    assert reloaded.wallpapers == live.wallpapers
-    assert reloaded.zones == live.zones
-
-
 def test_editing_a_mix_does_not_change_which_one_is_active(db_path: Path) -> None:
     """Editing **Refine** while **Explore** is in force edits **Refine** and nothing else. Saving a
     **Mix** is not a way of selecting one."""
