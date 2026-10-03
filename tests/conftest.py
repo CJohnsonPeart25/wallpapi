@@ -8,6 +8,7 @@ asserted.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,14 @@ from wallpapi.model import Wallpaper
 from wallpapi.rng import SeededRandom
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
+
+BATCH_ID = re.compile(r'name="batch_id" value="([0-9a-f]+)"')
+
+
+def batch_id_of(body: str) -> str:
+    match = BATCH_ID.search(body)
+    assert match is not None, "the page must carry the Batch ID it will submit"
+    return match.group(1)
 
 
 @dataclass

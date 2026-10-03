@@ -11,8 +11,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_harness
-from tests.test_web_submission import batch_id_of
+from tests.conftest import batch_id_of, make_harness
 from wallpapi.core import Batch
 from wallpapi.web.app import create_app
 

@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_harness
+from tests.conftest import batch_id_of, make_harness
 from wallpapi.model import Verdict
 from wallpapi.web.app import create_app
-
-BATCH_ID = re.compile(r'name="batch_id" value="([0-9a-f]+)"')
-
-
-def batch_id_of(body: str) -> str:
-    match = BATCH_ID.search(body)
-    assert match is not None, "the page must carry the Batch ID it will submit"
-    return match.group(1)
 
 
 def test_posting_the_form_records_the_batch_and_the_next_fetch_is_a_new_one(db_path: Path) -> None:

@@ -12,9 +12,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import make_harness
+from tests.conftest import batch_id_of, make_harness
 from tests.fakes import catalogue_of
-from tests.test_web_submission import batch_id_of
 from wallpapi.web.app import create_app
 
 PAGES = ("/", "/history", "/settings")
