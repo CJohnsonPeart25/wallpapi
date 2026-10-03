@@ -1,7 +1,5 @@
-"""The SQLite file a **Similarity provider** keeps its own regenerable cache in, apart from the **Decision
-log**.
-
-One file per provider, so removing a provider is deleting a file. Connection rules are `CoreService._write`'s.
+"""The SQLite file a **Similarity provider** keeps its regenerable cache in, apart from the **Decision log**;
+connection rules are `CoreService._write`'s.
 """
 
 from __future__ import annotations
@@ -20,10 +18,8 @@ class _Connections(threading.local):
 
 
 class SidecarDatabase:
-    """A small SQLite file beside `wallpapi.db`, owned by one **Similarity provider**.
-
-    `schema` is applied on every first use and is all `CREATE ... IF NOT EXISTS`: a cache whose shape changed
-    is deleted, so no migration.
+    """A small SQLite file beside `wallpapi.db` owned by one provider; its `CREATE ... IF NOT EXISTS` schema
+    is applied on first use, with no migration.
     """
 
     def __init__(self, path: Path, schema: Sequence[str]) -> None:

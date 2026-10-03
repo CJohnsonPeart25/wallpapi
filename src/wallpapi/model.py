@@ -35,7 +35,7 @@ class Verdict(StrEnum):
 
 class Clearance(StrEnum):
     """The legacy **Decision log** entry that withdrew an **Explicit Verdict** (ADR 0015); read, never
-    written, and it resolves to nothing.
+    written.
     """
 
     CLEARED = "cleared"
@@ -43,9 +43,7 @@ class Clearance(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class DecisionEntry:
-    """One appended row of the **Decision log**.
-
-    `seq` orders and resolves the log; `recorded_at` is display-only (invariant 4). `entry` is not named
+    """One appended row of the **Decision log**, ordered by `seq` (invariant 4). `entry` is not named
     `verdict` because the log also holds legacy **Clearances**.
     """
 
@@ -66,9 +64,8 @@ class Zone(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Mix:
-    """The **Zone** percentages a **Batch** is built from, under a name the user switches by.
-
-    Does not validate itself: `core.validated_mix` does, because a form must get a refusal, not a traceback.
+    """The **Zone** percentages a **Batch** is built from. Does not validate itself: `core.validated_mix`
+    does, so a form gets a refusal and not a traceback.
     """
 
     name: str

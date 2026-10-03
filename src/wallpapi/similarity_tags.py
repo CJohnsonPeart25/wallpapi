@@ -1,8 +1,8 @@
 """A **Similarity provider** that reads Wallhaven's tags.
 
-Tags cost one **API call** per **Wallpaper** from the refill's 45 a minute, so fetching is a step somebody
-runs on purpose and is never wired into the refill. A pair with tags on both sides scores `TAG_SHARE * jaccard
-+ (1 - TAG_SHARE) * baseline`; any other pair scores the baseline alone.
+Tags cost one **API call** per **Wallpaper**, so fetching is a step somebody runs on purpose, never wired into
+the refill. A pair with tags on both sides scores `TAG_SHARE * jaccard + (1 - TAG_SHARE) * baseline`; any
+other pair scores the baseline.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ _SCHEMA = (
 
 class TagCache:
     """Wallhaven's tags in a SQLite file of the provider's own; `fetched` is a table of its own so a
-    **Wallpaper** with no tags is not asked about again.
+    **Wallpaper** with no tags is not asked again.
     """
 
     def __init__(self, path: Path) -> None:
@@ -82,7 +82,7 @@ class TagCache:
         return {wallpaper_id: tuple(tags) for wallpaper_id, tags in found.items()}
 
     def store(self, wallpaper_id: str, tags: Iterable[Tag], *, fetched_at: dt.datetime) -> None:
-        """Record one **Wallpaper**'s tags, replacing what was held; the `fetched` row is written even with no
+        """Record one **Wallpaper**'s tags, replacing what was held; `fetched` is written even with no
         tags.
         """
         with self._db.write() as write:
@@ -110,9 +110,7 @@ class TagCache:
 
 
 class TagSimilarityProvider:
-    """Tag overlap blended with the baseline. Columns are the decided set's tags only; one matmul, no loop
-    over pairs.
-    """
+    """Tag overlap blended with the baseline; columns are the decided set's tags only, one matmul."""
 
     def __init__(
         self,

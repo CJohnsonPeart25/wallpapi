@@ -1,7 +1,5 @@
-"""The **Similarity provider** seam, and the baseline provider behind it.
-
-The interface is a matrix, **Pool** x decided, never pairwise (invariant 2): a pairwise call forces a Python
-loop and tempts caching **Scores**.
+"""The **Similarity provider** seam, and the baseline provider behind it. The interface is a matrix, **Pool**
+x decided, never pairwise (invariant 2): a pairwise call forces a Python loop and tempts caching **Scores**.
 """
 
 from __future__ import annotations
@@ -30,8 +28,8 @@ class SimilarityProvider(Protocol):
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Do one step of this provider's upkeep and return how long to wait before the next.
 
-        On the protocol so the Core service never needs to know which provider it holds. Called only from the
-        background thread; must never raise, and returns `NOTHING_TO_CATCH_UP` when idle.
+        On the protocol so the Core service never needs to know which provider it holds. Background thread
+        only; never raises; `NOTHING_TO_CATCH_UP` when idle.
         """
         ...
 
@@ -61,10 +59,8 @@ CATEGORY_SHARE = 0.25
 
 
 class MetadataSimilarityProvider:
-    """The baseline: dominant colours and category off the search response. No **API call**.
-
-    Colour cosine over `BIN_COUNT` histogram bins blended with `CATEGORY_SHARE`. Crude, and vectorised: one
-    matmul, no loop over pairs.
+    """The baseline: colour histograms and category off the search response. Crude, no **API call**, one
+    matmul.
     """
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:

@@ -1,7 +1,5 @@
-"""The background **Pool** refill thread: a loop on another thread and a way to stop it.
-
-Every decision belongs to the Core service. Every wait is `stop_event.wait(n)`, never `time.sleep(n)`
-(invariant 12).
+"""The background **Pool** refill thread. Every decision belongs to the Core service; every wait is
+`stop_event.wait(n)`, never `time.sleep(n)`.
 """
 
 from __future__ import annotations
@@ -12,9 +10,7 @@ from wallpapi.core import CoreService
 from wallpapi.wallhaven import REQUEST_TIMEOUT
 
 JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
-"""Seconds shutdown waits for the thread: greater than the Wallhaven client's request timeout (invariant
-12).
-"""
+"""Seconds shutdown waits: greater than the Wallhaven client's request timeout (invariant 12)."""
 
 
 def refill_loop(core: CoreService, stop_event: threading.Event) -> None:

@@ -25,10 +25,8 @@ TOO_MANY_REQUESTS = 429
 
 
 class RateLimited(Exception):
-    """Wallhaven answered 429, the only failure told apart from the rest.
-
-    `retry_after` is `None` when there is no usable header: `Retry-After` is parsed as seconds only, and the
-    caller's back-off covers an HTTP date.
+    """Wallhaven answered 429, the only failure told apart. `retry_after` is `None` without a usable header:
+    `Retry-After` is parsed as seconds only, and the caller's back-off covers an HTTP date.
     """
 
     def __init__(self, retry_after: float | None = None) -> None:
@@ -56,9 +54,7 @@ def _retry_after_seconds(value: str | None) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class SearchPage:
-    """One page of a Wallhaven search: 24 **Wallpapers** and the `meta.seed` that stops a walk repeating
-    itself.
-    """
+    """One page of a Wallhaven search: 24 **Wallpapers** and the `meta.seed` that stops a walk repeating."""
 
     wallpapers: tuple[Wallpaper, ...]
     seed: str | None = None
@@ -87,16 +83,14 @@ class Wallhaven(Protocol):
         atleast: str | None = None,
         ratios: str | None = None,
     ) -> SearchPage:
-        """One page of results. `purity` is Wallhaven's three-bit mask, so SFW-only is `"100"`.
-
-        `query` is Wallhaven's `q`, a search expression such as `like:<id>`. `None` parameters are omitted.
-        Raises `RateLimited` on a 429.
+        """One page of results. `purity` is Wallhaven's three-bit mask, so SFW-only is `"100"`; `query` is its
+        `q` expression, such as `like:<id>`. Raises `RateLimited` on a 429.
         """
         ...
 
     def fetch_thumbnail(self, url: str) -> bytes:
-        """The bytes of one thumbnail. Not an **API call**. Raises `RateLimited` on a 429 and
-        `ThumbnailUnavailable` on any other refusal.
+        """The bytes of one thumbnail; not an **API call**. Raises `RateLimited` on a 429, else
+        `ThumbnailUnavailable`.
         """
         ...
 
@@ -201,9 +195,7 @@ class WallhavenClient:
         )
 
     def fetch_tags(self, wallpaper_id: str) -> tuple[Tag, ...]:
-        """One **Wallpaper**'s tags: one **API call** each, so not on the `Wallhaven` protocol and never
-        called by the refill.
-        """
+        """One **Wallpaper**'s tags: one **API call** each, so not on the `Wallhaven` protocol."""
         response = self._client.get(API_WALLPAPER_URL.format(wallpaper_id=wallpaper_id))
         if response.status_code == TOO_MANY_REQUESTS:
             raise RateLimited(_retry_after_seconds(response.headers.get("Retry-After")))

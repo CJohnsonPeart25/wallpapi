@@ -1,8 +1,8 @@
 """The **Similarity provider** wallpapi runs with: thumbnails compared by a CLIP image encoder (ADR 0013).
 
-ONNX Runtime, image tower only, CPU; `onnxruntime` and `pillow` are imported inside the methods that use them
-because importing onnxruntime costs most of a second. Cosine is mapped by `(1 + cosine) / 2` into `[0, 1]`,
-and a pair with no cached embedding falls back to the baseline.
+`onnxruntime` and `pillow` are imported inside the methods that use them because importing onnxruntime costs
+most of a second. Cosine is mapped by `(1 + cosine) / 2` into `[0, 1]`; a pair with no cached embedding falls
+back to the baseline.
 """
 
 from __future__ import annotations
@@ -109,8 +109,8 @@ _SCHEMA = (
 
 
 class EmbeddingCache:
-    """One vector per **Wallpaper**, in a SQLite file of the provider's own; `dim` is stored so another
-    model's width is caught.
+    """One vector per **Wallpaper** in a SQLite file of the provider's own; `dim` is stored so another model's
+    width is caught.
     """
 
     def __init__(self, path: Path) -> None:
@@ -157,7 +157,7 @@ class EmbeddingSimilarityProvider:
     """Cosine between cached CLIP embeddings, mapped into `[0, 1]`, with the baseline as the per-pair
     fallback.
 
-    `notice(pool)` says when it is running on the fallback. `model=None` means it manages no model and reports
+    `notice(pool)` says when it is on the fallback. `model=None` means it manages no model and reports
     nothing.
     """
 
@@ -205,8 +205,8 @@ class EmbeddingSimilarityProvider:
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Get the model, then embed one batch of thumbnails that have none yet.
 
-        One batch per call so `stop_event` is seen between batches (invariant 12). The **Thumbnail cache** is
-        the work list. Never raises: a failed download is recorded and reported by `notice`.
+        One batch per call so `stop_event` is seen between batches (invariant 12); the **Thumbnail cache** is
+        the work list. Never raises: a failed download is reported by `notice`.
         """
         if self._model is None or self._cache is None:
             return NOTHING_TO_CATCH_UP
@@ -355,10 +355,10 @@ class OnnxClipEmbedder:
 
 
 class DownloadedModel:
-    """The image tower, fetched once from Hugging Face and verified against the pinned checksum.
+    """The image tower, fetched once from Hugging Face and verified against the pinned checksum on the way in.
 
-    Verified only on the way in. Written to a `.part` sibling and moved into place, so an interrupted download
-    leaves nothing that looks like a model.
+    Written to a `.part` sibling and moved into place, so an interrupted download leaves nothing that looks
+    like a model.
     """
 
     def __init__(

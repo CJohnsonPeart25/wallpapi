@@ -1,7 +1,5 @@
-"""The background thread that fetches a thumbnail for every **Pool** member (ADR 0017), shaped like
-`refill.py`.
-
-A thread of its own so neither the refill's rate limit nor the model download holds it up.
+"""The background thread that fetches a thumbnail for every **Pool** member (ADR 0017), apart from the refill
+and the model download.
 """
 
 from __future__ import annotations
@@ -18,9 +16,7 @@ JOIN_TIMEOUT = REQUEST_TIMEOUT + 5.0
 
 
 def thumbnail_loop(core: CoreService, stop_event: threading.Event) -> None:
-    """Wait as long as the Core service says, take one step, repeat. `thumbnail_step` never raises, so the
-    thread cannot die.
-    """
+    """Wait as the Core service says, take one step, repeat; `thumbnail_step` never raises."""
     while not stop_event.is_set():
         wait = core.thumbnail_wait()
         if wait > 0 and stop_event.wait(wait):

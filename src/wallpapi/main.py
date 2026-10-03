@@ -1,6 +1,5 @@
-"""The entry point: `uv run python -m wallpapi`, and the one place the real dependencies are wired together.
-
-Bound to `127.0.0.1` and single-worker: `--workers N` is N writers and N refill threads on one SQLite file.
+"""The entry point: `uv run python -m wallpapi`, wiring the real dependencies together. Bound to `127.0.0.1`
+and single-worker (`--workers N` is N writers and N refill threads).
 """
 
 from __future__ import annotations
@@ -73,10 +72,8 @@ def build_core(home: Path | None = None) -> CoreService:
 
 
 def build_app() -> FastAPI:
-    """The real app with its background threads.
-
-    `refill=True` appears here and nowhere else, and nothing tests this function: lose that line and nothing
-    fills.
+    """The real app with its background threads. `refill=True` appears here and nowhere else, and nothing
+    tests it: lose that line and nothing fills.
     """
     return create_app(build_core(), refill=True)
 

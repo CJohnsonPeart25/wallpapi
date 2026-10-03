@@ -1,5 +1,5 @@
-"""**Allocation**: turning a **Mix** into **Batch** slots, and ordering the **Unknowns**. Pure arithmetic, all
-in integers.
+"""**Allocation**: turning a **Mix** into **Batch** slots and ordering the **Unknowns**; pure integer
+arithmetic.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from wallpapi.model import Mix, Zone
 from wallpapi.rng import SeededRandom
 
 ZONE_ORDER: tuple[Zone, ...] = (Zone.UNKNOWN, Zone.BANGER, Zone.DUD)
-"""The order the **Zones** are visited in and a shortfall is filled from. Fixed, so a seed allocates the same
+"""The order the **Zones** are visited in and a shortfall is filled from; fixed so a seed allocates the same
 way.
 """
 
@@ -22,11 +22,9 @@ PERCENT = 100
 
 
 def allocate(mix: Mix, size: int, random: SeededRandom) -> dict[Zone, int]:
-    """How many of a **Batch** of `size` each **Zone** is asked for; every **Zone** is present and the counts
-    sum to `size`.
+    """How many of a **Batch** of `size` each **Zone** is asked for; the counts sum to `size`.
 
-    Whole slots are guaranteed; leftovers are rolled by the remainders, which keeps each **Zone**'s expected
-    share exact.
+    Whole slots are guaranteed; leftovers are rolled by the remainders, keeping each expected share exact.
     """
     if size <= 0:
         return dict.fromkeys(ZONE_ORDER, 0)
@@ -45,9 +43,7 @@ def allocate(mix: Mix, size: int, random: SeededRandom) -> dict[Zone, int]:
 
 
 def _rolled(remainders: dict[Zone, int], random: SeededRandom) -> Zone:
-    """One **Zone**, in proportion to its remainder: a cumulative walk, so the seed alone reproduces the
-    draw.
-    """
+    """One **Zone**, in proportion to its remainder, by a cumulative walk so the seed alone reproduces it."""
     total = sum(remainders.values())
     # Only reachable with no leftover slot to roll; answered rather than divided by zero.
     if total <= 0:
@@ -71,8 +67,7 @@ def varied_order(
 ) -> list[int]:
     """The **Unknowns** in draw order, one from each of `k` look-alike groups first (ADR 0018).
 
-    `vectors` has a zero row for no **Embedding**. A permutation of the rows: a pick per cluster, then the
-    other embedded rows, then the unembedded.
+    A permutation of the rows: a pick per cluster, then the other embedded rows, then the unembedded.
     """
     norms = np.linalg.norm(vectors, axis=1)
     embedded = [index for index in range(len(vectors)) if norms[index] > 0.0]
@@ -95,9 +90,7 @@ def varied_order(
 
 
 def _spherical_kmeans(points: NDArray[np.float64], k: int, random: SeededRandom) -> list[list[int]]:
-    """`k` clusters of unit-length `points` by cosine. An empty centre stays put: re-seeding at the farthest
-    point picks outliers.
-    """
+    """`k` clusters by cosine. An empty centre stays put: re-seeding at the farthest point picks outliers."""
     centres = points[_kmeans_plus_plus(points, k, random)]
     assigned = np.zeros(len(points), dtype=np.int64)
     for _ in range(KMEANS_ITERATIONS):

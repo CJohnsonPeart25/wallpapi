@@ -1,6 +1,4 @@
-"""The web layer: Jinja templates over an already-constructed Core service, on plain `def` endpoints (ADR
-0001).
-"""
+"""The web layer: Jinja templates over an already-constructed Core service (ADR 0001)."""
 
 from __future__ import annotations
 
@@ -58,8 +56,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _drafted_verdict(posted: str) -> Verdict | None:
-    """The **Verdict** a tile control posted, or `None` for a clear. **Ignore** is refused: it is derived at
-    submit.
+    """The **Verdict** a tile control posted, or `None` for a clear; **Ignore** is derived at submit and
+    refused.
     """
     if not posted:
         return None
@@ -73,9 +71,7 @@ def _drafted_verdict(posted: str) -> Verdict | None:
 
 
 def _chosen_verdict(posted: str) -> Verdict:
-    """The **Verdict** a **History** control posted. Required, **Ignore** included: an empty **Verdict** is
-    refused.
-    """
+    """The **Verdict** a **History** control posted: required, **Ignore** included."""
     if not posted:
         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="a verdict is required")
     try:
@@ -85,9 +81,7 @@ def _chosen_verdict(posted: str) -> Verdict:
 
 
 def _history_filter(posted: str) -> Verdict | None:
-    """The resolved **Verdict** the **History** listing is narrowed to, or `None`. **Ignore** is accepted
-    here.
-    """
+    """The resolved **Verdict** the **History** listing is narrowed to, or `None`; **Ignore** is accepted."""
     if not posted:
         return None
     try:
@@ -99,18 +93,15 @@ def _history_filter(posted: str) -> Verdict | None:
 _HISTORY_REFUSAL_STATUS = {
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: HTTPStatus.NOT_FOUND,
 }
-"""A **History** refusal is a status code: only a hand-made post can produce one, and htmx does not swap a
-4xx.
-"""
+"""A **History** refusal is a status code: only a hand-made post can produce one, and htmx skips a 4xx."""
 
 _FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
 """The **History** filter's choices, written out so **Ignore**, the commonest, is last."""
 
 
 def _lifespan(core: CoreService) -> Lifespan[FastAPI]:
-    """Start the three background threads with the app and join them on the way out.
-
-    Started here and not in the Core service, which a test constructs and must not start a thread.
+    """Start the background threads with the app and join them on the way out; a test's Core service must
+    not.
     """
 
     @asynccontextmanager
@@ -156,17 +147,13 @@ def _stored_fields(core: CoreService) -> dict[str, str]:
 
 
 def _mix_context(core: CoreService) -> dict[str, object]:
-    """What the switcher needs. The stored active name, not `core.active_mix().name`, so a deleted **Mix**
-    still shows as chosen.
-    """
+    """What the switcher needs. The stored active name, so a deleted **Mix** still shows as chosen."""
     return {"mixes": core.list_mixes(), "active_mix": core.get_settings().active_mix}
 
 
 def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> dict[str, object]:
-    """The **Mixes** section of the settings page: a row per **Mix**, plus the row that adds one.
-
-    `posted` is a refused save put back over its row; a name matching no stored **Mix** belongs to the add
-    row.
+    """The **Mixes** section of the settings page: a row per **Mix**, plus the add row. `posted` is a refused
+    save put back.
     """
     typed = dict(posted or {})
     typed_name = typed.get("name", "").strip()
@@ -194,19 +181,13 @@ def _mix_section(core: CoreService, posted: Mapping[str, str] | None = None) -> 
 
 
 def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
-    """The app over an already-constructed Core service.
-
-    `refill` starts the background threads and is off by default: `main.py` is the one caller that turns it
-    on, and tests drive the steps by hand.
-    """
+    """The app over a Core service; `refill` starts the background threads and only `main.py` turns it on."""
     app = FastAPI(title="wallpapi", lifespan=_lifespan(core) if refill else None)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
     def render(request: Request, result: Batch | BatchUnavailable | SubmissionRefused) -> HTMLResponse:
-        """One fragment and one status code per outcome; a **Batch** or empty **Pool** carries the refill
-        status, a refusal is the banner.
-        """
+        """One fragment and one status code per outcome."""
         if isinstance(result, SubmissionRefused):
             already = result.reason is SubmissionRefused.Reason.ALREADY_SUBMITTED
             return templates.TemplateResponse(
@@ -245,9 +226,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.post("/submit", response_class=HTMLResponse)
     def submit(request: Request, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-        """Submit the **Batch**, answer with the banner, and tell the page to fetch the next one.
-
-        A refusal triggers the refetch too: the second tab is told why, then shown the live **Batch**.
+        """Submit the **Batch**, answer with the banner, and tell the page to fetch the next one (a refusal
+        too).
         """
         result = core.submit_batch(batch_id)
         if not isinstance(result, Batch):
@@ -297,7 +277,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         batch_id: Annotated[str, Form()],
         verdict: Annotated[str, Form()] = "",
     ) -> HTMLResponse:
-        """Mark the whole **Batch**, or clear it, and swap the grid back: one post and one transaction (ADR
+        """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction (ADR
         0002).
         """
         refused = core.set_all_draft_verdicts(batch_id, _drafted_verdict(verdict))
@@ -343,10 +323,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.post("/mix", response_class=HTMLResponse)
     def choose_mix(request: Request, mix: Annotated[str, Form()]) -> HTMLResponse:
-        """Switch the active **Mix**, and swap the switcher back.
-
-        The live **Batch** is untouched: rerolling would discard its **Draft Batch**. An unknown **Mix** is a
-        400 with the switcher unchanged.
+        """Switch the active **Mix**. The live **Batch** is untouched, so its **Draft Batch** survives; an
+        unknown **Mix** is a 400.
         """
         refused = core.update_settings(active_mix=mix)
         status_code = HTTPStatus.BAD_REQUEST if isinstance(refused, SettingsRefused) else HTTPStatus.OK
@@ -398,8 +376,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         skipped: int = 0,
         failed: int = 0,
     ) -> HTMLResponse:
-        """The settings page. The download counts are query parameters because this page is the redirect
-        target of the download, not the download itself.
+        """The settings page; the download counts are query parameters because it is the download's redirect
+        target.
         """
         return render_settings(
             request,
@@ -423,10 +401,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         similarity_radius: Annotated[str | None, Form()] = None,
         similarity_decay: Annotated[str | None, Form()] = None,
     ) -> Response:
-        """Save the settings, or come back with the reason they were refused.
-
-        Every field is `str`, coerced by the Core service, so a typo gets this page's sentence and not a JSON
-        422. A field the post did not carry is left alone.
+        """Save the settings, or come back with the reason. Fields are `str` and coerced by the Core service;
+        one not posted is left alone.
         """
         posted = {
             name: value
@@ -457,8 +433,8 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
 
     @app.post("/settings/library/download")
     def download_favourites() -> Response:
-        """Pull every **Favourite** whose **Library** file is missing, and redirect to the settings page with
-        the counts. It never deletes.
+        """Pull every **Favourite** whose **Library** file is missing, redirecting with the counts. It never
+        deletes.
         """
         pulled = core.download_favourites()
         return RedirectResponse(
@@ -477,9 +453,7 @@ def create_app(core: CoreService, *, refill: bool = False) -> FastAPI:
         banger: Annotated[str, Form()] = "",
         dud: Annotated[str, Form()] = "",
     ) -> Response:
-        """Create a **Mix** or edit one: one route for both, since the add row and every edit row post the
-        same four fields.
-        """
+        """Create a **Mix** or edit one: one route, as the add row and every edit row post the same fields."""
         result = core.save_mix(name, unknown=unknown, banger=banger, dud=dud)
         if isinstance(result, SettingsRefused):
             return render_settings(
