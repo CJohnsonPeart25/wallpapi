@@ -167,7 +167,7 @@ def test_a_history_edit_does_not_reach_the_batch_already_open(db_path: Path) -> 
     assert harness.core.resolve_verdicts([SUBJECT])[SUBJECT].verdict is Verdict.IGNORE
 
 
-# -- a reshown Wallpaper comes up marked (dormant until #52, ADR 0015) ------------------------------
+# -- a reshown Wallpaper comes up marked (dormant until re-evaluation, ADR 0015) ------------------------
 
 
 def decided_before_it_is_drawn(harness: Harness, verdicts: Mapping[str, Verdict]) -> Batch:
