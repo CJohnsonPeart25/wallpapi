@@ -462,6 +462,7 @@ def test_the_status_is_one_snapshot_while_a_step_is_mid_search(tmp_path: Path) -
         assert wallhaven.searched.wait(JOIN_TIMEOUT), "the step should be inside its search"
         reading.start()
         reading.join(JOIN_TIMEOUT)
+        assert not reading.is_alive(), "status waited on the step's API call"
     finally:
         release.set()
         stepping.join(JOIN_TIMEOUT)
