@@ -13,6 +13,7 @@ from contextlib import closing
 
 import pytest
 
+from tests.conftest import SOURCE
 from wallpapi import decisions, storage
 from wallpapi.decisions import HISTORY_PAGE_SIZE, ResolvedVerdict
 from wallpapi.model import Clearance, Verdict
@@ -71,6 +72,17 @@ def resolved(connection: sqlite3.Connection, wallpaper_id: str) -> ResolvedVerdi
 
 
 # -- resolution --------------------------------------------------------------------------------------------
+
+
+def test_no_other_source_file_names_the_table() -> None:
+    """`storage` creates it and indexes it in migrations that are history; every query is in `decisions`."""
+    naming = sorted(
+        path.relative_to(SOURCE).as_posix()
+        for path in SOURCE.rglob("*.py")
+        if "decision_log" in path.read_text(encoding="utf-8")
+    )
+
+    assert naming == ["decisions.py", "storage.py"]
 
 
 def test_every_id_asked_about_is_answered_and_one_with_no_entries_is_worth_zero(
