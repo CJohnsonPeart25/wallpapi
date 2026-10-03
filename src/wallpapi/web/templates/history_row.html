@@ -4,9 +4,9 @@
   swap for an edit — a `<tr>` either way, because anything else swapped into a `<tbody>` is dropped by the
   parser and the edit would seem to do nothing.
 
-  Each **Verdict** control posts the **Verdict** the row should *end up* with, as a tile does (ADR 0002), and
-  **Ignore** is one of them: it is how **History** withdraws a **Verdict**. `hx-sync="this:replace"` stops a
-  late response swapping a stale row back in.
+  Each **Verdict** control posts the **Verdict** the row should *end up* with, as a tile does (invariant 6),
+  and **Ignore** is one of them: it is how **History** withdraws a **Verdict**. `hx-sync="this:replace"` stops
+  a late response swapping a stale row back in.
 
   Pico buttons with the rail's glyphs but not its classes: the rail is hidden until hovered, which suits a
   tile and not a row. The standing **Verdict** is the filled button.
