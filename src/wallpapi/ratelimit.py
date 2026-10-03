@@ -1,16 +1,8 @@
 """Wallhaven's 45-calls-per-minute budget, as a pure function.
 
-Invariant 11: the limiter says how long the caller must wait and never waits itself. The caller is the
-**Pool** refill thread, whose every wait is a cancellable `stop_event.wait(n)` (invariant 12) — a limiter
-that slept would be a limiter that could hang shutdown for a minute.
-
-The limit applies to **API calls** (`wallhaven.cc/api`) and to nothing else. Thumbnails and full-resolution
-images come from `th.wallhaven.cc` and `w.wallhaven.cc`, separate hosts, and counting them here would spend
-the search budget on files that never touch it.
-
-The thumbnail host has a pace of its own instead (#44): `gap_needed`, a fixed gap between one fetch and the
-next, for the background downloader that fetches every **Pool** member's thumbnail. Pure in the same way,
-for the same reason.
+The limiter says how long the caller must wait and never waits itself; the caller does the waiting with a
+cancellable `stop_event.wait(n)` (invariant 12). It counts **API calls** only: thumbnails and full-resolution
+images come from other hosts.
 """
 
 from __future__ import annotations
@@ -33,42 +25,31 @@ def wait_needed(
 ) -> float:
     """Seconds to wait before another **API call** may be made, or zero if one may be made now.
 
-    `call_times` and `now` are monotonic seconds from the injected clock, never wall-clock times: a clock
-    that steps backwards over an NTP correction would otherwise empty the window and hand out a free minute
-    of calls.
-
-    A sliding window rather than a bucket that refills on the minute. A bucket lets 45 calls land at 11:59:59
-    and 45 more at 12:00:00, which is 90 calls in two seconds and exactly what the limit exists to stop.
+    `call_times` and `now` are monotonic seconds, so a wall clock stepping backwards cannot empty the window.
+    A sliding window, not a bucket that refills on the minute: a bucket would allow 90 calls in two seconds
+    across a minute boundary.
     """
     inside = sorted(t for t in call_times if now - t < window)
     if len(inside) < limit:
         return 0.0
-    # The call that has to age out is the one that leaves `limit - 1` behind it. With exactly `limit` calls
-    # in the window that is the oldest; with more — a limit lowered while calls were in flight — it is
-    # further along.
+    # The call that must age out leaves `limit - 1` behind it: not the oldest if the limit was lowered.
     ages_out = inside[len(inside) - limit]
     return max(0.0, ages_out + window - now)
 
 
 THUMBNAIL_GAP_SECONDS = 0.25
-"""The fixed gap between two of the downloader's thumbnail fetches (#44). A constant, never a setting.
+"""The fixed gap between two thumbnail fetches. A constant, never a setting.
 
-`th.wallhaven.cc` is not the 45-per-minute API, but it sits behind DDoS protection with no published limit
-(invariant 11), and it is the host the user's own browser loads thumbnails from when browsing Wallhaven.
-One at a time and about four a second looks like one person browsing, and still covers a **Pool** of 500
-in two or three minutes.
+`th.wallhaven.cc` has no published limit, so the only promise is spacing: about four a second, like one person
+browsing.
 """
 
 
 def gap_needed(last_fetch: float | None, *, now: float, gap: float = THUMBNAIL_GAP_SECONDS) -> float:
-    """Seconds to wait before the next thumbnail fetch, or zero if one may be made now.
+    """Seconds to wait before the next thumbnail fetch, or zero. `None` means nothing has been fetched yet.
 
-    The thumbnail hosts' counterpart to `wait_needed`, and pure for the same reason: the caller is a
-    background thread whose every wait is a cancellable `stop_event.wait(n)` (invariant 12). `last_fetch` and
-    `now` are monotonic seconds from the injected clock; `None` means nothing has been fetched yet.
-
-    A gap rather than a window. Nothing is published to count against, so the only promise is spacing:
-    never two fetches closer together than `gap`.
+    The thumbnail hosts' counterpart to `wait_needed`: a gap, not a window, because there is nothing published
+    to count against.
     """
     if last_fetch is None:
         return 0.0

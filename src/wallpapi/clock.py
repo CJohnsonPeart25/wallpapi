@@ -1,8 +1,7 @@
 """The clock, injected so that time is something tests move rather than wait for.
 
-Invariant 5: every timestamp in the **Decision log** comes from here, never from `datetime.now()`.
-`monotonic` is separate because the 45-calls-per-minute limiter must not be confused by a wall clock that
-jumps.
+Every timestamp in the **Decision log** comes from here, never from `datetime.now()`. `monotonic` is separate
+so the rate limiter is not confused by a wall clock that jumps.
 """
 
 from __future__ import annotations

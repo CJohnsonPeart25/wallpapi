@@ -1,8 +1,4 @@
-"""The domain types the Core service, storage and the web layer all share.
-
-The vocabulary is `CONTEXT.md`'s and nothing else: a **Wallpaper**, the four **Verdicts**, the legacy
-**Clearance**, and the **Decision log** entries they become.
-"""
+"""The domain types the Core service, storage and the web layer share, in `CONTEXT.md`'s vocabulary."""
 
 from __future__ import annotations
 
@@ -13,10 +9,8 @@ from enum import StrEnum
 
 @dataclass(frozen=True, slots=True)
 class Wallpaper:
-    """One Wallhaven image, shaped like a row of its search endpoint's response.
-
-    Frozen because a **Wallpaper** is a value: two with the same fields are the same **Wallpaper**, and
-    nothing downstream may mutate one it was handed.
+    """One Wallhaven image, shaped like a row of its search response. Frozen: a value, never mutated
+    downstream.
     """
 
     id: str
@@ -33,7 +27,7 @@ class Wallpaper:
 
 
 class Verdict(StrEnum):
-    """The four judgements. `StrEnum` so the stored value is the glossary term, not an opaque integer."""
+    """The four judgements. `StrEnum` so the stored value is the glossary term."""
 
     FAVOURITE = "favourite"
     LIKE = "like"
@@ -42,15 +36,10 @@ class Verdict(StrEnum):
 
 
 class Clearance(StrEnum):
-    """The legacy **Decision log** entry that withdrew a **Wallpaper**'s **Explicit Verdict**.
+    """The legacy **Decision log** entry that withdrew an **Explicit Verdict** (ADR 0015).
 
-    Read and never written since #37 (ADR 0015): **History** withdraws a **Verdict** with an **Ignore**
-    now. It stays because the log is append-only and a database from before may hold one, which resolves
-    to nothing when it is the latest entry. Deliberately not a fifth **Verdict**.
-
-    A one-member `StrEnum` rather than a bare `"cleared"` constant so that `Verdict | Clearance` is a
-    closed union pyright narrows — every reader of an entry has to say which of the two it is handling —
-    and so the stored text is the glossary term, as it is for a **Verdict**.
+    Read and never written: the log is append-only, so an older database may hold one, and it resolves to
+    nothing. Not a fifth **Verdict**.
     """
 
     CLEARED = "cleared"
@@ -60,15 +49,9 @@ class Clearance(StrEnum):
 class DecisionEntry:
     """One appended row of the **Decision log**.
 
-    `seq` is the autoincrement the log is ordered and resolved by; `recorded_at` is display-only, because
-    every entry from one submit transaction shares it (invariant 4).
-
-    `entry` and not `verdict`: the log holds **Clearances** as well as **Verdicts** (#7), and a field named
-    for one of the two would let a caller pass a **Clearance** to something that only handles **Verdicts**
-    without pyright saying a word.
-
-    `batch_id` is `NULL` for an entry that came from **History** rather than from a submitted **Batch**,
-    which is the only place the two are told apart.
+    `seq` orders and resolves the log; `recorded_at` is display-only because one submit shares it (invariant
+    4). `entry` is not named `verdict` because the log also holds legacy **Clearances**. `batch_id` is `NULL`
+    for an entry from **History**.
     """
 
     seq: int
@@ -79,15 +62,7 @@ class DecisionEntry:
 
 
 class Zone(StrEnum):
-    """Where a **Pool** **Wallpaper**'s **Score** puts it.
-
-    Three and only three, and a **Banned** **Wallpaper** is in none of them — which is why this has no
-    fourth member: "**Banned**" is not a **Zone** a **Wallpaper** can be shown from, it is the reason it is
-    never classified at all.
-
-    `StrEnum` for the same reason `Verdict` is one: the value recorded against a **Batch** row, and read
-    back off it, is the glossary term rather than an opaque integer.
-    """
+    """Where a **Pool** **Wallpaper**'s **Score** puts it. A **Banned** one is in none."""
 
     BANGER = "banger"
     DUD = "dud"
@@ -96,16 +71,10 @@ class Zone(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Mix:
-    """The **Zone** percentages a **Batch** is built from, under the name the user switches by.
+    """The **Zone** percentages a **Batch** is built from, under a name the user switches by.
 
-    Frozen, and a value like `Wallpaper` is: two **Mixes** with the same name and the same three numbers
-    are the same **Mix**. The three are whole percentages and they sum to 100 — but that rule is *not*
-    enforced here. It lives in `core.validated_mix`, because a **Mix** arrives from a stored row and, at
-    #12, from a form, and a dataclass that raised would turn "the user typed 30/30/30" into a traceback
-    instead of a message next to the field. Nothing constructs one except that validator and the migration
-    that seeds these two.
-
-    The three are named rather than a `Mapping[Zone, int]` so that a missing **Zone** is not expressible.
+    Does not validate itself: `core.validated_mix` does, because a form must get a refusal next to the field,
+    not a traceback.
     """
 
     name: str
