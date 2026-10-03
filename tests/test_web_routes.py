@@ -7,6 +7,7 @@ reached it. `TestClient` runs the app in process over the fakes, with no backgro
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
@@ -15,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import Harness, batch_id_of, favourite, judge, make_harness, serving
-from tests.fakes import THUMBNAIL_BYTES, catalogue_of, wallpaper
+from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
 from wallpapi.core import EXPLORE_MIX, HISTORY_PAGE_SIZE, MAX_BATCH_SIZE, REFINE_MIX, Batch, SettingsRefused
 from wallpapi.model import Mix, Verdict
 
@@ -259,7 +260,7 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
 ) -> None:
     """Most needed on an empty page, where an empty **Pool** and a dead refill look alike. A **Score** from
     the fallback looks like one from the model, so the provider's notice goes beside it."""
-    harness = make_harness(db_path, fill_pool=fill_pool, similarity_notice="Still fetching its model.")
+    harness = make_harness(db_path, fill_pool=fill_pool)
     status = harness.core.refill_status()
 
     with serving(harness) as client:
@@ -267,11 +268,14 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
 
     assert f"Pool {status.pool_size} of {status.target_size}" in text
     assert "Refill not running" in text, "nothing started the thread in this app"
-    assert "Still fetching its model." in text
+    assert "Image similarity is still starting up" in text
 
 
 def test_a_provider_at_full_strength_adds_no_line(web: Web) -> None:
-    _, client = web
+    """The model open and every **Pool** **Wallpaper** embedded."""
+    harness, client = web
+    harness.store.vector_by_id.update({w.id: STUB_DIRECTION for w in catalogue_of(24)})
+    harness.core.similarity_step(threading.Event())
 
     assert "similarity-notice" not in client.get("/batch").text
 

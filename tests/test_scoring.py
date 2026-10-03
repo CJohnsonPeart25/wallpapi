@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from tests.conftest import Harness, make_harness
 from tests.fakes import catalogue_of
 from wallpapi.core import Batch, ScoredWallpaper
 from wallpapi.model import Verdict, Zone
+from wallpapi.scoring import classify
 
 POOL_SIZE = 5
 
@@ -211,3 +214,14 @@ def test_the_similarity_provider_is_asked_for_one_matrix_of_the_whole_pool(db_pa
     assert len(pool_side) == POOL_SIZE - 2
     assert set(decided_side) == {loved, ignored}
     assert not set(pool_side) & set(decided_side), "a retired Wallpaper is a column, never a row"
+
+
+def test_a_favourite_and_a_ban_equally_near_sum_to_exactly_zero_at_any_similarity() -> None:
+    """`(weights * values).sum(axis=1)`, never `weights @ values`: on this machine's BLAS the matrix product
+    leaves a few times 1e-15 on most of these rows, and the **Zone** reads the sign."""
+    near = np.random.default_rng(1).uniform(0.86, 1.0, size=(500, 1)).astype(np.float32)
+
+    classification = classify(np.repeat(near, 2, axis=1), [100, -100], radius=0.15, decay=4.0)
+
+    assert not np.any(classification.scores)
+    assert set(classification.zones) == {Zone.UNKNOWN}

@@ -24,7 +24,6 @@ Locked. The original spec issue lists it under "Technology"; if the two disagree
   `uv run python scripts/vendor_assets.py`. `.gitattributes` stops checkout rewriting them.
 - **Synchronous throughout** (ADR 0001): `httpx2.Client`, standard library `sqlite3`, background work on
   `threading.Thread`s started in the FastAPI lifespan. Migrations are `user_version` plus numbered steps.
-- **numpy** as a *direct* dependency, never left to arrive through onnxruntime.
 - **onnxruntime** with **pillow** for the **Similarity provider** (ADR 0013): CPU, image tower only, the model
   fetched once into `~/.wallpapi/models/` and checksummed.
 - **Pydantic at the edges only**; dataclasses and enums inside. **pytest**, **pyright** strict, **ruff**.
@@ -70,8 +69,8 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
   served as `21x9`), so the local check is a band, `RATIO_TOLERANCE`, not equality.
 - `q=like:<id>` finds lookalikes: sort by `relevance` (not the default `date_added`) and cap the walk.
 - `meta.seed` stops repeats within one walk only. `meta.last_page` is no stop condition; an empty page is.
+  Listings are 24 a page.
 - A 429 raises `RateLimited`, the only failure told apart. `Retry-After` is parsed as seconds only.
-- Tags come only from `GET /api/v1/w/{id}`, one **API call** per **Wallpaper**. Listings are 24 a page.
 - **45 API calls a minute is counted across the machine.** `wait_needed` sees one process, so anything calling
   outside the refill must pace itself evenly. Image hosts have no published limit; throttle them modestly.
 - No API key: purity is fixed to SFW.

@@ -14,7 +14,6 @@ from numpy.typing import NDArray
 
 from wallpapi.core import LIKE_QUERY_PREFIX
 from wallpapi.model import Wallpaper
-from wallpapi.similarity import NOTHING_TO_CATCH_UP
 from wallpapi.wallhaven import RateLimited, SearchPage
 
 
@@ -186,67 +185,101 @@ class FakeLibraryWriter:
         self.removed.append(path)
 
 
-class FakeSimilarityProvider:
-    """Hand-defined similarities keyed by `(pool id, decided id)`: a **Wallpaper** against itself 1.0, as
-    the protocol promises, and everything unnamed 0.0. `notice` and `vectors` are `None`, a provider at
-    full strength with no positions, unless a test arranges them; an unnamed ID has no **Embedding**."""
+class FakeSimilarities:
+    """The injected similarity matrix: hand-defined similarities keyed by `(pool id, decided id)`, a
+    **Wallpaper** against itself 1.0 and everything unnamed 0.0. `Embeddings` falls back to it for every pair
+    without two **Embeddings**, which in the harness is every pair unless a test stores vectors."""
 
-    def __init__(
-        self,
-        similarities: dict[tuple[str, str], float] | None = None,
-        *,
-        notice: str | None = None,
-        catch_up_waits: Sequence[float] = (),
-        vectors: Mapping[str, NDArray[np.float32]] | None = None,
-    ) -> None:
+    def __init__(self, similarities: dict[tuple[str, str], float] | None = None) -> None:
         self.similarity_by_pair = similarities or {}
-        self.vector_by_id = None if vectors is None else dict(vectors)
         self.calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-        self.notice_text = notice
-        self.notice_pools: list[tuple[str, ...]] = []
-        self.catch_up_calls: list[Path] = []
-        self._caught_up = threading.Condition()
-        self._catch_up_waits = list(catch_up_waits)
 
-    def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
+    def __call__(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
         self.calls.append((tuple(p.id for p in pool), tuple(d.id for d in decided)))
         return np.array(
             [[self._between(p.id, d.id) for d in decided] for p in pool], dtype=np.float32
         ).reshape(len(pool), len(decided))
-
-    def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
-        """Record the call and hand back the next arranged wait, then `NOTHING_TO_CATCH_UP` for ever."""
-        del stop_event
-        with self._caught_up:
-            self.catch_up_calls.append(thumbnails)
-            self._caught_up.notify_all()
-        return self._catch_up_waits.pop(0) if self._catch_up_waits else NOTHING_TO_CATCH_UP
-
-    def wait_for_catch_ups(self, count: int, timeout: float) -> bool:
-        """Block until `catch_up` has been called `count` times, or `timeout` passes. Never a sleep."""
-        with self._caught_up:
-            return self._caught_up.wait_for(lambda: len(self.catch_up_calls) >= count, timeout)
-
-    def notice(self, pool: Sequence[Wallpaper]) -> str | None:
-        self.notice_pools.append(tuple(w.id for w in pool))
-        return self.notice_text
-
-    def vectors(self, pool: Sequence[Wallpaper]) -> NDArray[np.float32] | None:
-        if self.vector_by_id is None:
-            return None
-        width = next((v.size for v in self.vector_by_id.values()), 0)
-        rows = np.zeros((len(pool), width), dtype=np.float32)
-        for index, w in enumerate(pool):
-            vector = self.vector_by_id.get(w.id)
-            if vector is not None:
-                rows[index] = vector
-        return rows
 
     def _between(self, pool_id: str, decided_id: str) -> float:
         named = self.similarity_by_pair.get((pool_id, decided_id))
         if named is not None:
             return named
         return 1.0 if pool_id == decided_id else 0.0
+
+
+class MemoryStore:
+    """An `EmbeddingStore` in a dict, holding vectors as given."""
+
+    def __init__(self, vectors: Mapping[str, NDArray[np.float32]] | None = None) -> None:
+        self.vector_by_id = dict(vectors or {})
+
+    def vectors_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, NDArray[np.float32]]:
+        return {w: self.vector_by_id[w] for w in wallpaper_ids if w in self.vector_by_id}
+
+    def store(self, wallpaper_id: str, vector: NDArray[np.float32]) -> None:
+        self.vector_by_id[wallpaper_id] = vector
+
+    def embedded_ids(self) -> set[str]:
+        return set(self.vector_by_id)
+
+
+class ModelOnDisk:
+    """A `ModelSource` that is simply already there. Counts how often it was asked, and says when it was."""
+
+    def __init__(self, path: Path = Path("model.onnx")) -> None:
+        self.path = path
+        self.calls = 0
+        self.asked = threading.Event()
+
+    def ensure(self, stop_event: threading.Event) -> Path:
+        del stop_event
+        self.calls += 1
+        self.asked.set()
+        return self.path
+
+
+class ModelThatFails:
+    """A `ModelSource` that cannot be had: no network, or a checksum that did not match."""
+
+    def __init__(self, message: str = "connection refused") -> None:
+        self.message = message
+
+    def ensure(self, stop_event: threading.Event) -> Path:
+        del stop_event
+        raise RuntimeError(self.message)
+
+
+STUB_DIRECTION = np.array([1.0, 0.0], dtype=np.float32)
+
+
+class StubEmbed:
+    """An `Embed` that gives every file `STUB_DIRECTION` and records what it was given. Called with no files
+    it opens nothing, or raises if `will_not_open`, as a model file that is not a graph would."""
+
+    def __init__(self, *, unreadable: Sequence[str] = (), will_not_open: bool = False) -> None:
+        self.seen: list[str] = []
+        self.batches: list[int] = []
+        self.unreadable = set(unreadable)
+        self.will_not_open = will_not_open
+        self._embedded = threading.Condition()
+
+    def __call__(self, images: Sequence[Path]) -> NDArray[np.float32]:
+        if not images:
+            if self.will_not_open:
+                raise RuntimeError("INVALID_PROTOBUF : Load model failed")
+            return np.zeros((0, len(STUB_DIRECTION)), dtype=np.float32)
+        if any(path.stem in self.unreadable for path in images):
+            raise OSError("cannot identify image file")
+        with self._embedded:
+            self.batches.append(len(images))
+            self.seen.extend(path.stem for path in images)
+            self._embedded.notify_all()
+        return np.stack([STUB_DIRECTION for _ in images])
+
+    def wait_for(self, count: int, timeout: float) -> bool:
+        """Block until `count` files have been embedded, or `timeout` passes. Never a sleep."""
+        with self._embedded:
+            return self._embedded.wait_for(lambda: len(self.seen) >= count, timeout)
 
 
 class FakeClock:

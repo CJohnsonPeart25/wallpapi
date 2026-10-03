@@ -27,8 +27,11 @@ from tests.fakes import (
     THUMBNAIL_BYTES,
     FakeClock,
     FakeLibraryWriter,
-    FakeSimilarityProvider,
+    FakeSimilarities,
     FakeWallhavenClient,
+    MemoryStore,
+    ModelOnDisk,
+    StubEmbed,
     catalogue_of,
 )
 from wallpapi import storage
@@ -36,6 +39,7 @@ from wallpapi.core import Batch, CoreService
 from wallpapi.library import LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.rng import SeededRandom
+from wallpapi.similarity import EMBED_BATCH, Embeddings
 from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
@@ -90,7 +94,12 @@ class Harness:
     wallhaven: FakeWallhavenClient
     library: FakeLibraryWriter
     """The fake the Core service writes through, unless `make_harness` was handed a real writer."""
-    similarity: FakeSimilarityProvider
+    similarity: FakeSimilarities
+    """The matrix `embeddings` falls back to: every pair, unless a test stores vectors in `store`."""
+    embeddings: Embeddings
+    store: MemoryStore
+    embed: StubEmbed
+    model: ModelOnDisk
     clock: FakeClock
 
     def fill_pool(self, steps: int = 1) -> None:
@@ -114,17 +123,17 @@ def make_harness(
     like_results: Mapping[str, Sequence[Wallpaper]] | None = None,
     fill_pool: int = 1,
     similarities: dict[tuple[str, str], float] | None = None,
-    similarity_notice: str | None = None,
-    catch_up_waits: Sequence[float] = (),
     vectors: Mapping[str, NDArray[np.float32]] | None = None,
+    embed_batch: int = EMBED_BATCH,
     library: LibraryWriter | None = None,
 ) -> Harness:
     """Build a Core service over `db_path`, with `fill_pool` refill steps already run (one page each).
 
     Safe to call twice on one path: that is how a restart is tested. `similarities` is
-    `{(pool id, decided id): value}` for the fake provider, a **Wallpaper** against itself 1.0 and
-    everything unnamed 0.0. `library` replaces the fake writer the Core service gets, for the tests of the
-    real one.
+    `{(pool id, decided id): value}` for the injected matrix, a **Wallpaper** against itself 1.0 and
+    everything unnamed 0.0; `vectors` are **Embeddings** already stored. The model is not yet fetched, so
+    the page shows the "still starting up" notice until `similarity_step` runs. `library` replaces the fake
+    writer the Core service gets, for the tests of the real one.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
@@ -137,20 +146,30 @@ def make_harness(
         like_results=like_results,
     )
     fake_library = FakeLibraryWriter()
-    similarity = FakeSimilarityProvider(
-        similarities, notice=similarity_notice, catch_up_waits=catch_up_waits, vectors=vectors
-    )
+    similarity = FakeSimilarities(similarities)
+    store = MemoryStore(vectors)
+    embed = StubEmbed()
+    model = ModelOnDisk()
+    embeddings = Embeddings(store, embed, model, fallback=similarity, batch=embed_batch)
     clock = FakeClock(now)
     core = CoreService(
         db_path=db_path,
         wallhaven=wallhaven,
         library=fake_library if library is None else library,
-        similarity=similarity,
+        similarity=embeddings,
         random_source=SeededRandom(seed),
         clock=clock,
     )
     harness = Harness(
-        core=core, wallhaven=wallhaven, library=fake_library, similarity=similarity, clock=clock
+        core=core,
+        wallhaven=wallhaven,
+        library=fake_library,
+        similarity=similarity,
+        embeddings=embeddings,
+        store=store,
+        embed=embed,
+        model=model,
+        clock=clock,
     )
     harness.fill_pool(fill_pool)
     return harness
