@@ -1,8 +1,11 @@
-"""Harness for driving the Core service the way the UI does, and the guard that keeps tests off the network.
+"""Rigs for the tests, and the guard that keeps them off the network.
 
-Every test enters through the Core service with fakes behind it. The only reach past the seam is the raw
-connection the migration and legacy-Clearance tests need, because nothing the seam offers can produce an
-older database's rows or a Clearance any more.
+A test of one module's rule builds that module over an in-memory database with a fake only for its external
+collaborator (invariant 14, ADR 0019), as `library_rig` does. `make_harness` composes every module the way
+the routes do, and is for tests whose subject is a workflow: a transaction across modules, or what follows
+its commit. Rule tests still on the harness are moving off it (#80). The only reach past the modules is the
+raw connection the migration and legacy-Clearance tests need, because nothing the modules offer can produce
+an older database's rows or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import socket
 import sqlite3
 import subprocess
 from collections.abc import Generator, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,10 +37,13 @@ from tests.fakes import (
     StubEmbed,
     catalogue_of,
 )
-from wallpapi import storage
-from wallpapi.core import Batch, CoreService
-from wallpapi.library import LibraryWriter
+from wallpapi import decisions, pool, settings, storage, workflows
+from wallpapi.batches import Batch
+from wallpapi.compose import Modules, compose
+from wallpapi.decisions import HistoryEntry
+from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
+from wallpapi.pool import RefillStrategy
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import EMBED_BATCH, Embeddings
 from wallpapi.web.app import create_app
@@ -88,12 +94,12 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
 
 @dataclass
 class Harness:
-    """A Core service plus the fakes behind it, so tests can assert on both sides of the seam."""
+    """The composed modules plus the fakes behind them, so tests can assert on both sides of the seam."""
 
-    core: CoreService
+    modules: Modules
     wallhaven: FakeWallhavenClient
     library: FakeLibraryWriter
-    """The fake the Core service writes through, unless `make_harness` was handed a real writer."""
+    """The fake the **Library** writes through, unless `make_harness` was handed a real writer."""
     similarity: FakeSimilarities
     """The matrix `embeddings` falls back to: every pair, unless a test stores vectors in `store`."""
     embeddings: Embeddings
@@ -102,10 +108,20 @@ class Harness:
     model: ModelOnDisk
     clock: FakeClock
 
+    def connect(self) -> sqlite3.Connection:
+        """This thread's connection, as the routes and workflows get it."""
+        return self.modules.connect()
+
+    @contextmanager
+    def write(self) -> Generator[sqlite3.Connection]:
+        """One write transaction, for a test calling a module function that takes the write handle."""
+        with storage.write(self.connect()) as write:
+            yield write
+
     def fill_pool(self, steps: int = 1) -> None:
         """Run the refill by hand, `steps` **API calls** worth. Never the thread."""
         for _ in range(steps):
-            self.core.refill_step()
+            self.modules.refill.step()
 
 
 def make_harness(
@@ -127,13 +143,13 @@ def make_harness(
     embed_batch: int = EMBED_BATCH,
     library: LibraryWriter | None = None,
 ) -> Harness:
-    """Build a Core service over `db_path`, with `fill_pool` refill steps already run (one page each).
+    """Build the modules over `db_path`, with `fill_pool` refill steps already run (one page each).
 
     Safe to call twice on one path: that is how a restart is tested. `similarities` is
     `{(pool id, decided id): value}` for the injected matrix, a **Wallpaper** against itself 1.0 and
     everything unnamed 0.0; `vectors` are **Embeddings** already stored. The model is not yet fetched, so
-    the page shows the "still starting up" notice until `similarity_step` runs. `library` replaces the fake
-    writer the Core service gets, for the tests of the real one.
+    the page shows the "still starting up" notice until the upkeep has caught up. `library` replaces the fake
+    writer the **Library** gets, for the tests of the real one.
     """
     wallhaven = FakeWallhavenClient(
         catalogue_of(24) if catalogue is None else catalogue,
@@ -152,16 +168,18 @@ def make_harness(
     model = ModelOnDisk()
     embeddings = Embeddings(store, embed, model, fallback=similarity, batch=embed_batch)
     clock = FakeClock(now)
-    core = CoreService(
+    modules = compose(
         db_path=db_path,
+        thumbnail_dir=db_path.parent / "thumbnails",
         wallhaven=wallhaven,
-        library=fake_library if library is None else library,
+        library_writer=fake_library if library is None else library,
         similarity=embeddings,
         random_source=SeededRandom(seed),
+        refill_random_source=SeededRandom(seed),
         clock=clock,
     )
     harness = Harness(
-        core=core,
+        modules=modules,
         wallhaven=wallhaven,
         library=fake_library,
         similarity=similarity,
@@ -188,7 +206,7 @@ def harness(db_path: Path) -> Harness:
 @contextmanager
 def serving(harness: Harness) -> Generator[TestClient]:
     """The app over `harness`, lifespan and all, with no background threads."""
-    with TestClient(create_app(harness.core)) as client:
+    with TestClient(create_app(harness.modules)) as client:
         yield client
 
 
@@ -210,39 +228,43 @@ def batch_id_of(body: str) -> str:
 
 def favourite(harness: Harness, *wallpaper_ids: str) -> None:
     """Mint a **Batch**, mark these **Favourite** and submit it. They must all be in that **Batch**."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    batch = live(harness)
     shown = {w.id for w in batch.wallpapers}
     assert set(wallpaper_ids) <= shown, f"{set(wallpaper_ids) - shown} is not in the batch to judge"
     for wallpaper_id in wallpaper_ids:
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, Verdict.FAVOURITE)
-    harness.core.submit_batch(batch.id)
+        workflows.set_draft(harness.modules, batch.id, wallpaper_id, Verdict.FAVOURITE)
+    workflows.submit(harness.modules, batch.id)
 
 
 def favourite_the_whole_batch(harness: Harness, verdict: Verdict = Verdict.FAVOURITE) -> Batch:
     """Mark every **Wallpaper** on the live **Batch** and submit it, returning the **Batch** submitted."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    harness.core.set_all_draft_verdicts(batch.id, verdict)
-    harness.core.submit_batch(batch.id)
+    batch = live(harness)
+    workflows.set_all_drafts(harness.modules, batch.id, verdict)
+    workflows.submit(harness.modules, batch.id)
     return batch
 
 
 def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
     """Draft `marks` against the live **Batch** and submit it. A tile left out keeps what the **Batch**
     was minted with, and `None` unmarks it."""
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    batch = live(harness)
     for wallpaper_id, verdict in marks.items():
-        harness.core.set_draft_verdict(batch.id, wallpaper_id, verdict)
-    harness.core.submit_batch(batch.id)
+        workflows.set_draft(harness.modules, batch.id, wallpaper_id, verdict)
+    workflows.submit(harness.modules, batch.id)
     return batch
 
 
 def judge(harness: Harness, **marks: Verdict) -> None:
     """Give each named **Wallpaper** a **Verdict** from **History**, in the order given."""
     for wallpaper_id, verdict in marks.items():
-        assert harness.core.edit_verdict(wallpaper_id, verdict) is None
+        assert isinstance(workflows.edit_verdict(harness.modules, wallpaper_id, verdict), HistoryEntry)
+
+
+def live(harness: Harness) -> Batch:
+    """The live **Batch**, minted if there is none, as `/batch` serves it."""
+    batch = harness.modules.batches.next(harness.connect())
+    assert isinstance(batch, Batch), batch
+    return batch
 
 
 def library_symlink(link: Path, target: Path, *, directory: bool = False) -> None:
@@ -269,6 +291,48 @@ def library_junction(link: Path, target: Path) -> None:
     )
     if made.returncode != 0:  # pragma: no cover - platform dependent
         pytest.skip(f"junctions are not available here: {made.stderr.decode(errors='replace').strip()}")
+
+
+@dataclass
+class LibraryRig:
+    """The **Library** over one in-memory database: **Wallpapers** admitted and **Verdicts** appended as their
+    own modules do, and a writer that is the fake or the real one on `tmp_path`."""
+
+    connection: sqlite3.Connection
+    writer: LibraryWriter
+    library_path: Path
+    clock: FakeClock
+
+    def __post_init__(self) -> None:
+        self.library = Library(self.writer, self.clock)
+
+    def admit(self, wallpapers: Sequence[Wallpaper]) -> None:
+        with storage.write(self.connection) as write:
+            pool.admit(
+                write, wallpapers, settings.get(write), source=RefillStrategy.RANDOM, at=self.clock.now()
+            )
+
+    def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
+        with storage.write(self.connection) as write:
+            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+
+    def reconcile(self) -> LibraryReconciliation:
+        return self.library.reconcile(self.connection, self.library_path)
+
+    def download_favourites(self) -> FavouriteDownload:
+        return self.library.download_favourites(self.connection, self.library_path)
+
+
+@contextmanager
+def library_rig(
+    tmp_path: Path, writer: LibraryWriter, wallpapers: Sequence[Wallpaper]
+) -> Generator[LibraryRig]:
+    """A `LibraryRig` with `wallpapers` admitted and the **Library path** at `tmp_path / "Library"`."""
+    with closing(storage.connect(":memory:")) as connection:
+        storage.migrate(connection)
+        rig = LibraryRig(connection, writer, tmp_path / "Library", FakeClock(FIXED_NOW))
+        rig.admit(wallpapers)
+        yield rig
 
 
 @contextmanager

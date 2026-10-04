@@ -41,7 +41,8 @@ that boots the app and hits `/`. No test touches the network.
 ## Invariants
 
 Design intent no test can hold. Numbers are stable and never reused, because ADRs cite them. Retired:
-1 -> 14 (ADR 0019); 3 -> `storage.py`; 8 -> ADRs 0003 and 0009; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
+1 -> 14 (ADR 0019); 3 -> `storage.py`; 5 -> `decisions.py`, `pool.py`, `batches.py`, `library.py`; 6, 7 ->
+`batches.py`; 8 -> `thumbnails.py`; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
 
 - **2. Scores are never stored.** Always derived from the **Decision log** in one array operation over the
   whole **Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never
@@ -50,18 +51,19 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
   clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence.
   The rule is one SQL fragment in `decisions.py`; build on it. A submitted **Batch** is never retracted.
   ADR 0015.
-- **5. Timestamps are ISO 8601 UTC strings** from the injected clock.
-- **6. A Draft Batch is not the Decision log**: a tile post sets its entry, never toggles; submit appends.
-- **7. A Batch is submitted once**: resubmitting, or drafting against it, is refused with a reason.
-- **9. The Library is confined.** Every write and deletion goes through `confined_to_library` and uses the
-  path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks regular files
-  only; a recorded path that fails the guard is dropped from the record and left on disk. ADR 0006.
-- **10. Library writes are atomic**: a temp file beside the confined destination, then `os.replace`.
+- **9. The Library is confined.** Every write and deletion goes through `library.confined_to_library` and
+  uses the path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks
+  regular files only; a recorded path that fails the guard is dropped from the record and left on disk.
+  ADR 0006.
+- **10. Library writes are atomic**: `files.write_atomically`, a temp file beside the confined destination,
+  then `os.replace`.
 - **12. Every wait is cancellable**: `stop_event.wait(n)`, never `time.sleep(n)`, and the HTTP timeout below
   the shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
 - **14. Modules have their own seams.** Every module exposes a small interface taking a connection and its
   collaborators. Tests build one module with a real in-memory database and fake only the external
-  collaborator it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder. ADR 0019.
+  collaborator it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder.
+  `compose.py` is the only place that knows the whole graph; `workflows.py` owns every write transaction and
+  its post-commit tail and decides nothing about the data. ADR 0019.
 
 ## Traps
 
@@ -74,20 +76,21 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 - **45 API calls a minute is counted across the machine.** `wait_needed` sees one process, so anything calling
   outside the refill must pace itself evenly. Image hosts have no published limit; throttle them modestly.
 - No API key: purity is fixed to SFW.
-- `create_app(refill=True)` starts the background threads, off by default so no test starts one. `build_app`
-  in `main.py` is the only caller that turns it on, and is untested: lose that line and nothing fills.
+- `create_app(modules, refill=True)` starts the three background loops (`compose.background_loops`), off by
+  default so no test starts one. `build_app` in `main.py` is the only caller that turns it on, and is
+  untested: lose that line and nothing fills.
 
 ## Deferred decisions
 
 Decided, not built. Defer explicitly; do not quietly forget.
 
-- Saying a **Library** write failed *at submission*: `submit_batch` discards `reconcile_library`'s report.
+- Saying a **Library** write failed *at submission*: `workflows.submit` discards `Library.reconcile`'s report.
 - Caching full-resolution images: never. The preview loads `full_url` from Wallhaven (ADR 0003).
 - Restarting a dead refill thread: no supervisor until something is seen to kill one.
 - Throttling full-resolution fetches: needs **Favourite** downloads off the request thread first.
 - Renaming a **Mix**: delete and add covers it; a rename must move `active_mix` in the same transaction.
 - **Decision log** backup: `VACUUM INTO`, the database being one file.
-- Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (ADR 0009).
+- Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (`thumbnails.py`).
 - Fading old **Verdicts**: a half-life in log sequence, not time; nothing real to tune it against yet.
 - Showing decided **Wallpapers** again: must answer near-duplicates; dormant pre-marking waits for it.
 - **Dud** build-up in the **Pool**: for now, **Ban** or **Ignore** a page of them and submit.

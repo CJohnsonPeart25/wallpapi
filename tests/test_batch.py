@@ -1,88 +1,19 @@
-"""Minting a **Batch**, the **Zones** it records, and deciding once (ADR 0016): the **Pool** holds no
+"""A **Batch** and the **Pool** through the modules: deciding once (ADR 0016), so the **Pool** holds no
 **Wallpaper** the **Decision log** mentions, kept at submission, at admission and (in `test_migrations.py`)
-at migration.
+at migration; and what a submission leaves behind. The draw, the **Draft Batch** and submit itself are
+`test_batches.py`'s.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 from pathlib import Path
 
-import pytest
-
-from tests.conftest import FIXED_NOW, Harness, make_harness, write_legacy_clearance
+from tests.conftest import Harness, live, make_harness, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi.core import IDLE_RECHECK_SECONDS, Batch
+from wallpapi import decisions, workflows
+from wallpapi.decisions import HistoryEntry
 from wallpapi.model import Verdict, Zone
-
-
-def live(harness: Harness) -> Batch:
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch)
-    return batch
-
-
-@pytest.mark.parametrize("size", [None, 2], ids=["the seeded size", "a size the user set"])
-def test_a_batch_has_the_configured_size(db_path: Path, size: int | None) -> None:
-    harness = make_harness(db_path)
-    if size is not None:
-        harness.core.update_settings(batch_size=size)
-
-    batch = live(harness)
-
-    assert len(batch.wallpapers) == batch.size == harness.core.get_settings().batch_size
-
-
-def test_a_batch_carries_its_id_and_a_utc_timestamp_from_the_clock(harness: Harness) -> None:
-    """Never `datetime.now()` (invariant 5): a naive or machine-clock time fails here, and the ISO 8601
-    round trip is what the **Decision log** stores."""
-    harness.clock.advance(3600)
-    expected = FIXED_NOW + dt.timedelta(hours=1)
-
-    batch = live(harness)
-
-    assert batch.id
-    assert batch.created_at == expected
-    assert batch.created_at.tzinfo is dt.UTC
-    assert dt.datetime.fromisoformat(batch.created_at.isoformat()) == expected
-    assert all(w.thumbnail_url for w in batch.wallpapers)
-
-
-def test_asking_again_returns_the_live_batch_rather_than_minting_another(harness: Harness) -> None:
-    """A refresh is not a decision: minting per page load would reroll what the user was looking at. Read
-    back from storage, so the **Zones** it was minted with come back too. The one search is the harness
-    priming the **Pool**."""
-    first = live(harness)
-    second = live(harness)
-
-    assert second.id == first.id
-    assert [w.id for w in second.wallpapers] == [w.id for w in first.wallpapers]
-    assert second.zones == first.zones
-    assert len(harness.wallhaven.searches) == 1
-
-
-def test_every_wallpaper_in_a_batch_comes_with_the_zone_it_was_drawn_from(harness: Harness) -> None:
-    batch = live(harness)
-
-    assert {w.id for w in batch.wallpapers} == set(batch.zones)
-    assert set(batch.zones.values()) == {Zone.UNKNOWN}
-
-
-def test_the_zones_recorded_are_the_ones_the_pool_was_classified_into(harness: Harness) -> None:
-    """Recorded at mint time, so the label is what the draw used rather than a second opinion. Every
-    **Wallpaper** is made to resemble the one **Favourite**, well inside the radius."""
-    first = live(harness)
-    loved = first.wallpapers[0].id
-    harness.similarity.similarity_by_pair.update({(f"wp{n:04d}", loved): 0.95 for n in range(24)})
-    harness.core.set_draft_verdict(first.id, loved, Verdict.FAVOURITE)
-
-    following = harness.core.submit_batch(first.id)
-
-    assert isinstance(following, Batch)
-    classified = {scored.wallpaper.id: scored.zone for scored in harness.core.classify_pool()}
-    assert following.zones == {w.id: classified[w.id] for w in following.wallpapers}
-    assert set(following.zones.values()) == {Zone.BANGER}
-
+from wallpapi.pool import IDLE_RECHECK_SECONDS
 
 # -- deciding once -----------------------------------------------------------------------------------
 
@@ -94,44 +25,44 @@ def test_submitting_retires_every_shown_wallpaper_and_no_edit_brings_it_back(db_
     first = live(harness)
     shown = {w.id for w in first.wallpapers}
     liked, banned = sorted(shown)[:2]
-    harness.core.set_draft_verdict(first.id, liked, Verdict.LIKE)
-    harness.core.set_draft_verdict(first.id, banned, Verdict.BAN)
+    workflows.set_draft(harness.modules, first.id, liked, Verdict.LIKE)
+    workflows.set_draft(harness.modules, first.id, banned, Verdict.BAN)
 
-    following = harness.core.submit_batch(first.id)
+    workflows.submit(harness.modules, first.id)
 
-    assert harness.core.refill_status().pool_size == 4
-    assert isinstance(following, Batch)
+    following = live(harness)
+    assert harness.modules.refill.status().pool_size == 4
     assert not {w.id for w in following.wallpapers} & shown
-    assert harness.core.edit_verdict(liked, Verdict.FAVOURITE) is None
-    assert harness.core.refill_status().pool_size == 4
+    assert isinstance(workflows.edit_verdict(harness.modules, liked, Verdict.FAVOURITE), HistoryEntry)
+    assert harness.modules.refill.status().pool_size == 4
 
 
 def test_a_refill_that_meets_a_decided_wallpaper_again_does_not_readmit_it(db_path: Path) -> None:
     """The catalogue is the eight the **Batch** showed, so the walk that comes round again finds nothing
     else, and a refused **Wallpaper** does not count towards the **Pool**."""
     harness = make_harness(db_path, catalogue=catalogue_of(8))
-    harness.core.submit_batch(live(harness).id)
+    workflows.submit(harness.modules, live(harness).id)
     searched_before = len(harness.wallhaven.searches)
 
     harness.fill_pool(3)
 
     assert any(search["page"] == 1 for search in harness.wallhaven.searches[searched_before:])
-    assert harness.core.refill_status().pool_size == 0
+    assert harness.modules.refill.status().pool_size == 0
 
 
 def test_a_wallpaper_whose_only_entry_is_a_legacy_clearance_is_not_readmitted(db_path: Path) -> None:
     """A **Clearance** resolves to nothing but was a decision, so admission asks the log, not resolution.
     Pruned by a **Filter**, cleared, and the **Filter** put back so the walk meets it again."""
     harness = make_harness(db_path, catalogue=(wallpaper("cleared", width=2560, height=1440),))
-    harness.core.update_settings(min_width=3840)
-    assert harness.core.refill_status().pool_size == 0
+    workflows.save_settings(harness.modules, min_width=3840)
+    assert harness.modules.refill.status().pool_size == 0
     write_legacy_clearance(db_path, "cleared")
-    assert harness.core.resolve_verdicts(["cleared"])["cleared"].verdict is None
-    harness.core.update_settings(min_width=2560)
+    assert decisions.resolve(harness.connect(), ["cleared"])["cleared"].verdict is None
+    workflows.save_settings(harness.modules, min_width=2560)
 
     harness.fill_pool(2)
 
-    assert harness.core.refill_status().pool_size == 0
+    assert harness.modules.refill.status().pool_size == 0
 
 
 def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) -> None:
@@ -141,11 +72,11 @@ def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) 
     alike = {(a, b): 0.95 for a in ids for b in ids if a != b}
     harness = make_harness(db_path, catalogue=catalogue_of(9), similarities=alike)
     first = live(harness)
-    assert harness.core.set_all_draft_verdicts(first.id, Verdict.BAN) is None
+    workflows.set_all_drafts(harness.modules, first.id, Verdict.BAN)
 
-    harness.core.submit_batch(first.id)
+    workflows.submit(harness.modules, first.id)
 
-    (remaining,) = harness.core.classify_pool()
+    (remaining,) = harness.modules.batches.classify(harness.connect())
     assert remaining.wallpaper.id not in {w.id for w in first.wallpapers}
     assert remaining.zone is Zone.DUD
     assert remaining.score < 0
@@ -153,23 +84,89 @@ def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) 
 
 def test_lowering_the_target_below_the_pool_trims_nothing(harness: Harness) -> None:
     """A **Pool** above its target drains by submission rather than being cut."""
-    assert harness.core.refill_status().pool_size == 24
+    assert harness.modules.refill.status().pool_size == 24
 
-    harness.core.update_settings(pool_target_size=5)
+    workflows.save_settings(harness.modules, pool_target_size=5)
 
-    status = harness.core.refill_status()
+    status = harness.modules.refill.status()
     assert status.pool_size == 24
     assert status.at_target
-    assert harness.core.refill_wait() == IDLE_RECHECK_SECONDS
+    assert harness.modules.refill.wait() == IDLE_RECHECK_SECONDS
 
 
 def test_a_submission_takes_a_pool_at_target_below_it_and_wakes_the_refill(harness: Harness) -> None:
     """The bug ADR 0016 was written for: at target nothing ever left the **Pool**, so the refill idled
     for good."""
-    harness.core.update_settings(pool_target_size=24)
-    assert harness.core.refill_wait() == IDLE_RECHECK_SECONDS
+    workflows.save_settings(harness.modules, pool_target_size=24)
+    assert harness.modules.refill.wait() == IDLE_RECHECK_SECONDS
 
-    harness.core.submit_batch(live(harness).id)
+    workflows.submit(harness.modules, live(harness).id)
 
-    assert not harness.core.refill_status().at_target
-    assert harness.core.refill_wait() != IDLE_RECHECK_SECONDS
+    assert not harness.modules.refill.status().at_target
+    assert harness.modules.refill.wait() != IDLE_RECHECK_SECONDS
+
+
+def test_a_batch_is_drawn_from_the_pool_without_calling_wallhaven(harness: Harness) -> None:
+    """The page load path makes no **API call**, so there is no network call on it to fail with a 500."""
+    calls_before = len(harness.wallhaven.searches)
+
+    batch = live(harness)
+
+    assert len(batch.wallpapers) == 8
+    assert len(harness.wallhaven.searches) == calls_before
+
+
+def test_changing_the_filters_prunes_the_pool_in_the_same_save(db_path: Path) -> None:
+    """What each **Filter** excludes is `test_pool.py`'s; this is that the settings save prunes at all."""
+    harness = make_harness(
+        db_path,
+        catalogue=(wallpaper("modest", width=2560, height=1440), wallpaper("huge", width=3840, height=2160)),
+    )
+
+    workflows.save_settings(harness.modules, min_width=3840, min_height=2160)
+
+    assert [w.id for w in live(harness).wallpapers] == ["huge"]
+
+
+def test_pruning_leaves_the_live_batch_and_its_drafts_alone(db_path: Path) -> None:
+    """A **Batch** holds its own rows, so a **Pool** row going cannot take a tile or its mark with it."""
+    harness = make_harness(db_path, catalogue=catalogue_of(10))
+    first = live(harness)
+    marked = first.wallpapers[0].id
+    workflows.set_draft(harness.modules, first.id, marked, Verdict.FAVOURITE)
+
+    workflows.save_settings(harness.modules, min_width=3840, min_height=2160, allowed_ratios="1x1")
+
+    still_live = live(harness)
+    assert still_live.id == first.id
+    assert [w.id for w in still_live.wallpapers] == [w.id for w in first.wallpapers]
+    assert still_live.drafts[marked] is Verdict.FAVOURITE
+
+
+def test_a_second_ignore_is_appended_not_folded_into_the_first(db_path: Path) -> None:
+    """Append-only. **History** is the only way to decide a submitted **Wallpaper** again."""
+    harness = make_harness(db_path, catalogue=catalogue_of(8))
+    first = live(harness)
+    workflows.submit(harness.modules, first.id)
+
+    for w in first.wallpapers:
+        assert isinstance(workflows.edit_verdict(harness.modules, w.id, Verdict.IGNORE), HistoryEntry)
+
+    history = decisions.entries(harness.connect())
+    assert len(history) == 16
+    for w in first.wallpapers:
+        assert [e.entry for e in history if e.wallpaper_id == w.id] == [Verdict.IGNORE, Verdict.IGNORE]
+
+
+def test_the_decision_log_survives_a_restart(db_path: Path) -> None:
+    """A second set of modules over the same file, which also proves the migrations are idempotent."""
+    first_run = make_harness(db_path)
+    workflows.submit(first_run.modules, live(first_run).id)
+    recorded = decisions.entries(first_run.connect())
+
+    restored = decisions.entries(make_harness(db_path).connect())
+
+    assert len(restored) == 8
+    assert [(e.wallpaper_id, e.entry, e.recorded_at) for e in restored] == [
+        (e.wallpaper_id, e.entry, e.recorded_at) for e in recorded
+    ]

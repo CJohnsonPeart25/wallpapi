@@ -18,20 +18,20 @@
   {# The filter you are looking through is marked and is not a link: a link to the page you are on is a
      click that does nothing. #}
   <div role="group" class="history-filter" aria-label="Filter by verdict">
-    {% if history.verdict %}
+    {% if verdict %}
       <a role="button" class="outline secondary" href="/history">all</a>
     {% else %}
       <span role="button" class="secondary" aria-current="true">all</span>
     {% endif %}
     {% for choice in verdicts %}
-      {% if history.verdict and history.verdict.value == choice.value %}
+      {% if verdict and verdict.value == choice.value %}
         <span role="button" class="secondary" aria-current="true">{{ choice.value }}</span>
       {% else %}
         <a role="button" class="outline secondary" href="/history?verdict={{ choice.value }}">{{ choice.value }}</a>
       {% endif %}
     {% endfor %}
   </div>
-  {% if history.rows %}
+  {% if rows %}
     <p><small>
       {{ history.total }} wallpaper{{ "" if history.total == 1 else "s" }},
       page {{ history.page }} of {{ history.pages }}.
@@ -47,7 +47,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for row in history.rows %}
+        {% for row in rows %}
           {% include "history_row.html" %}
         {% endfor %}
       </tbody>
@@ -57,16 +57,16 @@
     {% if history.previous_page or history.next_page %}
       <div role="group" class="history-paging" aria-label="Pages">
         {% if history.previous_page %}
-          <a role="button" class="outline secondary" href="/history?page={{ history.previous_page }}{% if history.verdict %}&verdict={{ history.verdict.value }}{% endif %}">previous</a>
+          <a role="button" class="outline secondary" href="/history?page={{ history.previous_page }}{% if verdict %}&verdict={{ verdict.value }}{% endif %}">previous</a>
         {% endif %}
         {% if history.next_page %}
-          <a role="button" class="outline secondary" href="/history?page={{ history.next_page }}{% if history.verdict %}&verdict={{ history.verdict.value }}{% endif %}">next</a>
+          <a role="button" class="outline secondary" href="/history?page={{ history.next_page }}{% if verdict %}&verdict={{ verdict.value }}{% endif %}">next</a>
         {% endif %}
       </div>
     {% endif %}
-  {% elif history.verdict %}
+  {% elif verdict %}
     <p>
-      Nothing resolves to {{ history.verdict.value }} yet. <a href="/history">Show everything.</a>
+      Nothing resolves to {{ verdict.value }} yet. <a href="/history">Show everything.</a>
     </p>
   {% else %}
     <p>

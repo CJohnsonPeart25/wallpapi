@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import make_harness, raw_connection, write_log_entries, write_old_pool
+from tests.conftest import live, make_harness, raw_connection, write_log_entries, write_old_pool
 from tests.fakes import catalogue_of
-from wallpapi import storage
-from wallpapi.core import SUPERSEDED_POOL_TARGET_SIZE, SUPERSEDED_SIMILARITY_RADIUS, Batch
+from wallpapi import settings, storage
 from wallpapi.model import Clearance, Verdict
+from wallpapi.settings import SUPERSEDED_POOL_TARGET_SIZE, SUPERSEDED_SIMILARITY_RADIUS
 
 RETUNED = [
     # (setting, the default it replaced, a value a user chose, the version before the migration)
@@ -36,8 +36,8 @@ def test_a_new_default_reaches_a_database_that_still_held_the_old_one(
     db_path = tmp_path / "old.db"
     _stored_at(db_path, before, setting, superseded)
 
-    migrated = make_harness(db_path, fill_pool=0).core.get_settings()
-    fresh = make_harness(tmp_path / "fresh.db", fill_pool=0).core.get_settings()
+    migrated = settings.get(make_harness(db_path, fill_pool=0).connect())
+    fresh = settings.get(make_harness(tmp_path / "fresh.db", fill_pool=0).connect())
 
     assert getattr(migrated, setting) == getattr(fresh, setting)
     assert getattr(migrated, setting) != superseded
@@ -51,7 +51,7 @@ def test_a_value_the_user_chose_is_left_exactly_as_they_set_it(
     del superseded
     _stored_at(db_path, before, setting, chosen)
 
-    assert getattr(make_harness(db_path, fill_pool=0).core.get_settings(), setting) == chosen
+    assert getattr(settings.get(make_harness(db_path, fill_pool=0).connect()), setting) == chosen
 
 
 def test_migration_retires_every_pool_member_the_decision_log_already_mentions(db_path: Path) -> None:
@@ -67,9 +67,8 @@ def test_migration_retires_every_pool_member_the_decision_log_already_mentions(d
 
     after = make_harness(db_path, fill_pool=0)
 
-    assert after.core.refill_status().pool_size == 9
-    batch = after.core.get_next_batch()
-    assert isinstance(batch, Batch)
+    assert after.modules.refill.status().pool_size == 9
+    batch = live(after)
     assert not {w.id for w in batch.wallpapers} & {"wp0000", "wp0001", "wp0002"}
 
 

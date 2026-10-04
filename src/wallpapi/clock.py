@@ -10,7 +10,7 @@ from typing import Protocol
 
 
 class Clock(Protocol):
-    """What the Core service needs of time."""
+    """What the modules need of time."""
 
     def now(self) -> dt.datetime:
         """The current moment, always UTC-aware."""
@@ -27,3 +27,12 @@ class SystemClock:
 
     def monotonic(self) -> float:
         return time.monotonic()
+
+
+def iso_utc(at: dt.datetime) -> str:
+    """A moment as the database keeps it: an ISO 8601 UTC string (invariant 5). A naive moment could be any
+    zone, so it is refused.
+    """
+    if at.tzinfo is None:
+        raise ValueError("a stored timestamp must be UTC-aware")
+    return at.astimezone(dt.UTC).isoformat()

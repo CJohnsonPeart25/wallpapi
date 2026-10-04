@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 
@@ -25,3 +26,8 @@ def write_atomically(destination: Path, chunks: bytes | Iterable[bytes]) -> None
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def url_suffix(url: str, *, default: str = ".jpg") -> str:
+    """The file extension of a URL's path, ignoring any query string."""
+    return PurePosixPath(urlsplit(url).path).suffix or default

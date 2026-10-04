@@ -4,7 +4,9 @@ Date: 2026-09-27
 
 ## Status
 
-Accepted
+Accepted. Amended (#66): reconciliation, the **Favourite** download and the guard are the `library` module
+(`Library.reconcile`, `Library.download_favourites`, `library.confined_to_library`), no longer the Core
+service's.
 
 ## Context
 

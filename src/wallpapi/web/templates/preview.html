@@ -7,7 +7,8 @@
 
   **The image carries no source in the markup, and never gets one by binding.** `open` sets it by hand
   when a thumbnail is clicked and `closed` removes it again, so the full-resolution file is fetched from
-  Wallhaven only when somebody asks to see it and a dismissed preview stops downloading (ADR 0003). The
+  Wallhaven only when somebody asks to see it and a dismissed preview stops downloading (a deferred
+  decision in `AGENTS.md`). The
   tile carries the URLs as data attributes, which cost nothing until read.
 
   The frame is one fixed size, three quarters of the screen, whatever shape the wallpaper is: every

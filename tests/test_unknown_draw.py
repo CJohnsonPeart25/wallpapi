@@ -1,29 +1,28 @@
 """The varied **Unknown** draw (ADR 0018): one **Wallpaper** from each look-alike group first.
 
-`varied_order` is tested as the pure function it is, then the **Batch** through the Core service with
-positions from the fake provider's `vectors`. Groups are placed by hand, a random direction each plus a
+`varied_order` is tested as the pure function it is, then the **Batch** `draw` makes with those positions,
+a row of vectors per classified **Wallpaper**. Groups are placed by hand, a random direction each plus a
 little noise, so "every group gave one" is checked against the placement and not against the clustering.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from pathlib import Path
+from collections.abc import Mapping, Sequence
 
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import Harness, make_harness
 from tests.fakes import catalogue_of
-from wallpapi.allocation import varied_order
-from wallpapi.core import Batch
-from wallpapi.model import Wallpaper
+from wallpapi.allocation import ScoredWallpaper, draw, varied_order
+from wallpapi.model import Mix, Wallpaper, Zone
 from wallpapi.rng import SeededRandom
+from wallpapi.settings import EXPLORE_MIX
 
 WIDTH = 32
 """Wide enough that random group directions are nearly orthogonal."""
 NOISE = 0.05
-ALL_UNKNOWN = "all unknown"
+ALL_UNKNOWN = Mix(name="all unknown", unknown=100, banger=0, dud=0)
 
 
 def grouped(sizes: Sequence[int], *, seed: int = 0) -> tuple[NDArray[np.float32], list[int]]:
@@ -112,41 +111,37 @@ def test_fewer_embedded_unknowns_than_slots_is_the_order_given() -> None:
     assert varied_order(vectors, [100] * 6, 0, SeededRandom(1)) == list(range(6))
 
 
-# -- through the Core service ------------------------------------------------------------------------
+# -- the draw --------------------------------------------------------------------------------------
 
 
-def harness(
-    db_path: Path,
+def drawn(
     catalogue: Sequence[Wallpaper],
-    vectors: dict[str, NDArray[np.float32]] | None,
+    vectors: Mapping[str, NDArray[np.float32]] | None,
+    size: int,
     *,
     seed: int = 1,
-) -> Harness:
-    """A Core service whose whole **Pool** is `catalogue`, all **Unknown** since nothing is decided."""
-    return make_harness(db_path, catalogue=catalogue, page_size=len(catalogue), seed=seed, vectors=vectors)
+    mix: Mix = EXPLORE_MIX,
+) -> list[str]:
+    """The IDs a **Batch** of `size` shows from a **Pool** of `catalogue`, all **Unknown** since nothing is
+    decided, with a zero row wherever `vectors` has none."""
+    classified = [ScoredWallpaper(wallpaper=w, score=0.0, zone=Zone.UNKNOWN) for w in catalogue]
+    rows = None
+    if vectors is not None:
+        rows = np.stack([vectors.get(w.id, np.zeros(WIDTH, dtype=np.float32)) for w in catalogue])
+    return [tile.wallpaper.id for tile in draw(mix, classified, size, SeededRandom(seed), rows)]
 
 
-def drawn(harness: Harness, size: int, *, mix: str | None = None) -> Batch:
-    if mix is not None:
-        harness.core.save_mix(mix, unknown=100, banger=0, dud=0)
-        harness.core.update_settings(active_mix=mix)
-    harness.core.update_settings(batch_size=size)
-    batch = harness.core.get_next_batch()
-    assert isinstance(batch, Batch), batch
-    return batch
-
-
-def test_the_batch_shows_one_tile_from_each_group_before_any_unembedded_one(tmp_path: Path) -> None:
+def test_the_batch_shows_one_tile_from_each_group_before_any_unembedded_one() -> None:
     """Twelve embedded groups among thirty **Wallpapers** with no **Embedding**, and twelve slots."""
     catalogue = catalogue_of(66)
     vectors, groups = grouped_by_id(catalogue[:36], [3] * 12)
 
-    batch = drawn(harness(tmp_path / "w.db", catalogue, vectors), 12, mix=ALL_UNKNOWN)
+    batch = drawn(catalogue, vectors, 12, mix=ALL_UNKNOWN)
 
-    assert sorted(groups[w.id] for w in batch.wallpapers) == list(range(12))
+    assert sorted(groups[w] for w in batch) == list(range(12))
 
 
-def test_a_lopsided_pool_is_covered_more_widely_than_by_todays_draw(tmp_path: Path) -> None:
+def test_a_lopsided_pool_is_covered_more_widely_than_by_todays_draw() -> None:
     """A third of the **Pool** in one group and the rest in fourteen small ones, **Explore** at 16, over
     the same seeds with and without vectors. "More than", as the issue asks: the claim is the direction."""
     catalogue = catalogue_of(100)
@@ -154,44 +149,43 @@ def test_a_lopsided_pool_is_covered_more_widely_than_by_todays_draw(tmp_path: Pa
     seeds = range(30)
 
     def covered(given: dict[str, NDArray[np.float32]] | None, seed: int) -> int:
-        batch = drawn(harness(tmp_path / f"{seed}-{given is None}.db", catalogue, given, seed=seed), 16)
-        return len({groups[w.id] for w in batch.wallpapers})
+        return len({groups[w] for w in drawn(catalogue, given, 16, seed=seed)})
 
     assert sum(covered(vectors, seed) for seed in seeds) > sum(covered(None, seed) for seed in seeds)
 
 
-def test_the_same_seed_gives_the_same_batch(tmp_path: Path) -> None:
+def test_the_same_seed_gives_the_same_batch() -> None:
     catalogue = catalogue_of(60)
     vectors, _ = grouped_by_id(catalogue, [20, 10, 10, 10, 10])
 
-    first = drawn(harness(tmp_path / "a.db", catalogue, vectors, seed=4), 16)
-    second = drawn(harness(tmp_path / "b.db", catalogue, vectors, seed=4), 16)
-
-    assert [w.id for w in second.wallpapers] == [w.id for w in first.wallpapers]
+    assert drawn(catalogue, vectors, 16, seed=4) == drawn(catalogue, vectors, 16, seed=4)
 
 
-def test_no_vectors_and_too_few_vectors_both_give_todays_draw(tmp_path: Path) -> None:
+def test_no_vectors_and_too_few_vectors_both_give_todays_draw() -> None:
     """No vectors, every row "no **Embedding**", and fewer embedded **Unknowns** than slots all draw the
     same **Batch** under the same seed."""
     catalogue = catalogue_of(40)
     few, _ = grouped_by_id(catalogue[:5], [5])
     nothing = {w.id: np.zeros(WIDTH, dtype=np.float32) for w in catalogue}
 
-    batches = [
-        [w.id for w in drawn(harness(tmp_path / f"{n}.db", catalogue, given, seed=9), 16).wallpapers]
-        for n, given in enumerate((None, few, nothing))
-    ]
+    batches = [drawn(catalogue, given, 16, seed=9) for given in (None, few, nothing)]
 
     assert batches[1] == batches[0]
     assert batches[2] == batches[0]
 
 
-def test_a_pool_with_no_embeddings_draws_exactly_the_seeded_shuffle(tmp_path: Path) -> None:
+def test_a_pool_with_no_embeddings_draws_exactly_the_seeded_shuffle() -> None:
     """ADR 0018: with no positions the draw is the one it was before the varied draw existed. Recorded
     from the code before `vectors` stopped being optional, under the same seed."""
-    batch = drawn(harness(tmp_path / "w.db", catalogue_of(40), None, seed=9), 16)
-
-    assert [w.id for w in batch.wallpapers] == [
+    assert drawn(catalogue_of(40), None, 16, seed=9) == [
         "wp0005", "wp0021", "wp0022", "wp0023", "wp0011", "wp0001", "wp0032", "wp0038",
         "wp0010", "wp0029", "wp0019", "wp0017", "wp0012", "wp0039", "wp0000", "wp0008",
     ]  # fmt: skip
+
+
+def test_vectors_that_do_not_line_up_with_the_pool_are_refused() -> None:
+    """A row per classified **Wallpaper** or nothing: one row short would hand a group to the wrong tile."""
+    classified = [ScoredWallpaper(wallpaper=w, score=0.0, zone=Zone.UNKNOWN) for w in catalogue_of(5)]
+
+    with pytest.raises(ValueError, match="4 vectors for 5"):
+        draw(EXPLORE_MIX, classified, 4, SeededRandom(1), np.zeros((4, WIDTH), dtype=np.float32))

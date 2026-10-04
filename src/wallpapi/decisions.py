@@ -10,7 +10,9 @@ import datetime as dt
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
+from wallpapi.clock import iso_utc
 from wallpapi.model import Clearance, DecisionEntry, Verdict
 
 HISTORY_PAGE_SIZE = 100
@@ -47,6 +49,27 @@ class History:
     pages: int
     total: int
 
+    @property
+    def previous_page(self) -> int | None:
+        return self.page - 1 if self.page > 1 else None
+
+    @property
+    def next_page(self) -> int | None:
+        return self.page + 1 if self.page < self.pages else None
+
+
+@dataclass(frozen=True)
+class HistoryRefused:
+    """A **History** edit did not happen, and this is why. Only a hand-made post or a second tab can cause
+    one.
+    """
+
+    class Reason(StrEnum):
+        UNKNOWN_WALLPAPER = "unknown_wallpaper"
+        """No such **Wallpaper** in this database."""
+
+    reason: Reason
+
 
 MENTIONED = "SELECT wallpaper_id FROM decision_log"
 """Every **Wallpaper** with any entry at all, a legacy **Clearance** included, as a subquery for SQL elsewhere
@@ -63,13 +86,30 @@ def append(
     `batch_id` is `None` for a **History** edit, which is what keeps it out of a **Batch**'s entries. Every
     entry shares `at`, stored as an ISO 8601 UTC string (invariant 5); a naive moment is refused.
     """
-    if at.tzinfo is None:
-        raise ValueError("a Decision log timestamp must be UTC-aware")
-    recorded_at = at.astimezone(dt.UTC).isoformat()
+    recorded_at = iso_utc(at)
     write.executemany(
         "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, ?, ?, ?)",
         [(wallpaper_id, batch_id, verdict.value, recorded_at) for wallpaper_id, verdict in verdicts.items()],
     )
+
+
+def edit(
+    write: sqlite3.Connection, wallpaper_id: str, verdict: Verdict, *, at: dt.datetime
+) -> HistoryEntry | HistoryRefused:
+    """Change a **Wallpaper**'s **Verdict** from **History**: one entry with `batch_id` `NULL`, inside the
+    caller's write transaction, and the line **History** now shows for it.
+
+    A **Wallpaper** this database has never recorded is refused, by the log's foreign key rather than by
+    reading another module's table; the failed statement leaves the transaction as it was.
+    """
+    try:
+        append(write, {wallpaper_id: verdict}, batch_id=None, at=at)
+    except sqlite3.IntegrityError:
+        return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+    entry = history_entry(write, wallpaper_id)
+    if entry is None:
+        raise AssertionError("an entry was appended for this Wallpaper and must resolve")
+    return entry
 
 
 def resolve(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dict[str, ResolvedVerdict]:
@@ -107,15 +147,13 @@ def history(connection: sqlite3.Connection, verdict: Verdict | None = None, page
         _history_query(filtered=filtered),
         [*parameters, HISTORY_PAGE_SIZE, (wanted - 1) * HISTORY_PAGE_SIZE],
     ).fetchall()
-    entries = tuple(
-        HistoryEntry(
-            wallpaper_id=str(row["wallpaper_id"]),
-            resolved=_resolved_from(row["resolved"]),
-            decided_at=dt.datetime.fromisoformat(str(row["decided_at"])),
-        )
-        for row in rows
-    )
-    return History(entries=entries, page=wanted, pages=pages, total=total)
+    return History(entries=tuple(map(_history_entry_from, rows)), page=wanted, pages=pages, total=total)
+
+
+def history_entry(connection: sqlite3.Connection, wallpaper_id: str) -> HistoryEntry | None:
+    """One **Wallpaper**'s line in **History**, as the page shows it, or `None` if it has no entry."""
+    row = connection.execute(_HISTORY_ENTRY, (wallpaper_id,)).fetchone()
+    return None if row is None else _history_entry_from(row)
 
 
 def favourites(connection: sqlite3.Connection) -> list[str]:
@@ -212,6 +250,14 @@ the resolved **Verdict**.
 """
 
 
+def _history_entry_from(row: sqlite3.Row) -> HistoryEntry:
+    return HistoryEntry(
+        wallpaper_id=str(row["wallpaper_id"]),
+        resolved=_resolved_from(row["resolved"]),
+        decided_at=dt.datetime.fromisoformat(str(row["decided_at"])),
+    )
+
+
 def _resolution_query(select: str, *, restriction: str = "") -> str:
     """A query over the resolved **Decision log**: the shared CTE, then whatever is selected from it."""
     return _RESOLUTION_CTE.format(restriction=restriction) + select
@@ -231,6 +277,10 @@ def _history_count_query(*, filtered: bool) -> str:
     where = "WHERE resolved = ?" if filtered else ""
     return _resolution_query(f"SELECT COUNT(*) FROM resolution {where}")
 
+
+_HISTORY_ENTRY = _resolution_query(
+    "SELECT wallpaper_id, resolved, decided_at FROM resolution", restriction="WHERE wallpaper_id = ?"
+)
 
 _EXPLICITLY_DECIDED = _resolution_query(
     f"SELECT wallpaper_id FROM resolution WHERE resolved IS NOT NULL AND resolved != '{Verdict.IGNORE.value}'"
