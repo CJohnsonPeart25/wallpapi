@@ -6,7 +6,8 @@ How a ticket goes from `ready-for-agent` to merged. Written down after the first
 ## One agent, one issue, one worktree
 
 - Each ticket is implemented by one agent in its own worktree: `C:\Users\Cameron\code\wallpapi-wt\issue-<N>`
-  on branch `issue-<N>-<short-slug>`, cut from `origin/main`. Work never happens in the main checkout.
+  on branch `issue-<N>-<short-slug>`, cut from the epic's integration branch (`origin/main` for a lone
+  ticket). Work never happens in the main checkout.
 - The agent reads, in order: `AGENTS.md`, `CONTEXT.md`, `docs/adr/`, the issue with all its comments (the
   "Agent Brief" and "Note from triaging" comments refine the body), the two most recent merged PRs for house
   style, then the code nearest the ticket.
@@ -32,16 +33,19 @@ numbers must stay contiguous because `storage.migrate` applies its steps by numb
 
 ## The lead's side
 
-- Verify in the agent's worktree, not by trusting the report: `ruff check`, `ruff format --check`, `pyright`
-  strict, `pytest`. Read the diff of the core change and anything the review note flags.
-- Post a `## Lead review` comment stating what was read, what was run, and a verdict on each judgement call,
-  then `gh pr merge --merge --delete-branch`. Merge commits, not squashes, so each agent's commits survive.
-- When `main` moves under a running agent, tell it what moved and have it rebase itself before opening the
-  PR; it has the context to resolve its own conflicts. The lead resolves only conflicts left after that.
+- The checks are CI's and the lefthook hooks': read the PR's CI result rather than re-running them. Read
+  the diff of the core change and anything the review note flags.
+- Post a `## Lead review` comment stating what was read and a verdict on each judgement call, then
+  `gh pr merge --merge --delete-branch` into the epic's integration branch. Merge commits, not squashes, so
+  each agent's commits survive. The human reviews and merges the one epic PR into `main`; the epic's opening
+  prompt states this, or a different merge policy.
+- When the integration branch moves under a running agent, have it rebase itself once, after the last
+  sibling expected to merge first; it has the context to resolve its own conflicts. The lead resolves only
+  conflicts left after that.
 - Dispatch order follows the dependency graph and the shared-file conflict surface: tickets that touch the
   same module run in sequence, tickets on different surfaces run in parallel.
 
 ## Definition of done
 
-Unchanged from `AGENTS.md`: `ruff check`, `ruff format`, `pyright` strict and `pytest` clean, the smoke test
-that boots the app and hits `/` still passing, no test touching the network.
+As in `AGENTS.md`: `uv run lefthook run ci` exits 0, which the hooks and CI enforce. What a check
+cannot measure is named in the review note for the human.
