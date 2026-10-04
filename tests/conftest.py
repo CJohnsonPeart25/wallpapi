@@ -1,9 +1,11 @@
-"""Harness for driving the composed modules and workflows the way the routes do, and the guard that keeps
-tests off the network.
+"""Rigs for the tests, and the guard that keeps them off the network.
 
-Tests enter through `compose`'s modules and `workflows` with fakes behind them. The only reach past them is
-the raw connection the migration and legacy-Clearance tests need, because nothing the modules offer can
-produce an older database's rows or a Clearance any more.
+A test of one module's rule builds that module over an in-memory database with a fake only for its external
+collaborator (invariant 14, ADR 0019), as `library_rig` does. `make_harness` composes every module the way
+the routes do, and is for tests whose subject is a workflow: a transaction across modules, or what follows
+its commit. Rule tests still on the harness are moving off it (#80). The only reach past the modules is the
+raw connection the migration and legacy-Clearance tests need, because nothing the modules offer can produce
+an older database's rows or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from tests.fakes import (
 from wallpapi import decisions, pool, settings, storage, workflows
 from wallpapi.batches import Batch
 from wallpapi.compose import Modules, compose
+from wallpapi.decisions import HistoryEntry
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.pool import RefillStrategy
@@ -254,7 +257,7 @@ def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
 def judge(harness: Harness, **marks: Verdict) -> None:
     """Give each named **Wallpaper** a **Verdict** from **History**, in the order given."""
     for wallpaper_id, verdict in marks.items():
-        assert workflows.edit_verdict(harness.modules, wallpaper_id, verdict) is None
+        assert isinstance(workflows.edit_verdict(harness.modules, wallpaper_id, verdict), HistoryEntry)
 
 
 def live(harness: Harness) -> Batch:

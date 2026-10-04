@@ -26,10 +26,9 @@ from starlette.types import Lifespan
 from wallpapi import decisions, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
-from wallpapi.decisions import HistoryEntry, ResolvedVerdict
+from wallpapi.decisions import HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import FORM_FIELDS, MAX_MIX_NAME_LENGTH, MIX_TOTAL, SettingsRefused, form_values
-from wallpapi.workflows import HistoryRefused
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -327,15 +326,11 @@ def history_verdict(
     verdict: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
     """Change a **Wallpaper**'s **Verdict** from **History**, and swap back its row as the log resolves."""
-    refused = workflows.edit_verdict(modules, wallpaper_id, parse_verdict(verdict, required=True))
-    if refused is not None:
-        return _refuse(request, refused.reason)
-    connection = modules.connect()
-    entry = decisions.history_entry(connection, wallpaper_id)
-    if entry is None:
-        return _refuse(request, HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+    edited = workflows.edit_verdict(modules, wallpaper_id, parse_verdict(verdict, required=True))
+    if isinstance(edited, HistoryRefused):
+        return _refuse(request, edited.reason)
     return templates.TemplateResponse(
-        request, "history_row.html", {"row": _history_rows(connection, [entry])[0]}
+        request, "history_row.html", {"row": _history_rows(modules.connect(), [edited])[0]}
     )
 
 

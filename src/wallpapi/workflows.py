@@ -14,28 +14,13 @@ page after its network call, `EmbeddingCache` in its own file, and the **Library
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
-
 from wallpapi import batches, decisions, pool, settings, storage, thumbnails
 from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
+from wallpapi.decisions import HistoryEntry, HistoryRefused
 from wallpapi.library import FavouriteDownload
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
-
-
-@dataclass(frozen=True)
-class HistoryRefused:
-    """A **History** edit did not happen, and this is why. Only a hand-made post or a second tab can cause
-    one.
-    """
-
-    class Reason(StrEnum):
-        UNKNOWN_WALLPAPER = "unknown_wallpaper"
-        """No such **Wallpaper** in this database."""
-
-    reason: Reason
 
 
 def set_draft(
@@ -69,17 +54,16 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
     return submitted
 
 
-def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryRefused | None:
-    """Change a **Wallpaper**'s **Verdict** from **History**: an entry with `batch_id` `NULL`, then the
-    **Library** reconciled. An **Ignore** is how **History** withdraws a **Verdict**.
+def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:
+    """Change a **Wallpaper**'s **Verdict** from **History**, then reconcile the **Library**. An **Ignore** is
+    how **History** withdraws a **Verdict**. Returns the line **History** now shows.
     """
     connection = modules.connect()
     with storage.write(connection) as write:
-        if not pool.wallpapers(write, [wallpaper_id]):
-            return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
-        decisions.append(write, {wallpaper_id: verdict}, batch_id=None, at=modules.clock.now())
-    modules.library.reconcile(connection, settings.get(connection).library_path)
-    return None
+        edited = decisions.edit(write, wallpaper_id, verdict, at=modules.clock.now())
+    if isinstance(edited, HistoryEntry):
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return edited
 
 
 def save_settings(modules: Modules, **fields: object) -> Settings | SettingsRefused:

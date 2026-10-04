@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from wallpapi import decisions, pool, settings, storage
 from wallpapi.allocation import ScoredWallpaper, draw
-from wallpapi.clock import Clock
+from wallpapi.clock import Clock, iso_utc
 from wallpapi.model import Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.rng import SeededRandom
@@ -141,7 +141,7 @@ class Batches:
                 return contended
             write.execute(
                 "INSERT INTO batches (id, created_at, size) VALUES (?, ?, ?)",
-                (batch_id, created_at.isoformat(), len(chosen)),
+                (batch_id, iso_utc(created_at), len(chosen)),
             )
             write.executemany(
                 "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone) VALUES (?, ?, ?, ?)",
@@ -182,7 +182,7 @@ class Batches:
         members = pool.members(connection)
         if not members:
             return ()
-        judged = [wallpaper_from_row(row) for row in connection.execute(_SELECT_DECIDED_WALLPAPERS)]
+        judged = pool.decided(connection)
         resolved = decisions.resolve(connection, [w.id for w in members] + [w.id for w in judged])
 
         candidates = [w for w in members if resolved[w.id].verdict is not Verdict.BAN]
@@ -220,7 +220,7 @@ class Batches:
         decisions.append(write, entries, batch_id=batch_id, at=recorded_at)
         pool.retire(write, list(entries))
         write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
-        write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (recorded_at.isoformat(), batch_id))
+        write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (iso_utc(recorded_at), batch_id))
         ignored = sum(1 for verdict in entries.values() if verdict is Verdict.IGNORE)
         return Submitted(batch_id=batch_id, recorded=len(entries), ignored=ignored)
 
@@ -334,18 +334,6 @@ def _batch_from(connection: sqlite3.Connection, batch: sqlite3.Row) -> Batch:
         zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
     )
 
-
-_SELECT_DECIDED_WALLPAPERS = f"""
-SELECT w.*
-FROM wallpapers AS w
-WHERE w.id IN ({decisions.MENTIONED})
-ORDER BY w.id
-"""
-"""Every **Wallpaper** the **Decision log** mentions, as whole rows, in a fixed order.
-
-Whole rows because the **Similarity provider** is handed **Wallpapers**; ordered so the matrix's columns, and
-so every **Score**, are reproducible.
-"""
 
 _SELECT_BATCH_WALLPAPERS = """
 SELECT w.*, bw.zone AS zone

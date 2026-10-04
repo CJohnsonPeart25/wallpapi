@@ -16,9 +16,8 @@ from tests.conftest import Harness, judge, live, make_harness, serving, submit_w
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import decisions, workflows
 from wallpapi.batches import Batch, BatchUnavailable
-from wallpapi.decisions import HISTORY_PAGE_SIZE, ResolvedVerdict
+from wallpapi.decisions import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict
-from wallpapi.workflows import HistoryRefused
 
 SUBJECT = "wp0000"
 
@@ -76,7 +75,7 @@ def test_the_latest_entry_decides(
     submit_with(harness, {SUBJECT: submitted})
 
     for verdict in edits:
-        assert workflows.edit_verdict(harness.modules, SUBJECT, verdict) is None
+        assert isinstance(workflows.edit_verdict(harness.modules, SUBJECT, verdict), HistoryEntry)
 
     assert decisions.resolve(harness.connect(), [SUBJECT])[SUBJECT] == resolved
     assert decisions.entries(harness.connect(), wallpaper_id=SUBJECT)[-1].batch_id is None
@@ -103,7 +102,7 @@ def test_a_legacy_clearance_resolves_to_nothing_when_it_is_the_latest_entry(db_p
     cleared, judged_again = "wp0000", "wp0001"
     submit_with(harness, {cleared: Verdict.FAVOURITE, judged_again: Verdict.BAN})
     write_legacy_clearance(db_path, cleared, judged_again)
-    assert workflows.edit_verdict(harness.modules, judged_again, Verdict.LIKE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, judged_again, Verdict.LIKE), HistoryEntry)
 
     resolved = decisions.resolve(harness.connect(), [cleared, judged_again])
 
@@ -120,7 +119,7 @@ def test_an_edit_appends_and_never_rewrites(db_path: Path) -> None:
     harness = make_harness(db_path, catalogue=catalogue_of(8))
     submitted = submit_with(harness, {SUBJECT: Verdict.LIKE})
 
-    assert workflows.edit_verdict(harness.modules, SUBJECT, Verdict.BAN) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, SUBJECT, Verdict.BAN), HistoryEntry)
 
     entries = decisions.entries(harness.connect(), wallpaper_id=SUBJECT)
     assert [(e.entry, e.batch_id) for e in entries] == [(Verdict.LIKE, submitted.id), (Verdict.BAN, None)]
@@ -144,12 +143,12 @@ def test_a_ban_from_history_excludes_a_wallpaper_and_an_ignore_makes_it_eligible
     **Batch** showed it, since a shown **Wallpaper** has left the **Pool** for good (ADR 0016)."""
     harness = make_harness(db_path, catalogue=catalogue_of(1))
     workflows.save_settings(harness.modules, batch_size=1)
-    assert workflows.edit_verdict(harness.modules, SUBJECT, Verdict.BAN) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, SUBJECT, Verdict.BAN), HistoryEntry)
     assert isinstance(harness.modules.batches.next(harness.connect()), BatchUnavailable), (
         "the Ban must exclude it"
     )
 
-    assert workflows.edit_verdict(harness.modules, SUBJECT, Verdict.IGNORE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, SUBJECT, Verdict.IGNORE), HistoryEntry)
 
     reoffered = live(harness)
     assert [w.id for w in reoffered.wallpapers] == [SUBJECT]
@@ -163,7 +162,7 @@ def test_a_history_edit_does_not_reach_the_batch_already_open(db_path: Path) -> 
     workflows.save_settings(harness.modules, batch_size=1)
     open_batch = live(harness)
 
-    assert workflows.edit_verdict(harness.modules, SUBJECT, Verdict.LIKE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, SUBJECT, Verdict.LIKE), HistoryEntry)
     submitted = submit_with(harness, {})
 
     assert submitted == open_batch, "the edit neither rerolled nor re-marked the open Batch"
@@ -177,7 +176,7 @@ def decided_before_it_is_drawn(harness: Harness, verdicts: Mapping[str, Verdict]
     """Decide **Pool** members from **History**, then mint: the one way the seam still reaches a **Batch**
     drawing a decided **Wallpaper**, since an edit takes nothing out of the **Pool**."""
     for wallpaper_id, verdict in verdicts.items():
-        assert workflows.edit_verdict(harness.modules, wallpaper_id, verdict) is None
+        assert isinstance(workflows.edit_verdict(harness.modules, wallpaper_id, verdict), HistoryEntry)
     batch = live(harness)
     return batch
 
@@ -187,7 +186,7 @@ def test_a_reshown_wallpaper_comes_up_marked_with_its_latest_verdict(db_path: Pa
     **Ignore** is not pre-filled, and a **Ban** is never drawn."""
     harness = make_harness(db_path, catalogue=catalogue_of(8))
     liked, favourite, banned, ignored, overturned = "wp0000", "wp0001", "wp0002", "wp0003", "wp0004"
-    assert workflows.edit_verdict(harness.modules, overturned, Verdict.FAVOURITE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, overturned, Verdict.FAVOURITE), HistoryEntry)
 
     reshown = decided_before_it_is_drawn(
         harness,

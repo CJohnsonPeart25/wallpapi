@@ -11,7 +11,6 @@ inside a write (ADR 0006).
 
 from __future__ import annotations
 
-import datetime as dt
 import os
 import re
 import sqlite3
@@ -22,7 +21,7 @@ from typing import Protocol
 import httpx2
 
 from wallpapi import decisions, storage
-from wallpapi.clock import Clock
+from wallpapi.clock import Clock, iso_utc
 from wallpapi.files import url_suffix, write_atomically
 
 REQUEST_TIMEOUT = 10.0
@@ -96,20 +95,19 @@ class Library:
             wallpaper_id = str(row["wallpaper_id"])
             recorded = None if row["path"] is None else Path(str(row["path"]))
             wanted = wallpaper_id in favourites
-            try:
-                if wanted and recorded is None:
-                    if self._add(connection, wallpaper_id, str(row["full_url"]), library_path):
-                        written.append(wallpaper_id)
-                    else:
-                        failed.append(wallpaper_id)
-                elif not wanted and recorded is not None:
+            if wanted and recorded is None:
+                added = self._add(connection, wallpaper_id, str(row["full_url"]), library_path)
+                (written if added else failed).append(wallpaper_id)
+            elif not wanted and recorded is not None:
+                try:
                     deleted = self._drop(connection, wallpaper_id, recorded, library_path)
-                    # A row outside the **Library** is dropped with its file left where it is.
-                    if deleted:
-                        removed.append(wallpaper_id)
-            except Exception:
-                # The writer declares no error type. Leaving the row as it was makes the next call retry.
-                failed.append(wallpaper_id)
+                except Exception:
+                    # The writer declares no error type. Leaving the row as it was makes the next call retry.
+                    failed.append(wallpaper_id)
+                    continue
+                # A row outside the **Library** is dropped with its file left where it is.
+                if deleted:
+                    removed.append(wallpaper_id)
         return LibraryReconciliation(written=tuple(written), removed=tuple(removed), failed=tuple(failed))
 
     def download_favourites(self, connection: sqlite3.Connection, library_path: Path) -> FavouriteDownload:
@@ -134,23 +132,17 @@ class Library:
             if held is not None and held.exists():
                 skipped.append(wallpaper_id)
                 continue
-            try:
-                if self._add(connection, wallpaper_id, str(row["full_url"]), library_path):
-                    written.append(wallpaper_id)
-                else:
-                    failed.append(wallpaper_id)
-            except Exception:
-                # As in `reconcile`: the writer declares no error type.
-                failed.append(wallpaper_id)
+            added = self._add(connection, wallpaper_id, str(row["full_url"]), library_path)
+            (written if added else failed).append(wallpaper_id)
         return FavouriteDownload(written=tuple(written), skipped=tuple(skipped), failed=tuple(failed))
 
     def _add(
         self, connection: sqlite3.Connection, wallpaper_id: str, source_url: str, library_path: Path
     ) -> bool:
-        """Download one **Favourite** and record where it landed, or return `False` before fetching anything.
+        """Download one **Favourite** and record where it landed; `False` if it was refused or failed.
 
-        The confinement check comes first, so a refusal never costs a download. `written_at` is the clock's
-        moment as an ISO 8601 UTC string (invariant 5); a naive one is refused.
+        The confinement check comes first, so a refusal never costs a download. A failure leaves no row, so
+        the next call retries. `written_at` is the clock's moment as an ISO 8601 UTC string (invariant 5).
         """
         name = library_file_name(wallpaper_id, source_url)
         if name is None:
@@ -158,14 +150,14 @@ class Library:
         destination = confined_to_library(library_path / name, library_path)
         if destination is None:
             return False
-        written = self._writer.write(wallpaper_id, source_url, destination)
-        at = self._clock.now()
-        if at.tzinfo is None:
-            raise ValueError("a Library timestamp must be UTC-aware")
-        with storage.write(connection) as write:
-            write.execute(
-                _RECORD_LIBRARY_FILE, (wallpaper_id, str(written), at.astimezone(dt.UTC).isoformat())
-            )
+        try:
+            written = self._writer.write(wallpaper_id, source_url, destination)
+            at = iso_utc(self._clock.now())
+            with storage.write(connection) as write:
+                write.execute(_RECORD_LIBRARY_FILE, (wallpaper_id, str(written), at))
+        except Exception:
+            # The writer declares no error type.
+            return False
         return True
 
     def _drop(

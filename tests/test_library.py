@@ -17,6 +17,7 @@ import pytest
 from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, live, make_harness
 from tests.fakes import FakeLibraryWriter, catalogue_of, wallpaper
 from wallpapi import decisions, settings, workflows
+from wallpapi.decisions import HistoryEntry
 from wallpapi.library import Library
 from wallpapi.model import Verdict
 
@@ -161,37 +162,6 @@ def test_a_file_is_recorded_as_written_at_utc_from_the_clock(rig: LibraryRig) ->
     assert dt.datetime.fromisoformat(stored).tzinfo == dt.UTC
 
 
-# -- a Library path that moved: the guard through the seam ------------------------------------------
-
-
-def test_a_recorded_path_outside_the_library_is_dropped_rather_than_deleted(
-    rig: LibraryRig, writer: FakeLibraryWriter, tmp_path: Path
-) -> None:
-    """The **Library path** changed, so the old file is no longer wallpapi's to delete. The row goes, so
-    the refusal settles rather than repeating on every reconciliation, and a fresh **Favourite** is
-    written where the path points today. On a real disk the file stays: `test_library_disk.py`."""
-    original = rig.library_path
-    rig.decide(Verdict.FAVOURITE, ONE)
-    rig.reconcile()
-    rig.library_path = tmp_path / "Moved"
-
-    rig.decide(Verdict.LIKE, ONE)
-    first = rig.reconcile()
-    second = rig.reconcile()
-
-    assert writer.removed == []
-    assert first == second
-    assert (first.written, first.removed, first.failed) == ((), (), ())
-
-    rig.decide(Verdict.FAVOURITE, ONE)
-    rig.reconcile()
-
-    assert [w.wallpaper_id for w in writer.written] == [ONE, ONE]
-    assert writer.written[0].destination.parent == original.resolve()
-    assert writer.written[-1].destination == (rig.library_path / f"{ONE}.jpg").resolve()
-    assert writer.removed == []
-
-
 def test_a_wallhaven_id_that_cannot_name_a_file_is_a_failure_and_no_download(tmp_path: Path) -> None:
     """Refused before any download. The **Favourite** stands and is reported as failed: taste does not
     depend on wallpapi being able to name a file."""
@@ -305,6 +275,6 @@ def test_a_history_edit_takes_the_file_away(db_path: Path, tmp_path: Path) -> No
     workflows.submit(harness.modules, batch.id)
     shown = batch.wallpapers[0].id
 
-    assert workflows.edit_verdict(harness.modules, shown, Verdict.LIKE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, shown, Verdict.LIKE), HistoryEntry)
 
     assert harness.library.removed == [harness.library.written[0].destination]

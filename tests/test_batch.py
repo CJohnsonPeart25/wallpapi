@@ -11,6 +11,7 @@ from pathlib import Path
 from tests.conftest import Harness, live, make_harness, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import decisions, workflows
+from wallpapi.decisions import HistoryEntry
 from wallpapi.model import Verdict, Zone
 from wallpapi.pool import IDLE_RECHECK_SECONDS
 
@@ -32,7 +33,7 @@ def test_submitting_retires_every_shown_wallpaper_and_no_edit_brings_it_back(db_
     following = live(harness)
     assert harness.modules.refill.status().pool_size == 4
     assert not {w.id for w in following.wallpapers} & shown
-    assert workflows.edit_verdict(harness.modules, liked, Verdict.FAVOURITE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, liked, Verdict.FAVOURITE), HistoryEntry)
     assert harness.modules.refill.status().pool_size == 4
 
 
@@ -149,7 +150,7 @@ def test_a_second_ignore_is_appended_not_folded_into_the_first(db_path: Path) ->
     workflows.submit(harness.modules, first.id)
 
     for w in first.wallpapers:
-        assert workflows.edit_verdict(harness.modules, w.id, Verdict.IGNORE) is None
+        assert isinstance(workflows.edit_verdict(harness.modules, w.id, Verdict.IGNORE), HistoryEntry)
 
     history = decisions.entries(harness.connect())
     assert len(history) == 16

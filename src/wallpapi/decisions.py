@@ -10,7 +10,9 @@ import datetime as dt
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
+from wallpapi.clock import iso_utc
 from wallpapi.model import Clearance, DecisionEntry, Verdict
 
 HISTORY_PAGE_SIZE = 100
@@ -56,6 +58,19 @@ class History:
         return self.page + 1 if self.page < self.pages else None
 
 
+@dataclass(frozen=True)
+class HistoryRefused:
+    """A **History** edit did not happen, and this is why. Only a hand-made post or a second tab can cause
+    one.
+    """
+
+    class Reason(StrEnum):
+        UNKNOWN_WALLPAPER = "unknown_wallpaper"
+        """No such **Wallpaper** in this database."""
+
+    reason: Reason
+
+
 MENTIONED = "SELECT wallpaper_id FROM decision_log"
 """Every **Wallpaper** with any entry at all, a legacy **Clearance** included, as a subquery for SQL elsewhere
 to compose: what the **Pool** refuses (ADR 0016). Asked of the log, not of resolution, because a **Clearance**
@@ -71,13 +86,30 @@ def append(
     `batch_id` is `None` for a **History** edit, which is what keeps it out of a **Batch**'s entries. Every
     entry shares `at`, stored as an ISO 8601 UTC string (invariant 5); a naive moment is refused.
     """
-    if at.tzinfo is None:
-        raise ValueError("a Decision log timestamp must be UTC-aware")
-    recorded_at = at.astimezone(dt.UTC).isoformat()
+    recorded_at = iso_utc(at)
     write.executemany(
         "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, ?, ?, ?)",
         [(wallpaper_id, batch_id, verdict.value, recorded_at) for wallpaper_id, verdict in verdicts.items()],
     )
+
+
+def edit(
+    write: sqlite3.Connection, wallpaper_id: str, verdict: Verdict, *, at: dt.datetime
+) -> HistoryEntry | HistoryRefused:
+    """Change a **Wallpaper**'s **Verdict** from **History**: one entry with `batch_id` `NULL`, inside the
+    caller's write transaction, and the line **History** now shows for it.
+
+    A **Wallpaper** this database has never recorded is refused, by the log's foreign key rather than by
+    reading another module's table; the failed statement leaves the transaction as it was.
+    """
+    try:
+        append(write, {wallpaper_id: verdict}, batch_id=None, at=at)
+    except sqlite3.IntegrityError:
+        return HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+    entry = history_entry(write, wallpaper_id)
+    if entry is None:
+        raise AssertionError("an entry was appended for this Wallpaper and must resolve")
+    return entry
 
 
 def resolve(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dict[str, ResolvedVerdict]:

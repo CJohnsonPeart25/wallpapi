@@ -20,7 +20,7 @@ from enum import StrEnum
 
 from wallpapi import decisions, storage
 from wallpapi import settings as settings_module
-from wallpapi.clock import Clock
+from wallpapi.clock import Clock, iso_utc
 from wallpapi.model import Wallpaper
 from wallpapi.rng import SeededRandom
 from wallpapi.settings import Settings
@@ -358,12 +358,10 @@ def admit(
     **Decision log** mentions is refused (ADR 0016), though its `wallpapers` row is still refreshed.
     `fetched_at` is `at` as an ISO 8601 UTC string (invariant 5); a naive moment is refused.
     """
-    if at.tzinfo is None:
-        raise ValueError("a Pool timestamp must be UTC-aware")
+    fetched_at = iso_utc(at)
     passing = [w for w in _distinct(wallpapers) if _passes_filters(w, current)]
     if not passing:
         return
-    fetched_at = at.astimezone(dt.UTC).isoformat()
     write.executemany(_UPSERT_WALLPAPER, [_wallpaper_row(w) for w in passing])
     write.executemany(
         _ADMIT_TO_POOL, [{"id": w.id, "fetched_at": fetched_at, "source": source.value} for w in passing]
@@ -376,9 +374,7 @@ def prune(write: sqlite3.Connection, current: Settings) -> None:
 
     Membership only: the `wallpapers` row and the **Decision log** stay, and the live **Batch** is untouched.
     """
-    failing = [(w.id,) for w in members(write) if not _passes_filters(w, current)]
-    if failing:
-        write.executemany("DELETE FROM pool WHERE wallpaper_id = ?", failing)
+    retire(write, [w.id for w in members(write) if not _passes_filters(w, current)])
 
 
 def retire(write: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> None:
@@ -411,6 +407,15 @@ def wallpapers(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> 
     placeholders = ",".join("?" * len(wallpaper_ids))
     rows = connection.execute(f"SELECT * FROM wallpapers WHERE id IN ({placeholders})", list(wallpaper_ids))
     return {str(row["id"]): wallpaper_from_row(row) for row in rows}
+
+
+def decided(connection: sqlite3.Connection) -> list[Wallpaper]:
+    """Every **Wallpaper** the **Decision log** mentions, in or out of the **Pool**, in a fixed order.
+
+    Whole **Wallpapers** because the **Similarity provider** is handed them; ordered so the matrix's columns,
+    and so every **Score**, are reproducible.
+    """
+    return [wallpaper_from_row(row) for row in connection.execute(_SELECT_DECIDED_WALLPAPERS)]
 
 
 def wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
@@ -506,6 +511,13 @@ ON CONFLICT (wallpaper_id) DO NOTHING
 """Admit unless the **Decision log** mentions it at all, a legacy `cleared` entry included (ADR 0016).
 
 `DO NOTHING`, so `fetched_at` stays the first arrival.
+"""
+
+_SELECT_DECIDED_WALLPAPERS = f"""
+SELECT w.*
+FROM wallpapers AS w
+WHERE w.id IN ({decisions.MENTIONED})
+ORDER BY w.id
 """
 
 _SELECT_POOL_WALLPAPERS = """

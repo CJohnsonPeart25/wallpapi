@@ -15,6 +15,7 @@ from tests.conftest import Harness, live, make_harness
 from tests.fakes import catalogue_of
 from wallpapi import workflows
 from wallpapi.allocation import ScoredWallpaper
+from wallpapi.decisions import HistoryEntry
 from wallpapi.model import Verdict, Zone
 from wallpapi.scoring import classify
 
@@ -75,9 +76,9 @@ def test_a_decided_pool_member_scores_its_own_value_and_a_banned_one_is_in_no_zo
     **Banned** one is absent whatever its **Verdict**, so that could not tell a **Ban** from an **Ignore**.
     """
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    assert workflows.edit_verdict(harness.modules, "wp0000", Verdict.FAVOURITE) is None
-    assert workflows.edit_verdict(harness.modules, "wp0001", Verdict.BAN) is None
-    assert workflows.edit_verdict(harness.modules, "wp0002", Verdict.IGNORE) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, "wp0000", Verdict.FAVOURITE), HistoryEntry)
+    assert isinstance(workflows.edit_verdict(harness.modules, "wp0001", Verdict.BAN), HistoryEntry)
+    assert isinstance(workflows.edit_verdict(harness.modules, "wp0002", Verdict.IGNORE), HistoryEntry)
 
     scores, zones = _scores(harness), _zones(harness)
 
@@ -138,7 +139,7 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
     _submit(harness, **{loved: Verdict.FAVOURITE})
     assert _zones(harness)[swayed] is Zone.BANGER
 
-    assert workflows.edit_verdict(harness.modules, hated, Verdict.BAN) is None
+    assert isinstance(workflows.edit_verdict(harness.modules, hated, Verdict.BAN), HistoryEntry)
 
     assert _zones(harness)[swayed] is Zone.DUD
 
