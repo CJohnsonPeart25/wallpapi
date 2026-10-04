@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuse a commit unless every automatic check in Done passes. Switch it on once per clone (worktrees share
+# it): git config core.hooksPath .githooks
+# It checks the working tree, not only what is staged, so commit with nothing unstaged you have not checked.
+exec uv run python scripts/check.py
