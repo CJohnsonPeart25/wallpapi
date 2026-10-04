@@ -65,6 +65,15 @@ class ThumbnailEviction:
 
 
 @dataclass(frozen=True, slots=True)
+class _Missing:
+    """One **Pool** member the current pass will fetch a thumbnail for."""
+
+    wallpaper_id: str
+    destination: Path
+    source_url: str
+
+
+@dataclass(frozen=True, slots=True)
 class _CachedThumbnail:
     """One file in the **Thumbnail cache**, stat-ed once."""
 
@@ -90,8 +99,8 @@ class Thumbnails:
 
         self._last_fetch: float | None = None
         self._not_before: float | None = None
-        self._pass: deque[tuple[str, Path, str]] = deque()
-        """What is left of the current pass round the **Pool**: `(wallpaper id, destination, source URL)`."""
+        self._pass: deque[_Missing] = deque()
+        """What is left of the current pass round the **Pool**."""
         self._refusals: dict[str, int] = {}
         """Consecutive refusals per **Wallpaper**. A 429 or a failed connection is about the host and never
         counts.
@@ -103,13 +112,11 @@ class Thumbnails:
         """The cached thumbnail for a **Wallpaper**, fetched if missing; `None` for one this database has
         never seen.
         """
-        row = connection.execute(
-            "SELECT thumbnail_url FROM wallpapers WHERE id = ?", (wallpaper_id,)
-        ).fetchone()
-        if row is None:
+        known = pool.wallpapers(connection, [wallpaper_id]).get(wallpaper_id)
+        if known is None:
             return None
 
-        source_url = str(row["thumbnail_url"])
+        source_url = known.thumbnail_url
         destination = self._path_for(wallpaper_id, source_url)
         if destination.exists():
             return destination
@@ -193,7 +200,8 @@ class Thumbnails:
                 self._not_before = now + IDLE_RECHECK_SECONDS
                 return
 
-        wallpaper_id, destination, source_url = self._pass.popleft()
+        missing = self._pass.popleft()
+        wallpaper_id, destination = missing.wallpaper_id, missing.destination
         if not self._pass:
             # The end of a pass: what it failed to fetch is asked for once a pass, not four times a second.
             self._not_before = now + IDLE_RECHECK_SECONDS
@@ -202,7 +210,7 @@ class Thumbnails:
 
         self._last_fetch = now
         try:
-            data = self._wallhaven.fetch_thumbnail(source_url)
+            data = self._wallhaven.fetch_thumbnail(missing.source_url)
         except ThumbnailUnavailable:
             refusals = self._refusals.get(wallpaper_id, 0) + 1
             self._refusals[wallpaper_id] = refusals
@@ -222,15 +230,15 @@ class Thumbnails:
             # Still missing, so the next pass asks again. The thread must not die of one refused write.
             return
 
-    def _missing(self, connection: sqlite3.Connection) -> list[tuple[str, Path, str]]:
+    def _missing(self, connection: sqlite3.Connection) -> list[_Missing]:
         """Every **Pool** member with no cached thumbnail, in id order, less those given up on."""
-        missing: list[tuple[str, Path, str]] = []
+        missing: list[_Missing] = []
         for member in sorted(pool.members(connection), key=lambda w: w.id):
             if member.id in self._given_up:
                 continue
             destination = self._path_for(member.id, member.thumbnail_url)
             if not destination.exists():
-                missing.append((member.id, destination, member.thumbnail_url))
+                missing.append(_Missing(member.id, destination, member.thumbnail_url))
         return missing
 
     def _full(self, connection: sqlite3.Connection) -> bool:
