@@ -175,6 +175,19 @@ wheels = [
 ]
 
 [[package]]
+name = "lefthook"
+version = "2.1.16"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/bc/1a5b4e112cc34d236e4e40333394fd49cf7dcf2ab95045aff7f987a83d71/lefthook-2.1.16-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:15b9eefd27e0e75e1e32a4fc082dfe38b89e8b7baaec3f4dcdc464966d22b903", size = 5430199, upload-time = "2026-10-01T17:30:16.027Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/65/e5f016ac3589cd7d878dd49c28a7b42705330eaf5b5877e120056ec17153/lefthook-2.1.16-py3-none-macosx_11_0_arm64.whl", hash = "sha256:54ba55d82a60ef2389da78ab59ad231e6ae93380a9982a8e94d85cee5707d68c", size = 4953571, upload-time = "2026-10-01T17:30:18.016Z" },
+    { url = "https://files.pythonhosted.org/packages/98/f3/d9681ea064ab20b0d13b0dc7f1f4dbbac080fd44664a13665345ec852554/lefthook-2.1.16-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:0d744b4c282283d8d33f04a39f9d0fcb364343c2f1d9eb716a106d21e9013fe2", size = 4784711, upload-time = "2026-10-01T17:30:19.683Z" },
+    { url = "https://files.pythonhosted.org/packages/75/e1/8117f851d8524bd900264b6a098cfc6676562c94594b4f7b5c64a3884c60/lefthook-2.1.16-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:6dcb06338830eadb9d4ae9d34b5e18cbb1655307401323d708002f0e2ebb2c57", size = 5364835, upload-time = "2026-10-01T17:30:21.233Z" },
+    { url = "https://files.pythonhosted.org/packages/45/0a/348d164e62af3c01a60c11933f8fb6420f48fbdf4e6cc41286aae72586f9/lefthook-2.1.16-py3-none-win_amd64.whl", hash = "sha256:5c85a1be88a3dda928ccb80c70536ecc997a1707421ad7d4e8d7520c75a423bf", size = 5511450, upload-time = "2026-10-01T17:30:22.934Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/0e/1067788d8013f471bde4565d2db8c4414c787f3cc0ea90e8b6e67a7a3a2e/lefthook-2.1.16-py3-none-win_arm64.whl", hash = "sha256:ee2b72bf44649b514aec8773ad8bbe981a804682a561356fd65054e0a5d56b5f", size = 4864565, upload-time = "2026-10-01T17:30:24.764Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -654,6 +667,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "lefthook" },
     { name = "pyright", extra = ["nodejs"] },
     { name = "pytest" },
     { name = "ruff" },
@@ -674,6 +688,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "lefthook", specifier = ">=2.1" },
     { name = "pyright", extras = ["nodejs"], specifier = ">=1.1.390" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },

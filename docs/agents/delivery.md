@@ -33,7 +33,7 @@ numbers must stay contiguous because `storage.migrate` applies its steps by numb
 
 ## The lead's side
 
-- The checks are CI's and the pre-commit hook's: read the PR's CI result rather than re-running them. Read
+- The checks are CI's and the lefthook hooks': read the PR's CI result rather than re-running them. Read
   the diff of the core change and anything the review note flags.
 - Post a `## Lead review` comment stating what was read and a verdict on each judgement call, then
   `gh pr merge --merge --delete-branch` into the epic's integration branch. Merge commits, not squashes, so
@@ -47,5 +47,5 @@ numbers must stay contiguous because `storage.migrate` applies its steps by numb
 
 ## Definition of done
 
-As in `AGENTS.md`: `uv run python scripts/check.py` exits 0, which the hook and CI enforce. What a check
+As in `AGENTS.md`: `uv run lefthook run ci` exits 0, which the hooks and CI enforce. What a check
 cannot measure is named in the review note for the human.

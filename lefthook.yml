@@ -1,0 +1,26 @@
+# Every automatic check in Done. A commit runs the three fast ones, a push the suite, and CI the `ci` hook,
+# which is both: `uv run lefthook run ci`. Switch the git hooks on once per clone: `uv run lefthook install`.
+pre-commit:
+  parallel: true
+  jobs: &fast
+    - name: format
+      run: uv run ruff format --check
+    - name: lint
+      run: uv run ruff check
+    - name: types
+      run: uv run pyright
+
+pre-push:
+  jobs: &suite
+    - name: test
+      run: uv run pytest
+
+ci:
+  jobs:
+    - name: fast
+      group:
+        parallel: true
+        jobs: *fast
+    - name: suite
+      group:
+        jobs: *suite

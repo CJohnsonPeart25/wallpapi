@@ -5,9 +5,13 @@ the lead keeps it short and is its only writer, and an agent that finds somethin
 
 - `python` is not on PATH (a Store alias intercepts it): every command is `uv run ...`. Run `uv sync` once in a
   new worktree.
-- The checks: `uv run python scripts/check.py`. Its exit code is the verdict, not a grep of its output, and its
-  last four lines say which check failed. A failing check blocks the commit once the hook is on:
-  `git config core.hooksPath .githooks`, once per clone. CI runs the same script on every PR.
+- The checks are lefthook's (`lefthook.yml`): a commit runs format, lint and pyright, a push runs pytest, and
+  `uv run lefthook run ci` runs all four, as CI does on every PR. Its exit code is the verdict, not a grep of
+  its output; the summary marks the failed check. One test: `uv run pytest tests/<file>.py::<name>`.
+- The hooks are on once per clone, run from the main checkout so they outlive any worktree:
+  `uv run lefthook install`. Never skip them (`--no-verify`, `LEFTHOOK=0`); fix what they report.
+- Three symlink tests skip on this machine (Windows refuses symlinks without Developer Mode); "3 skipped" is
+  expected, a fourth is not.
 - Write and edit files with the harness's file tools, never shell heredocs: quotes inside them break the shell.
 - Lines stop at 110 columns. `ruff format` wraps code but not docstrings, comments or long strings, so wrap
   those by hand; `uv run ruff check <file>` after each write finds them before the hook does.
