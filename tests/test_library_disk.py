@@ -18,6 +18,7 @@ import pytest
 
 from tests.conftest import LibraryRig, library_junction, library_rig, library_symlink
 from tests.fakes import catalogue_of
+from wallpapi import decisions
 from wallpapi.library import DownloadingLibraryWriter, confined_to_library, library_file_name
 from wallpapi.model import Verdict
 
@@ -252,6 +253,7 @@ def test_a_library_deleted_in_explorer_changes_nothing_until_one_download_brings
     with favourited(tmp_path, 3) as (rig, seen, ids):
         library_path = rig.library_path
         assert sorted(p.name for p in library_path.iterdir()) == [f"{i}.jpg" for i in ids]
+        before = decisions.history(rig.connection)
 
         for file in library_path.iterdir():
             file.unlink()
@@ -259,6 +261,8 @@ def test_a_library_deleted_in_explorer_changes_nothing_until_one_download_brings
 
         assert (reconciled.written, reconciled.removed, reconciled.failed) == ((), (), ())
         assert len(seen) == 3
+        assert decisions.history(rig.connection) == before
+        assert all(r.verdict is Verdict.FAVOURITE for r in decisions.resolve(rig.connection, ids).values())
 
         pulled = rig.download_favourites()
 
@@ -314,6 +318,8 @@ def test_a_recorded_path_outside_the_library_is_dropped_from_the_record_and_left
 
         assert (reconciled.written, reconciled.removed, reconciled.failed) == ((), (), ())
         assert abandoned.read_bytes() == IMAGE_BYTES
+        # The refusal settles: with the row gone, the next reconciliation has nothing to refuse.
+        assert rig.reconcile() == reconciled
 
         rig.decide(Verdict.FAVOURITE, shown)
 

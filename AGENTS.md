@@ -84,7 +84,7 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 
 Decided, not built. Defer explicitly; do not quietly forget.
 
-- Saying a **Library** write failed *at submission*: `submit_batch` discards `reconcile_library`'s report.
+- Saying a **Library** write failed *at submission*: `workflows.submit` discards `Library.reconcile`'s report.
 - Caching full-resolution images: never. The preview loads `full_url` from Wallhaven (ADR 0003).
 - Restarting a dead refill thread: no supervisor until something is seen to kill one.
 - Throttling full-resolution fetches: needs **Favourite** downloads off the request thread first.

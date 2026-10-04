@@ -18,9 +18,11 @@ from fastapi.testclient import TestClient
 from tests.conftest import Harness, batch_id_of, favourite, judge, live, make_harness, serving
 from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
 from wallpapi import decisions, settings, workflows
-from wallpapi.decisions import HISTORY_PAGE_SIZE
+from wallpapi.batches import SubmissionRefused
+from wallpapi.decisions import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
+from wallpapi.web.app import REFUSALS
 
 Web = tuple[Harness, TestClient]
 
@@ -603,3 +605,12 @@ def test_deleting_a_mix_redirects_or_says_why_not(
         deleted
         in {mix.name for mix in tuple(listed.mix for listed in settings.list_mixes(harness.connect()))}
     ) is (status != HTTPStatus.SEE_OTHER)
+
+
+def test_every_refusal_reason_has_its_own_entry() -> None:
+    """`REFUSALS` is keyed by `StrEnum` members from two modules, which hash as their string values: a new
+    reason reusing another's value would silently take over that entry's response."""
+    reasons = [*SubmissionRefused.Reason, *HistoryRefused.Reason]
+
+    assert len(REFUSALS) == len(reasons)
+    assert all(REFUSALS.keys() & {reason} for reason in reasons)
