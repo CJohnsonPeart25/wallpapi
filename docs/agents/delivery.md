@@ -29,7 +29,8 @@ numbers must stay contiguous because `storage.migrate` applies its steps by numb
 - A separate comment headed `## Review note — where judgement was needed` lists every place the agent chose
   between readings, every criterion tested by proxy or left untested and why, and anything a reviewer should
   read closely. A green tautology is worse than an honest "unreachable through the seam".
-- Small logical commits, imperative mood, each green on its own.
+- Small logical commits, imperative mood, each with its own tests green; the full suite runs at push and in
+  CI.
 
 ## The lead's side
 
