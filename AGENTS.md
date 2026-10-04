@@ -9,6 +9,8 @@
 - **Domain docs**: `CONTEXT.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.
 - **Delivery**: one agent per issue in its own worktree; PR shape, review note, lead review, numbers assigned
   before dispatch. See `docs/agents/delivery.md`.
+- **Environment**: running the checks, the hook, file writes, line length, the smoke test, a real boot. See
+  `docs/agents/environment.md`; it is short enough to paste into a brief.
 
 ## Stack
 
@@ -35,8 +37,9 @@ the **Batch** grid and nothing else. Alpine owns four inline `x-data` islands (t
 
 Run **single-worker**: `--workers N` is N refill threads and N writers on one SQLite file.
 
-**Done** means `ruff check` and `ruff format` clean, `pyright` strict clean, `pytest` green, and a smoke test
-that boots the app and hits `/`. No test touches the network.
+**Done** means `uv run python scripts/check.py` exits 0: `ruff check`, `ruff format`, `pyright` strict and
+`pytest`, the smoke test that serves every page among them. The pre-commit hook and CI run it, so nobody
+re-runs it by hand. No test touches the network.
 
 ## Invariants
 
