@@ -8,8 +8,8 @@ the lead keeps it short and is its only writer, and an agent that finds somethin
 - The checks are lefthook's (`lefthook.yml`): a commit runs format, lint and pyright, a push runs pytest, and
   `uv run lefthook run ci` runs all four, as CI does on every PR. Its exit code is the verdict, not a grep of
   its output; the summary marks the failed check. One test: `uv run pytest tests/<file>.py::<name>`.
-- The hooks are on once per clone, run from the main checkout so they outlive any worktree:
-  `uv run lefthook install`. Never skip them (`--no-verify`, `LEFTHOOK=0`); fix what they report.
+- The hooks install on a clone's first `uv run lefthook ...` (or `uv run lefthook install`) and every worktree
+  shares them. Never skip them (`--no-verify`, `LEFTHOOK=0`); fix what they report.
 - Three symlink tests skip on this machine (Windows refuses symlinks without Developer Mode); "3 skipped" is
   expected, a fourth is not.
 - Write and edit files with the harness's file tools, never shell heredocs: quotes inside them break the shell.
