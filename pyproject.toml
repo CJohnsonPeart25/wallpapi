@@ -19,7 +19,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "pyright>=1.1.390",
+    "pyright[nodejs]>=1.1.390",
     "ruff>=0.8",
 ]
 
