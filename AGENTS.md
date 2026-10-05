@@ -2,9 +2,9 @@
 
 ## Agent skills
 
-- **Issue tracker**: GitHub issues in `CJohnsonPeart25/wallpapi`. Prefix `gh` with
-  `GH_TOKEN=$(gh auth token --user CJohnsonPeart25)`, never `gh auth switch`; the machine's global account is
-  the wrong one. Commit identity is pinned in the local git config. See `docs/agents/issue-tracker.md`.
+- **Issue tracker**: beads (`bd`); `wallpapi-<N>` is old GitHub issue `#<N>`, and a merged PR closes no bead.
+  Pull requests stay on GitHub: prefix `gh` with `GH_TOKEN=$(gh auth token --user CJohnsonPeart25)`, never
+  `gh auth switch`. Commit identity is pinned in the local git config. See `docs/agents/issue-tracker.md`.
 - **Triage labels**: five roles, each label its role name. See `docs/agents/triage-labels.md`.
 - **Domain docs**: `CONTEXT.md` and `docs/adr/` at the root. See `docs/agents/domain.md`.
 - **Delivery**: one agent per issue in its own worktree; PR shape, review note, lead review, numbers assigned
