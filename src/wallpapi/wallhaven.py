@@ -49,12 +49,26 @@ def _retry_after_seconds(value: str | None) -> float | None:
         return None
 
 
+def _remaining(value: str | None) -> int | None:
+    """The `X-RateLimit-Remaining` header as a whole number, or `None` if absent or anything else."""
+    if value is None:
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class SearchPage:
     """One page of a Wallhaven search: 24 **Wallpapers** and the `meta.seed` that stops a walk repeating."""
 
     wallpapers: tuple[Wallpaper, ...]
     seed: str | None = None
+    remaining: int | None = None
+    """How many **API calls** Wallhaven says this IP address has left this minute, or `None` if it did not
+    say: its count, which sees every caller on the machine (ADR 0020).
+    """
 
 
 class Wallhaven(Protocol):
@@ -165,7 +179,9 @@ class WallhavenClient:
         response.raise_for_status()
         payload = _SearchResponse.model_validate(response.json())
         return SearchPage(
-            wallpapers=tuple(_to_wallpaper(item) for item in payload.data), seed=payload.meta.seed
+            wallpapers=tuple(_to_wallpaper(item) for item in payload.data),
+            seed=payload.meta.seed,
+            remaining=_remaining(response.headers.get("X-RateLimit-Remaining")),
         )
 
     def fetch_thumbnail(self, url: str) -> bytes:

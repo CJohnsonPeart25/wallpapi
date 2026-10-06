@@ -54,6 +54,26 @@ def test_search_parses_a_recorded_wallhaven_response() -> None:
     assert first.page_url == "https://wallhaven.cc/w/oxkzwm"
 
 
+@pytest.mark.parametrize(
+    ("headers", "remaining"),
+    [
+        pytest.param({"X-RateLimit-Remaining": "12"}, 12, id="Wallhaven's count"),
+        pytest.param({"X-RateLimit-Remaining": " 0 "}, 0, id="none left"),
+        pytest.param({}, None, id="absent"),
+        pytest.param({"X-RateLimit-Remaining": "lots"}, None, id="not a number"),
+        pytest.param({"X-RateLimit-Remaining": "1.5"}, None, id="not whole"),
+    ],
+)
+def test_search_reads_how_many_api_calls_wallhaven_has_left(
+    headers: dict[str, str], remaining: int | None
+) -> None:
+    """Counted per IP address, so it sees calls this process never made (ADR 0020). Anything but a whole
+    number is no count at all, and the **Refill** goes by its own."""
+    client, _ = answering(httpx2.Response(200, headers=headers, json=RECORDED))
+
+    assert client.search(sorting="random", purity="100").remaining == remaining
+
+
 def test_search_sends_the_filters_it_is_given_and_leaves_out_the_rest() -> None:
     """`atleast`, the minimum, never `resolutions`, the exact-match list. The masks are parameters: the
     policy that purity is SFW belongs with the **Filters** in `pool`. An omitted **Filter** is
