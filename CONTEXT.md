@@ -95,7 +95,7 @@ A wallpaper's derived value, calculated from the decision log with each resolved
 _Avoid_: rating, weight, rank, affinity
 
 **Similarity provider**:
-The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
+The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded until the model is ready. After that an unembedded wallpaper counts for nothing: it is an Unknown, and as a decided wallpaper it moves no score. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
 _Avoid_: embedder, model, comparator, CLIP
 
 **Embedding**:

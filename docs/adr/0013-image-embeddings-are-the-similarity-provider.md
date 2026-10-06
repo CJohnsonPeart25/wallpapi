@@ -13,7 +13,8 @@ the `WALLPAPI_SIMILARITY` switch and `scripts/similarity_spike.py` are deleted, 
 `docs/spikes/0014-similarity-tags-versus-embeddings.md` survives in git history only. The baseline stays as
 the per-pair fallback, now `metadata_similarity` in the one `similarity` module. Its **Similarity radius**
 default of 0.15 is superseded by ADR 0023: 0.10, by migration 11, because a grown **Decision log** left
-no **Unknown** zone at 0.15.
+no **Unknown** zone at 0.15. Amended by ADR 0024: the baseline is the floor only while the model is not
+open; once it is open, a pair without two **Embeddings** scores 0.0.
 
 ## Context
 
