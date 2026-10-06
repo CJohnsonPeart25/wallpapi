@@ -76,8 +76,10 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 - `meta.seed` stops repeats within one walk only. `meta.last_page` is no stop condition; an empty page is.
   Listings are 24 a page.
 - A 429 raises `RateLimited`, the only failure told apart. `Retry-After` is parsed as seconds only.
-- **45 API calls a minute is counted across the machine.** `wait_needed` sees one process, so anything calling
-  outside the refill must pace itself evenly. Image hosts have no published limit; throttle them modestly.
+- **45 API calls a minute is counted across the machine.** `wait_needed` sees one process, so the refill
+  paces itself at the **API budget** (default 35) and holds a minute when `X-RateLimit-Remaining` says the
+  rest is used (ADR 0020). Any other API caller shares the refill's limiter. Image hosts have no published
+  limit; throttle them modestly.
 - No API key: purity is fixed to SFW.
 - `create_app(modules, refill=True)` starts the three background loops (`compose.background_loops`), off by
   default so no test starts one. `build_app` in `main.py` is the only caller that turns it on, and is

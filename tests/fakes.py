@@ -76,6 +76,7 @@ class FakeWallhavenClient:
         fail_from_call: int | None = None,
         rate_limited_calls: int = 0,
         retry_after: float | None = None,
+        remaining: int | None = None,
         like_results: Mapping[str, Sequence[Wallpaper]] | None = None,
     ) -> None:
         self.catalogue: list[Wallpaper] = list(catalogue)
@@ -88,6 +89,9 @@ class FakeWallhavenClient:
         self.fail_from_call = fail_from_call
         self.rate_limited_calls = rate_limited_calls
         self.retry_after = retry_after
+        self.remaining = remaining
+        """`X-RateLimit-Remaining` on every page answered, `None` for no header; mutable, as Wallhaven's
+        count moves with traffic the fake never sees."""
         self.searches: list[dict[str, object]] = []
         self.thumbnail_fetches: list[str] = []
         self.failing_thumbnails: dict[str, Exception] = {}
@@ -132,7 +136,11 @@ class FakeWallhavenClient:
             raise WallhavenUnreachable(f"call {len(self.searches)} was set up to fail")
         results = self._results_for(query)
         start = (page - 1) * self.page_size
-        return SearchPage(wallpapers=tuple(results[start : start + self.page_size]), seed=self.seed)
+        return SearchPage(
+            wallpapers=tuple(results[start : start + self.page_size]),
+            seed=self.seed,
+            remaining=self.remaining,
+        )
 
     def _results_for(self, query: str | None) -> list[Wallpaper]:
         """Only `like:` is understood, because it is the only expression wallpapi sends."""

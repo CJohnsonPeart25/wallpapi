@@ -504,6 +504,7 @@ def test_saving_settings_redirects_and_a_partial_post_leaves_the_rest(web: Web, 
             "allowed_ratios": "21x9, 32x9",
             "min_favourites": "40",
             "pool_target_size": "150",
+            "api_calls_per_minute": "20",
         },
         follow_redirects=False,
     )
@@ -516,6 +517,7 @@ def test_saving_settings_redirects_and_a_partial_post_leaves_the_rest(web: Web, 
     assert (stored.batch_size, stored.library_path, stored.pool_target_size) == (4, chosen, 150)
     assert (stored.min_width, stored.min_height, stored.min_favourites) == (1920, 1080, 40)
     assert stored.allowed_ratios == ("21x9", "32x9")
+    assert stored.api_calls_per_minute == 20
 
 
 def test_a_field_cleared_and_saved_keeps_its_stored_value(web: Web, tmp_path: Path) -> None:
