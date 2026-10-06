@@ -86,13 +86,20 @@
 
     Each row adds itself up as it is typed into and marks its numbers when they miss the total: an Alpine
     hint only, since the settings module still refuses a Mix that does not add up. A blank row is not marked.
+
+    The fields are the settings module's `MIX_FORM_FIELDS`, which `save_mix` takes in that order: the name,
+    then the shares, so the page spells none of them.
   #}
+  {% set name_field = mix_fields | first %}
+  {% set share_fields = mix_fields[1:] %}
   {% set running_total %}{
       sum: 0,
       blank: true,
       get off() { return !this.blank && this.sum !== {{ mix_total }}; },
       count() {
-        const values = [this.$refs.unknown.value, this.$refs.banger.value, this.$refs.dud.value];
+        const values = [
+          {%- for field in share_fields %}this.$refs.{{ field }}.value{% if not loop.last %}, {% endif %}
+          {%- endfor %}];
         this.blank = values.every(function (value) { return value.trim() === ''; });
         this.sum = values.reduce(function (sum, value) { return sum + Number(value); }, 0);
       },
@@ -104,11 +111,11 @@
       built with. Switch between mixes on the batch page.</small></p>
     {% for row in mix_rows %}
       <form method="post" action="/settings/mixes" id="mix-{{ loop.index }}">
-        <input type="hidden" name="name" value="{{ row.name }}" />
+        <input type="hidden" name="{{ name_field }}" value="{{ row[name_field] }}" />
       </form>
       {% if row.deletable %}
         <form method="post" action="/settings/mixes/delete" id="mix-{{ loop.index }}-delete">
-          <input type="hidden" name="name" value="{{ row.name }}" />
+          <input type="hidden" name="{{ name_field }}" value="{{ row[name_field] }}" />
         </form>
       {% endif %}
     {% endfor %}
@@ -117,9 +124,9 @@
       <thead>
         <tr>
           <th scope="col">Mix</th>
-          <th scope="col">Unknown</th>
-          <th scope="col">Banger</th>
-          <th scope="col">Dud</th>
+          {% for field in share_fields %}
+          <th scope="col">{{ field | capitalize }}</th>
+          {% endfor %}
           <th scope="col">Total</th>
           <th scope="col"></th>
         </tr>
@@ -128,16 +135,18 @@
         {% for row in mix_rows %}
           {% set form = "mix-" ~ loop.index %}
           <tr
-            data-mix-row="{{ row.name }}"
+            data-mix-row="{{ row[name_field] }}"
             x-data="{{ running_total }}"
             x-init="$nextTick(function () { count(); })"
             x-on:input="count()"
           >
             <th scope="row">
-              <strong{% if row.active %} data-mix-active="{{ row.name }}"{% endif %}>{{ row.name }}</strong>
+              <strong{% if row.active %} data-mix-active="{{ row[name_field] }}"{% endif %}>
+                {{- row[name_field] -}}
+              </strong>
               {% if row.active %}<br /><small>active — the next batch is built from this one</small>{% endif %}
             </th>
-            {% for field in ["unknown", "banger", "dud"] %}
+            {% for field in share_fields %}
               <td>
                 <input
                   type="number"
@@ -155,14 +164,16 @@
             {% endfor %}
             <td><output x-text="blank ? '' : sum + ' / {{ mix_total }}'"></output></td>
             <td>
-              <button type="submit" class="outline secondary" form="{{ form }}">Save {{ row.name }}</button>
+              <button type="submit" class="outline secondary" form="{{ form }}">
+                {{- "Save " ~ row[name_field] -}}
+              </button>
               {% if row.deletable %}
                 <button
                   type="submit"
                   class="outline secondary"
                   form="{{ form }}-delete"
-                  data-mix-delete="{{ row.name }}"
-                >Delete {{ row.name }}</button>
+                  data-mix-delete="{{ row[name_field] }}"
+                >Delete {{ row[name_field] }}</button>
               {% endif %}
             </td>
           </tr>
@@ -177,14 +188,14 @@
             <input
               type="text"
               form="mix-new"
-              name="name"
+              name="{{ name_field }}"
               aria-label="New mix"
               placeholder="New mix"
               maxlength="{{ max_mix_name_length }}"
-              value="{{ new_mix.name }}"
+              value="{{ new_mix[name_field] }}"
             />
           </th>
-          {% for field in ["unknown", "banger", "dud"] %}
+          {% for field in share_fields %}
             <td>
               <input
                 type="number"

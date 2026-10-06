@@ -187,6 +187,7 @@ def _settings_page(
         {
             "sections": settings.form_sections(),
             "values": {**form_values(settings.get(connection)), **(posted or {})},
+            "mix_fields": MIX_FORM_FIELDS,
             "mix_rows": mixes.rows,
             "new_mix": mixes.add,
             "mix_total": MIX_TOTAL,

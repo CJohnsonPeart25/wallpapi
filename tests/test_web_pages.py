@@ -18,6 +18,7 @@ from tests.fakes import catalogue_of, wallpaper
 from wallpapi import settings, workflows
 from wallpapi.model import Verdict
 from wallpapi.settings import Field, Section, Settings
+from wallpapi.web.app import TEMPLATES_DIR
 
 Web = tuple[Harness, TestClient]
 ASSETS = re.compile(r'<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"')
@@ -167,6 +168,23 @@ def test_the_switcher_offers_every_mix_with_its_percentages_and_marks_the_active
         assert f'value="{name}"' in page
         assert shares in page
     assert 'data-mix-active="explore"' in page
+
+
+def test_the_settings_templates_spell_no_setting_and_no_mix_field() -> None:
+    """Adding a setting or a **Mix** field is a change to `settings.py` alone. A setting's key is a word of
+    its own; a **Mix** field is an ordinary word too ("name" is also an attribute), so for those only a
+    quoted literal, an attribute lookup or a word inside a tag counts. Comments are prose, and so is the
+    **Mixes** intro, which names the zones."""
+    tags = re.compile(r"{{.*?}}|{%.*?%}", re.S)
+    for template in ("settings.html", "settings_field.html"):
+        source = re.sub(r"{#.*?#}", "", (TEMPLATES_DIR / template).read_text(encoding="utf-8"), flags=re.S)
+        in_tags = " ".join(tags.findall(source))
+        for key in (field.key for field in settings.FIELDS):
+            assert not re.search(rf"\b{key}\b", source), f"{template} spells the setting {key}"
+        for key in settings.MIX_FORM_FIELDS:
+            spelled = rf"[\"']{key}[\"']|\.{key}\b"
+            assert not re.search(spelled, source), f"{template} spells the Mix field {key}"
+            assert not re.search(rf"\b{key}\b", in_tags), f"{template} spells the Mix field {key} in a tag"
 
 
 def test_a_setting_declared_in_a_new_section_shows_on_the_page_with_no_template_edit(
