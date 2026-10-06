@@ -10,7 +10,8 @@ now 500 rather than 2000. The rest stands. Amended 2026-10-03: the refill's stat
 on `pool.Refill` (`wait`/`step`/`running`/`status`) with its own random source;
 `refill_wait`/`refill_step`/`refill_status` on the Core service and `refill.py` are gone, and the loop is
 `pool.refill_loop` run by `background.BackgroundLoop`. `wait_needed` lives in `pool`, the `ratelimit` module
-folded in.
+folded in. `status` also carries the **Pool**'s breakdown by `source` (`pool.breakdown`), counted from the
+table rather than kept in memory, so the page can say how much of the **Pool** the like: search brought in.
 
 ## Context
 
