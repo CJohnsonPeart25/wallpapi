@@ -95,8 +95,8 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
 
 def test_a_tile_post_sets_the_mark_and_answers_with_the_tile(web: Web) -> None:
     """The marked control posts an empty **Verdict**, so a second click says "end up clear" rather than
-    "flip it" (invariant 6). The tile keeps its **Zone** label when swapped alone, and a reload shows the
-    mark, because marks are server state."""
+    "flip it" (`set_draft` sets rather than toggles). The tile keeps its **Zone** label when swapped
+    alone, and a reload shows the mark, because marks are server state."""
     harness, client = web
     batch_id = batch_id_of(client.get("/batch").text)
     marked = live(harness).wallpapers[0].id
