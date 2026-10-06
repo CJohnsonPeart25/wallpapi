@@ -13,7 +13,8 @@ on `pool.Refill` (`wait`/`step`/`running`/`status`) with its own random source;
 folded in. `status` also carries the **Pool**'s breakdown by `source` (`pool.breakdown`), counted from the
 table rather than kept in memory, so the page can say how much of the **Pool** the like: search brought in.
 The like: rotation is superseded by ADR 0022: **Likes** are subjects too, and turns go by groups of similar
-subjects rather than one **Favourite** at a time.
+subjects rather than one **Favourite** at a time. The full 45-a-minute pace is superseded by ADR 0020: the
+refill spends the **API budget**, a setting, and holds back on Wallhaven's own remaining count.
 
 ## Context
 
