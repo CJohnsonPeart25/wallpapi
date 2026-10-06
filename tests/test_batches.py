@@ -426,12 +426,12 @@ def unit_at(similarity: float) -> NDArray[np.float32]:
 
 def _ban_one_outside_the_pool(rig: Rig, *, repost: NDArray[np.float32] | None) -> None:
     """**Ban** "loathed", retired as every decision is, embedded at `(1, 0)`; `REPOST` gets `repost`, or no
-    **Embedding**. The fallback calls the pair 0.9, so without the veto `REPOST` is a **Dud**."""
+    **Embedding**. The fallback calls the pair 0.95, so without the veto `REPOST` is a **Dud**."""
     rig.stock([wallpaper("loathed")])
     with storage.write(rig.connection) as write:
         decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
         pool.retire(write, ["loathed"])
-    rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 0.9
+    rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 0.95
     rig.store.store("loathed", np.array([1.0, 0.0], dtype=np.float32))
     if repost is not None:
         rig.store.store(REPOST, repost)
