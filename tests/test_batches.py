@@ -22,6 +22,7 @@ from tests.fakes import catalogue_of, wallpaper
 from wallpapi import batches, decisions, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
+from wallpapi.decisions import HistoryEntry
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.rng import SeededRandom
@@ -671,6 +672,38 @@ def test_submitting_retires_everything_shown_and_clears_the_draft(rig: BatchesRi
     assert pool.members(rig.connection) == [w for w in catalogue_of(24) if w not in batch.wallpapers]
     assert rig.drafted_rows() == 0
     assert not set(batch.wallpapers) & set(rig.next().wallpapers)
+
+
+def test_a_history_edit_brings_no_submitted_wallpaper_back_into_the_pool(rig: BatchesRig) -> None:
+    """**History** changes the **Decision log**, not what may be shown (ADR 0016)."""
+    batch = rig.next()
+    rig.submit(batch.id)
+    left = pool.members(rig.connection)
+    liked = batch.wallpapers[0].id
+
+    assert isinstance(rig.edit(liked, Verdict.FAVOURITE), HistoryEntry)
+
+    assert pool.members(rig.connection) == left
+    assert liked not in {w.id for w in rig.next().wallpapers}
+
+
+def test_pruning_leaves_the_live_batch_and_its_drafts_alone(rig: BatchesRig) -> None:
+    """A **Batch** holds its own rows, so a **Pool** row going cannot take a tile or its mark with it. The
+    settings save and the prune in one write, as the settings page makes them."""
+    first = rig.next()
+    marked = first.wallpapers[0].id
+    rig.set_draft(first.id, marked, Verdict.FAVOURITE)
+
+    with storage.write(rig.connection) as write:
+        updated = settings.update(write, allowed_ratios="1x1")
+        assert isinstance(updated, settings.Settings)
+        pool.prune(write, updated)
+
+    assert pool.members(rig.connection) == []
+    still_live = rig.next()
+    assert still_live.id == first.id
+    assert still_live.wallpapers == first.wallpapers
+    assert still_live.drafts[marked] is Verdict.FAVOURITE
 
 
 def test_showing_is_the_live_batch_until_it_is_submitted(rig: BatchesRig) -> None:
