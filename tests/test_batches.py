@@ -16,7 +16,9 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from itertools import count
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from tests.conftest import FIXED_NOW
 from tests.fakes import (
@@ -35,7 +37,7 @@ from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.rng import SeededRandom
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
-from wallpapi.similarity import Embeddings
+from wallpapi.similarity import NEAR_DUPLICATE_SIMILARITY, Embeddings
 
 SCORE = 50.0
 """A **Score** well clear of zero either way, for an arranged **Banger** or **Dud**."""
@@ -215,7 +217,8 @@ class Rig:
             self.minted.append(f"batch-{next(ids)}")
             return self.minted[-1]
 
-        embeddings = Embeddings(MemoryStore(), StubEmbed(), ModelOnDisk(), fallback=self.similarity)
+        self.store = MemoryStore()
+        embeddings = Embeddings(self.store, StubEmbed(), ModelOnDisk(), fallback=self.similarity)
         self.batches = Batches(embeddings, lambda: self.status, self.clock, SeededRandom(1), new_id=new_id)
 
     def stock(self, wallpapers: Sequence[Wallpaper]) -> None:
@@ -348,6 +351,74 @@ def test_an_empty_pool_after_a_failed_refill_says_wallhaven_is_unreachable(rig: 
     assert result == BatchUnavailable(
         reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE, error="connection refused", error_at=FIXED_NOW
     )
+
+
+# -- near-duplicates of a Ban
+
+REPOST = catalogue_of(24)[0].id
+"""The **Pool** member arranged against the **Ban**."""
+
+
+def unit_at(similarity: float) -> NDArray[np.float32]:
+    """A unit vector whose mapped similarity to `(1, 0)` is `similarity`."""
+    cosine = np.float32(2.0 * similarity - 1.0)
+    return np.array([cosine, np.sqrt(1.0 - float(cosine) ** 2)], dtype=np.float32)
+
+
+def _ban_one_outside_the_pool(rig: Rig, *, repost: NDArray[np.float32] | None) -> None:
+    """**Ban** "loathed", retired as every decision is, embedded at `(1, 0)`; `REPOST` gets `repost`, or no
+    **Embedding**. The fallback calls the pair 0.9, so without the veto `REPOST` is a **Dud**."""
+    rig.stock([wallpaper("loathed")])
+    with storage.write(rig.connection) as write:
+        decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
+        pool.retire(write, ["loathed"])
+    rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 0.9
+    rig.store.store("loathed", np.array([1.0, 0.0], dtype=np.float32))
+    if repost is not None:
+        rig.store.store(REPOST, repost)
+
+
+def _zones(rig: Rig) -> dict[str, Zone]:
+    return {s.wallpaper.id: s.zone for s in rig.batches.classify(rig.connection)}
+
+
+def test_a_near_duplicate_of_a_ban_is_in_no_zone(rig: Rig) -> None:
+    """ADR 0021: a repost of a **Banned** image is excluded the way the **Ban** is, whatever its **Score**.
+    It stays in the **Pool**; only the classification leaves it out."""
+    _ban_one_outside_the_pool(rig, repost=unit_at(NEAR_DUPLICATE_SIMILARITY))
+
+    zones = _zones(rig)
+
+    assert REPOST not in zones
+    assert len(zones) == 23
+    assert REPOST in {w.id for w in pool.members(rig.connection)}
+
+
+def test_a_wallpaper_just_short_of_a_near_duplicate_is_classified_as_before(rig: Rig) -> None:
+    """The ordinary spread still reaches it: a look-alike of a **Ban** is a **Dud**, not vetoed."""
+    _ban_one_outside_the_pool(rig, repost=unit_at(NEAR_DUPLICATE_SIMILARITY - 0.0001))
+
+    assert _zones(rig)[REPOST] is Zone.DUD
+
+
+def test_a_history_edit_away_from_ban_brings_the_near_duplicate_back(rig: Rig) -> None:
+    """Derived, never stored: nothing to invalidate, the next classification sees the **Ignore**."""
+    _ban_one_outside_the_pool(rig, repost=unit_at(1.0))
+    assert REPOST not in _zones(rig)
+
+    with storage.write(rig.connection) as write:
+        decisions.edit(write, "loathed", Verdict.IGNORE, at=FIXED_NOW)
+
+    assert _zones(rig)[REPOST] is Zone.DUD
+
+
+def test_an_unembedded_wallpaper_is_never_vetoed_however_alike_the_fallback_calls_it(rig: Rig) -> None:
+    """Flat-colour images score 1.0 on colours and category; only two **Embeddings** can say "the same
+    image"."""
+    _ban_one_outside_the_pool(rig, repost=None)
+    rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 1.0
+
+    assert _zones(rig)[REPOST] is Zone.DUD
 
 
 # -- the Draft Batch

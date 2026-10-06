@@ -49,7 +49,9 @@ class BatchUnavailable:
 
     class Reason(StrEnum):
         POOL_EMPTY = "pool_empty"
-        """The **Pool** holds nothing the user has not **Banned**, and the refill has not failed."""
+        """The **Pool** holds nothing but **Bans** and their near-duplicates, and the refill has not
+        failed.
+        """
 
         WALLHAVEN_UNREACHABLE = "wallhaven_unreachable"
         """The **Pool** is empty and the last refill attempt failed. `error` says how."""
@@ -174,10 +176,12 @@ class Batches:
         )
 
     def classify(self, connection: sqlite3.Connection) -> tuple[ScoredWallpaper, ...]:
-        """Every **Pool** **Wallpaper** that is not **Banned**, with its **Score** and **Zone**, in one call.
+        """Every **Pool** **Wallpaper** that is neither **Banned** nor a near-duplicate of a **Ban**, with its
+        **Score** and **Zone**, in one call.
 
         The decided columns are every **Wallpaper** with a non-zero resolved value, in the **Pool** or not; a
-        **Ban** is a column like any other, but never a row.
+        **Ban** is a column like any other, but never a row. Nor is its repost (ADR 0021), which stays in the
+        **Pool**: a **History** edit away from **Ban** brings it back at the next call.
         """
         members = pool.members(connection)
         if not members:
@@ -186,6 +190,10 @@ class Batches:
         resolved = decisions.resolve(connection, [w.id for w in members] + [w.id for w in judged])
 
         candidates = [w for w in members if resolved[w.id].verdict is not Verdict.BAN]
+        banned = [w for w in judged if resolved[w.id].verdict is Verdict.BAN]
+        if candidates and banned:
+            reposts = self._embeddings.near_duplicates(candidates, banned).any(axis=1)
+            candidates = [w for w, repost in zip(candidates, reposts, strict=True) if not repost]
         decided = [w for w in judged if resolved[w.id].value != 0]
         if not candidates:
             return ()
