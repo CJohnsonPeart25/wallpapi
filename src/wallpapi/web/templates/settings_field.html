@@ -1,0 +1,24 @@
+{#
+  One setting on the settings form, all of it from its `Field` in the settings module: the label, the input
+  and the hint under it. A field with a step is a number input with the bounds its rule holds it to, either
+  left out when the rule has none; one without is a text input. The value is whatever the form last carried.
+-#}
+<label for="{{ field.key }}">{{ field.label }}</label>
+{% if field.step -%}
+<input
+  type="number"
+  id="{{ field.key }}"
+  name="{{ field.key }}"
+  {%- if field.minimum is not none %}
+  min="{{ field.minimum }}"
+  {%- endif %}
+  {%- if field.maximum is not none %}
+  max="{{ field.maximum }}"
+  {%- endif %}
+  step="{{ field.step }}"
+  value="{{ values[field.key] }}"
+/>
+{%- else -%}
+<input type="text" id="{{ field.key }}" name="{{ field.key }}" value="{{ values[field.key] }}" />
+{%- endif %}
+<small>{{ field.hint }}</small>

@@ -185,8 +185,8 @@ def _settings_page(
         request,
         "settings.html",
         {
-            **form_values(settings.get(connection)),
-            **(posted or {}),
+            "sections": settings.form_sections(),
+            "values": {**form_values(settings.get(connection)), **(posted or {})},
             "mix_rows": mixes.rows,
             "new_mix": mixes.add,
             "mix_total": MIX_TOTAL,
@@ -195,7 +195,6 @@ def _settings_page(
             "saved": saved,
             "deleted": deleted,
             "download": download,
-            "fields": {field.key: field for field in FORM_FIELDS},
         },
         status_code=HTTPStatus.OK if refused is None else HTTPStatus.BAD_REQUEST,
     )

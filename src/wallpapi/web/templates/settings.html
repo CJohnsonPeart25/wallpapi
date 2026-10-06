@@ -43,131 +43,19 @@
     </article>
   {% endif %}
   <form method="post" action="/settings">
-    {# The two settings that came before there were groups, so they have no heading of their own. #}
+    {% for section, fields in sections %}
     <article>
-      <label for="batch_size">Batch size</label>
-      <input
-        type="number"
-        id="batch_size"
-        name="batch_size"
-        min="{{ fields.batch_size.minimum }}"
-        max="{{ fields.batch_size.maximum }}"
-        step="1"
-        value="{{ batch_size }}"
-      />
-      <small>Wallpapers per batch, {{ fields.batch_size.minimum }} to {{ fields.batch_size.maximum }}. Applies
-        to the next batch — the one on screen keeps the size it was built with.</small>
-      <label for="library_path">Library folder</label>
-      <input type="text" id="library_path" name="library_path" value="{{ library_path }}" />
-      <small>An absolute path. Favourites are downloaded here; the folder is created the first time one is
-        written.</small>
+      {%- if section.heading %}
+      <h2>{{ section.heading }}</h2>
+      {%- endif %}
+      {%- if section.intro %}
+      <p><small>{{ section.intro }}</small></p>
+      {%- endif %}
+      {%- for field in fields %}
+      {% include "settings_field.html" %}
+      {%- endfor %}
     </article>
-
-    <article>
-      <h2>Filters</h2>
-      <p><small>The hard rules a wallpaper must pass before it joins the pool. Changing them drops
-        undecided pool wallpapers that no longer pass; anything you have already judged stays, and so does
-        the batch on screen. Only safe-for-work wallpapers are ever fetched.</small></p>
-      <label for="min_width">Minimum width</label>
-      <input
-        type="number"
-        id="min_width"
-        name="min_width"
-        min="{{ fields.min_width.minimum }}"
-        max="{{ fields.min_width.maximum }}"
-        step="1"
-        value="{{ min_width }}"
-      />
-      <small>Pixels. A minimum, not an exact size — anything larger counts.</small>
-      <label for="min_height">Minimum height</label>
-      <input
-        type="number"
-        id="min_height"
-        name="min_height"
-        min="{{ fields.min_height.minimum }}"
-        max="{{ fields.min_height.maximum }}"
-        step="1"
-        value="{{ min_height }}"
-      />
-      <small>Pixels. Set either to 0 to stop filtering on that side.</small>
-      <label for="allowed_ratios">Allowed ratios</label>
-      <input type="text" id="allowed_ratios" name="allowed_ratios" value="{{ allowed_ratios }}" />
-      <small>Comma-separated, from {{ fields.allowed_ratios.choices | join(", ") }}.</small>
-      <label for="min_favourites">Minimum favourites</label>
-      <input
-        type="number"
-        id="min_favourites"
-        name="min_favourites"
-        min="{{ fields.min_favourites.minimum }}"
-        step="1"
-        value="{{ min_favourites }}"
-      />
-      <small>How many Wallhaven favourites a wallpaper needs. Applied here rather than in the search —
-        Wallhaven has no parameter for it.</small>
-    </article>
-
-    <article>
-      <h2>Pool</h2>
-      <label for="pool_target_size">Pool target size</label>
-      <input
-        type="number"
-        id="pool_target_size"
-        name="pool_target_size"
-        min="{{ fields.pool_target_size.minimum }}"
-        max="{{ fields.pool_target_size.maximum }}"
-        step="1"
-        value="{{ pool_target_size }}"
-      />
-      <small>How many filtered wallpapers to keep waiting. The background refill fetches at full speed until
-        the pool reaches this, then idles.</small>
-    </article>
-
-    <article>
-      <h2>Scoring</h2>
-      <p><small>How far a verdict spreads to wallpapers that look like it. Every score is worked out from the
-        decision log each time a batch is built, so changing these two takes effect on the next batch and
-        nothing has to be rebuilt. Both are starting points rather than tuned numbers.</small></p>
-      <label for="similarity_radius">Similarity radius</label>
-      <input
-        type="number"
-        id="similarity_radius"
-        name="similarity_radius"
-        min="{{ fields.similarity_radius.minimum }}"
-        max="{{ fields.similarity_radius.maximum }}"
-        step="0.01"
-        value="{{ similarity_radius }}"
-      />
-      <small>From 0 to 1. How different two wallpapers can be and still tell you anything about each other —
-        beyond it, a verdict counts for nothing at all.</small>
-      <label for="similarity_decay">Similarity decay</label>
-      <input
-        type="number"
-        id="similarity_decay"
-        name="similarity_decay"
-        min="{{ fields.similarity_decay.minimum }}"
-        max="{{ fields.similarity_decay.maximum }}"
-        step="0.1"
-        value="{{ similarity_decay }}"
-      />
-      <small>From 0 to {{ fields.similarity_decay.maximum }}. How fast a verdict fades with distance. Higher is
-        fussier; 0 counts everything inside the radius equally.</small>
-    </article>
-
-    <article>
-      <h2>Thumbnails</h2>
-      <label for="thumbnail_cache_max_mb">Thumbnail cache limit</label>
-      <input
-        type="number"
-        id="thumbnail_cache_max_mb"
-        name="thumbnail_cache_max_mb"
-        min="{{ fields.thumbnail_cache_max_mb.minimum }}"
-        step="1"
-        value="{{ thumbnail_cache_max_mb }}"
-      />
-      <small>Megabytes. Thumbnails of wallpapers you have judged are never deleted — history needs them — so
-        this only limits the ones still waiting in the pool. Anything deleted is fetched again the next time
-        it is shown.</small>
-    </article>
+    {% endfor %}
     <button type="submit">Save settings</button>
   </form>
 
