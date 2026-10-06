@@ -42,7 +42,8 @@ a changed setting counts at once.
 leader it is within `similarity_radius` of, by the **Score**'s distance `1 - similarity`, or leads a new
 group. Connected components were measured and rejected: near neighbours chain, and at 0.15 they put 24 of
 the live log's 28 subjects in one group. A leader's group is at most twice the radius across. The radius is
-the setting scoring uses, with no constant of its own, so a retune (wallpapi-52) moves both together.
+the setting scoring uses, with no constant of its own, so a retune moves both together: ADR 0023 moved the
+default to 0.10, and the measurement above was taken at the old 0.15.
 
 **The group whose latest turn is oldest goes next; within it, the subject walked longest ago.** The Refill
 counts its like: steps and remembers, for each current subject, the step at which its latest walk began. A
