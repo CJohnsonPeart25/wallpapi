@@ -1,20 +1,18 @@
 """The settings rules, through `settings` alone: a real database, no `compose`. One refusal table across
 the fields, what is accepted, a partial update, a restart, and a refusal that writes nothing; and which
-**Mixes** can be deleted. What each **Filter** excludes is `test_pool.py`; the **Mix** rules in a
-**Batch** are `test_mix.py`.
+**Mixes** can be deleted. What each **Filter** excludes is `test_pool.py`; making and editing **Mixes** is
+`test_mix.py`; a new batch size reaching the next **Batch** is `test_batches.py`.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import Harness, live
-from wallpapi import pool, settings, storage, workflows
+from wallpapi import pool, settings, storage
 from wallpapi.model import Mix
 from wallpapi.settings import (
     DEFAULT_API_CALLS_PER_MINUTE,
@@ -36,13 +34,6 @@ from wallpapi.settings import (
 )
 
 Reason = SettingsRefused.Reason
-
-
-@pytest.fixture
-def memory() -> Iterator[sqlite3.Connection]:
-    with closing(storage.connect(":memory:")) as connection:
-        storage.migrate(connection)
-        yield connection
 
 
 def update(connection: sqlite3.Connection, **fields: object) -> Settings | SettingsRefused:
@@ -368,17 +359,3 @@ def test_a_refused_new_mix_comes_back_on_the_add_row(memory: sqlite3.Connection)
     assert form.add == MixFormRow(
         name="night", unknown="10", banger="80", dud="x", active=False, deletable=False
     )
-
-
-def test_a_new_batch_size_applies_to_the_next_batch_minted_and_not_the_live_one(harness: Harness) -> None:
-    """Rebuilding the live **Batch** to fit would discard the **Draft Batch** marked against it."""
-    opened = live(harness)
-
-    assert isinstance(workflows.save_settings(harness.modules, batch_size=2), Settings)
-    still_live = live(harness)
-    assert (still_live.id, len(still_live.wallpapers)) == (opened.id, 8)
-
-    workflows.submit(harness.modules, opened.id)
-
-    following = live(harness)
-    assert (following.size, len(following.wallpapers)) == (2, 2)

@@ -4,7 +4,8 @@ real time. Searches are asserted against the fake's record because the client is
 "searched with these parameters" has no other observable.
 
 **Favourites** are appended to the **Decision log** directly and the **Filters** changed through `settings`,
-as their callers do; a **Batch** retiring what it showed is `test_batch.py`'s.
+as their callers do; a **Batch** retiring what it showed is `test_batches.py`'s. The last section uses
+`make_harness` because its subject is a workflow: that the settings save prunes the **Pool** at all.
 """
 
 from __future__ import annotations
@@ -21,9 +22,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import FIXED_NOW
+from tests.conftest import FIXED_NOW, make_harness
 from tests.fakes import FakeClock, FakeSimilarities, FakeWallhavenClient, catalogue_of, wallpaper
-from wallpapi import decisions, pool, settings, storage
+from wallpapi import decisions, pool, settings, storage, workflows
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.pool import (
     CALLS_PER_MINUTE,
@@ -301,6 +302,18 @@ def test_a_settings_change_that_touches_no_filter_prunes_nothing(rig: Rig) -> No
     assert rig.members() == before
 
 
+def test_lowering_the_target_below_the_pool_trims_nothing(rig: Rig) -> None:
+    """A **Pool** above its target drains by submission rather than being cut."""
+    assert len(rig.members()) == 24
+
+    rig.configure(pool_target_size=5)
+
+    status = rig.refill.status()
+    assert status.pool_size == 24
+    assert status.at_target
+    assert rig.refill.wait() == IDLE_RECHECK_SECONDS
+
+
 # -- when the refill runs ----------------------------------------------------------------------------
 
 
@@ -327,6 +340,21 @@ def test_the_refill_runs_again_once_the_pool_drops_below_target(connection: sqli
     calls_before = len(rig.wallhaven.searches)
     rig.step()
     assert len(rig.wallhaven.searches) == calls_before + 1
+
+
+def test_retiring_takes_a_pool_at_target_below_it_and_wakes_the_refill(
+    connection: sqlite3.Connection,
+) -> None:
+    """The bug ADR 0016 was written for: at target nothing ever left the **Pool**, so the refill idled
+    for good. A submission retires what it showed (`test_batches.py`); this is the refill seeing it."""
+    rig = rig_over(connection, target=24, steps=1)
+    assert rig.refill.wait() == IDLE_RECHECK_SECONDS
+
+    with storage.write(connection) as write:
+        pool.retire(write, rig.members()[:8])
+
+    assert not rig.refill.status().at_target
+    assert rig.refill.wait() != IDLE_RECHECK_SECONDS
 
 
 def test_the_status_reports_the_pool_against_its_target_and_whether_the_loop_is_running(rig: Rig) -> None:
@@ -1044,3 +1072,18 @@ def test_grouping_is_the_same_every_time_and_every_member_is_near_its_leader() -
 
 def test_no_subjects_is_no_groups() -> None:
     assert similar_groups(np.zeros((0, 0), dtype=np.float32), radius=0.15) == []
+
+
+# -- the workflow: saving the settings prunes ----------------------------------------------------------
+
+
+def test_changing_the_filters_prunes_the_pool_in_the_same_save(db_path: Path) -> None:
+    """What each **Filter** excludes is above; this is that the settings save prunes at all."""
+    harness = make_harness(
+        db_path,
+        catalogue=(wallpaper("modest", width=2560, height=1440), wallpaper("huge", width=3840, height=2160)),
+    )
+
+    workflows.save_settings(harness.modules, min_width=3840, min_height=2160)
+
+    assert [w.id for w in pool.members(harness.connect())] == ["huge"]

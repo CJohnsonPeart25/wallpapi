@@ -3,7 +3,8 @@
 The **Library** is derived from the **Decision log**: a **Favourite** with no file gets one, and a file whose
 **Wallpaper** is no longer a **Favourite** loses it. That makes `reconcile` idempotent, which is what lets a
 failed download simply be retried. A real in-memory database; **Wallpapers** are admitted and **Verdicts**
-appended as `pool` and `decisions` do. The last section is the workflows calling it at the right moments.
+appended as `pool` and `decisions` do. The last section is the workflows calling it at the right moments,
+on `make_harness`, because what it checks is a workflow's post-commit tail.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import pytest
 from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, live, make_harness
 from tests.fakes import FakeLibraryWriter, catalogue_of, wallpaper
 from wallpapi import decisions, settings, workflows
+from wallpapi.batches import Batch
 from wallpapi.decisions import HistoryEntry
 from wallpapi.library import Library
 from wallpapi.model import Verdict
@@ -278,3 +280,26 @@ def test_a_history_edit_takes_the_file_away(db_path: Path, tmp_path: Path) -> No
     assert isinstance(workflows.edit_verdict(harness.modules, shown, Verdict.LIKE), HistoryEntry)
 
     assert harness.library.removed == [harness.library.written[0].destination]
+
+
+@pytest.mark.parametrize("select_none", [False, True], ids=["unmarking the tile", "select-none"])
+def test_unmarking_a_reshown_favourite_takes_its_file_away(
+    db_path: Path, tmp_path: Path, select_none: bool
+) -> None:
+    """The **Batch** half of ADR 0015: a **Favourite** decided from **History** comes up marked, and the
+    **Ignore** written when it is unmarked and submitted is the latest entry, which the **Library** follows.
+    Select-none is a decision about the pre-filled tiles too."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    assert isinstance(workflows.edit_verdict(harness.modules, ONE, Verdict.FAVOURITE), HistoryEntry)
+    batch = live(harness)
+    written = harness.library.written[0].destination
+    assert batch.drafts == {ONE: Verdict.FAVOURITE}
+
+    if select_none:
+        assert isinstance(workflows.set_all_drafts(harness.modules, batch.id, None), Batch)
+    else:
+        assert isinstance(workflows.set_draft(harness.modules, batch.id, ONE, None), Batch)
+    workflows.submit(harness.modules, batch.id)
+
+    assert decisions.resolve(harness.connect(), [ONE])[ONE].verdict is Verdict.IGNORE
+    assert harness.library.removed == [written]
