@@ -1,9 +1,9 @@
 """Everything configurable, as one table of field descriptors, and the **Mixes** beside it (ADR 0004).
 
 Each setting is one `Field` declared on `Settings`: its key, its default, the parser from posted text to a
-typed value or a refusal, the bounds the form shows, and the words a refusal is said in. `get`, `update`,
-the seeds migrations write and the settings form all iterate that table, so adding a setting is one
-descriptor here plus one input on the settings page.
+typed value or a refusal, the words a refusal is said in, and how the form shows it — its `Section`, label,
+hint, step and bounds. `get`, `update`, the seeds migrations write and the settings form all iterate that
+table, in declaration order, so adding a setting is one descriptor here and no template edit.
 
 Writes take the caller's write handle (a connection already inside `storage.write`) and open no transaction,
 so the caller can do its own work in the same one. Reads take any connection.

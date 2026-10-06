@@ -1,9 +1,12 @@
 {% extends "base.html" %}
 {% set page = "settings" %}
 {#
-  The settings page: batch size, the **Library** folder, the **Filters** and the **Pool** target size.
+  The settings page: the settings form, the **Favourites** download and the **Mixes**.
 
-  One input per setting; its bounds and its refusal's words come from the settings module's field table.
+  The settings form is the settings module's field table, rendered: an <article> per `Section`, with its
+  heading and intro when it has them, and `settings_field.html` for each of its fields, all in the order
+  they are declared there. The labels, hints, steps, bounds and refusal words are the table's too, so this
+  page names no setting, and a new one, even in a new section, needs no edit here.
 
   A plain form post, not htmx — saving settings changes the whole page's meaning, so there is no fragment
   worth swapping. Unlike submitting a **Batch**, a successful save redirects, because saving the same
