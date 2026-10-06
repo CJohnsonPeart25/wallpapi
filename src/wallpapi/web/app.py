@@ -1,7 +1,9 @@
 """The web layer: Jinja templates over the modules the composition root built (ADR 0001).
 
 Every route that writes calls one workflow; a route that only reads asks the modules. Nothing here decides
-anything about the data: a refusal arrives from a module and leaves through `REFUSALS`.
+anything about the data, and no setting, **Mix** field or **Verdict** list is spelled here: forms are read by
+the settings module's tables. A **Batch** or **History** refusal arrives from a module and leaves through
+`REFUSALS`; a settings refusal is a 400 on the settings page, in `SettingsRefused.message`'s words (ADR 0004).
 """
 
 from __future__ import annotations
@@ -70,8 +72,9 @@ REFUSALS: dict[StrEnum, Refusal] = {
     SubmissionRefused.Reason.NOT_IN_BATCH: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
 }
-"""Every refusal a module can return, as the page answers it. A settings refusal is always a 400 in the
-settings module's own words, which differ by field."""
+"""Every refusal the **Batch** and **History** pages answer, as the page answers it. Settings refusals are
+not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds, so they
+stay beside the field (ADR 0004)."""
 
 
 @dataclass(frozen=True, slots=True)
