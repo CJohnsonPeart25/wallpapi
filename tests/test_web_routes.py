@@ -591,6 +591,18 @@ def test_an_invalid_mix_shows_the_reason_and_what_was_typed(
         assert row.count('value="30"') == 3
 
 
+def test_a_mix_post_missing_a_field_is_refused_in_words_and_never_a_500(web: Web) -> None:
+    """Only a hand-made post can leave one out; it reads as empty, so the settings module says why."""
+    harness, client = web
+
+    refused = client.post("/settings/mixes", data={"name": "night", "unknown": "50", "banger": "50"})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert "add up to 100" in refused.text
+    assert 'value="night"' in refused.text.split("data-mix-new", 1)[1]
+    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (EXPLORE_MIX, REFINE_MIX)
+
+
 @pytest.mark.parametrize(
     ("deleted", "active", "status", "words"),
     [

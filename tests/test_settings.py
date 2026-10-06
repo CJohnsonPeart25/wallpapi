@@ -26,6 +26,8 @@ from wallpapi.settings import (
     MIN_BATCH_SIZE,
     REFINE_MIX,
     WALLHAVEN_RATIOS,
+    MixForm,
+    MixFormRow,
     MixListing,
     Settings,
     SettingsRefused,
@@ -251,6 +253,50 @@ def test_every_mix_says_whether_it_can_be_deleted(memory: sqlite3.Connection) ->
         MixListing(EXPLORE_MIX, deletable=False),
         MixListing(Mix(name="night", unknown=10, banger=80, dud=10), deletable=False),
         MixListing(REFINE_MIX, deletable=False),
+    )
+
+
+BLANK_ADD_ROW = MixFormRow(name="", unknown="", banger="", dud="", active=False, deletable=False)
+
+
+def test_the_mix_form_shows_each_stored_mix_as_text_and_a_blank_add_row(memory: sqlite3.Connection) -> None:
+    with storage.write(memory) as write:
+        settings.save_mix(write, "night", unknown=10, banger=80, dud=10)
+
+    form = settings.mix_form(memory)
+
+    assert form == MixForm(
+        rows=(
+            MixFormRow(name="explore", unknown="75", banger="20", dud="5", active=True, deletable=False),
+            MixFormRow(name="night", unknown="10", banger="80", dud="10", active=False, deletable=True),
+            MixFormRow(name="refine", unknown="25", banger="70", dud="5", active=False, deletable=False),
+        ),
+        add=BLANK_ADD_ROW,
+    )
+    assert set(settings.MIX_FORM_FIELDS) == {"name", "unknown", "banger", "dud"}
+
+
+def test_a_refused_mix_post_comes_back_on_the_row_of_the_mix_it_names(memory: sqlite3.Connection) -> None:
+    """Fixing one number is not retyping three. The name is matched as `save_mix` would store it, trimmed."""
+    posted = {"name": " refine ", "unknown": "30", "banger": "30", "dud": "30"}
+
+    form = settings.mix_form(memory, posted)
+
+    assert form.rows == (
+        MixFormRow(name="explore", unknown="75", banger="20", dud="5", active=True, deletable=False),
+        MixFormRow(name="refine", unknown="30", banger="30", dud="30", active=False, deletable=False),
+    )
+    assert form.add == BLANK_ADD_ROW
+
+
+def test_a_refused_new_mix_comes_back_on_the_add_row(memory: sqlite3.Connection) -> None:
+    posted = {"name": "night", "unknown": "10", "banger": "80", "dud": "x"}
+
+    form = settings.mix_form(memory, posted)
+
+    assert form.rows == settings.mix_form(memory).rows
+    assert form.add == MixFormRow(
+        name="night", unknown="10", banger="80", dud="x", active=False, deletable=False
     )
 
 
