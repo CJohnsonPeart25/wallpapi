@@ -18,6 +18,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
+import numpy as np
+from numpy.typing import NDArray
+
 from wallpapi import decisions, storage
 from wallpapi import settings as settings_module
 from wallpapi.clock import Clock, iso_utc
@@ -309,6 +312,24 @@ def _alternated(last: RefillStrategy | None, *, has_favourites: bool) -> RefillS
     if not has_favourites or last is RefillStrategy.LIKE:
         return RefillStrategy.RANDOM
     return RefillStrategy.RANDOM if last is None else RefillStrategy.LIKE
+
+
+def similar_groups(similarities: NDArray[np.float32], radius: float) -> list[list[int]]:
+    """The lookalike subjects grouped by taste, as indices into a square subjects x subjects matrix
+    (ADR 0022).
+
+    Greedy leader clustering, in the given order: each subject joins the first leader it is within `radius`
+    of, by the **Score**'s distance `1 - similarity`, or leads a group of its own. Leaders, not connected
+    components, because near neighbours chain: a group is at most `2 * radius` across.
+    """
+    groups: list[list[int]] = []
+    for subject in range(similarities.shape[0]):
+        joined = next((g for g in groups if similarities[subject, g[0]] >= 1 - radius), None)
+        if joined is None:
+            groups.append([subject])
+        else:
+            joined.append(subject)
+    return groups
 
 
 def _advance_walk(walk: _Walk, page: SearchPage) -> _Walk:

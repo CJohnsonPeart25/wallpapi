@@ -17,7 +17,9 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from tests.conftest import FIXED_NOW
 from tests.fakes import FakeClock, FakeWallhavenClient, catalogue_of, wallpaper
@@ -33,6 +35,7 @@ from wallpapi.pool import (
     Refill,
     RefillStatus,
     RefillStrategy,
+    similar_groups,
     wait_needed,
 )
 from wallpapi.rng import SeededRandom
@@ -736,3 +739,53 @@ def test_a_favourite_that_is_replaced_drops_out_of_the_rotation(connection: sqli
 
     assert walking_subject not in rig.queries()[-6:]
     assert rig.like_searches()[-1][0] != walking_subject
+
+
+# -- grouping the lookalike subjects -----------------------------------------------------------------
+
+
+def on_a_line(*positions: float) -> NDArray[np.float32]:
+    """Subjects as points on a line, similarity falling off with distance: a generated matrix whose groups
+    can be read off the positions."""
+    points = np.array(positions, dtype=np.float32)
+    return (1.0 - np.abs(points[:, None] - points[None, :])).astype(np.float32)
+
+
+def test_each_subject_joins_the_first_leader_within_the_radius_or_leads_a_group_of_its_own() -> None:
+    """Two tastes, interleaved in id order: the order the subjects come in does not split a taste."""
+    assert similar_groups(on_a_line(0.0, 0.5, 0.02, 0.52, 0.04), radius=0.15) == [[0, 2, 4], [1, 3]]
+
+
+def test_a_chain_of_near_neighbours_is_not_one_group() -> None:
+    """a~b and b~c, but a and c are beyond the radius: connected components would give one group, and on
+    the live log they put 24 of 28 subjects in one. Leaders are what keep a group at most 2r across."""
+    assert similar_groups(on_a_line(0.0, 0.1, 0.2), radius=0.15) == [[0, 1], [2]]
+
+
+def test_the_radius_decides_the_groups() -> None:
+    chain = on_a_line(0.0, 0.1, 0.2)
+
+    assert similar_groups(chain, radius=0.05) == [[0], [1], [2]]
+    assert similar_groups(chain, radius=0.25) == [[0, 1, 2]]
+
+
+def test_grouping_is_the_same_every_time_and_every_member_is_near_its_leader() -> None:
+    """Over generated matrices: a group's first member is its leader, every member is within the radius of
+    it, and every leader is beyond the radius of the leaders before it."""
+    radius = 0.15
+    for seed in range(20):
+        similarities = on_a_line(*np.random.default_rng(seed).random(30).tolist())
+        groups = similar_groups(similarities, radius=radius)
+
+        assert similar_groups(similarities, radius=radius) == groups
+        assert sorted(i for group in groups for i in group) == list(range(30))
+        leaders = [group[0] for group in groups]
+        for group in groups:
+            assert group == sorted(group)
+            assert all(similarities[member, group[0]] >= 1 - radius for member in group)
+        for later, leader in enumerate(leaders):
+            assert all(similarities[leader, earlier] < 1 - radius for earlier in leaders[:later])
+
+
+def test_no_subjects_is_no_groups() -> None:
+    assert similar_groups(np.zeros((0, 0), dtype=np.float32), radius=0.15) == []
