@@ -132,6 +132,11 @@ MODEL_SHA256 = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299
 
 MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MODEL_FILE}"
 
+NEAR_DUPLICATE_SIMILARITY = 0.985
+"""The mapped similarity at which two **Embeddings** are one image reposted (ADR 0021): measured, not a
+setting. The identical pairs on the real **Pool** sat at 0.99 and the near-empty images at 0.984 and below.
+"""
+
 IMAGE_SIZE = 224
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -234,12 +239,35 @@ class Embeddings:
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
         """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`."""
         fallback = self._fallback(pool, decided)
-        if not pool or not decided:
+        embedded = self._embedded(pool, decided)
+        if embedded is None:
             return fallback
+        mapped, both = embedded
+        blended = np.where(both, mapped, fallback)
+        return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
+    def near_duplicates(self, pool: Sequence[Wallpaper], banned: Sequence[Wallpaper]) -> NDArray[np.bool_]:
+        """A `len(pool)` x `len(banned)` mask of the pairs that are one image reposted (ADR 0021): both
+        sides embedded and at least `NEAR_DUPLICATE_SIMILARITY`. The fallback never enters it, because
+        flat-colour pairs score 1.0 there.
+        """
+        embedded = self._embedded(pool, banned)
+        if embedded is None:
+            return np.zeros((len(pool), len(banned)), dtype=np.bool_)
+        mapped, both = embedded
+        return both & (mapped >= NEAR_DUPLICATE_SIMILARITY)
+
+    def _embedded(
+        self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]
+    ) -> tuple[NDArray[np.float32], NDArray[np.bool_]] | None:
+        """The mapped cosine of every pair and the mask of pairs where both sides have an **Embedding**, in
+        one lookup; `None` when there is nothing to compare.
+        """
+        if not pool or not decided:
+            return None
         held = self._store.vectors_for([w.id for w in pool] + [w.id for w in decided])
         if not held:
-            return fallback
+            return None
         width = next(iter(held.values())).size
 
         pool_rows, pool_known = _rows([w.id for w in pool], held, width)
@@ -247,10 +275,7 @@ class Embeddings:
         cosine = pool_rows @ decided_rows.T
         # Not clipped at zero: a negative cosine means less in common than unrelated.
         mapped = (1.0 + np.clip(cosine, -1.0, 1.0)) / 2.0
-
-        both = pool_known[:, None] & decided_known[None, :]
-        blended = np.where(both, mapped, fallback)
-        return np.clip(blended, 0.0, 1.0).astype(np.float32)
+        return mapped, pool_known[:, None] & decided_known[None, :]
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Get the model, then embed one batch of thumbnails that have none yet; seconds to the next call.

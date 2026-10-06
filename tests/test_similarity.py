@@ -27,9 +27,11 @@ from tests.fakes import (
     wallpaper,
 )
 from wallpapi.main import build_similarity
+from wallpapi.model import Wallpaper
 from wallpapi.similarity import (
     CATEGORY_SHARE,
     CAUGHT_UP,
+    NEAR_DUPLICATE_SIMILARITY,
     RETRY_MODEL,
     EmbeddingCache,
     Embeddings,
@@ -293,6 +295,64 @@ def test_the_vectors_are_its_rows_in_pool_order_with_zeros_for_no_embedding() ->
 
     assert rows.tolist() == [NORTH.tolist(), [0.0, 0.0], EAST.tolist(), [0.0, 0.0]]
     assert nothing.shape == (2, 0)
+
+
+# -- near-duplicates ---------------------------------------------------------------------------------
+
+
+def mapped_from_east(similarity: float) -> NDArray[np.float32]:
+    """A unit vector whose mapped similarity to `EAST` is `similarity`, exactly in float32: not renormalised,
+    so the first component is the cosine as given."""
+    cosine = np.float32(2.0 * similarity - 1.0)
+    return np.array([cosine, np.sqrt(1.0 - float(cosine) ** 2)], dtype=np.float32)
+
+
+def test_a_near_duplicate_is_at_or_above_the_threshold_and_not_just_below_it() -> None:
+    """ADR 0021: a repost of the same image, measured on the real **Pool**, against the near-empty images
+    just under it."""
+    pool = [wallpaper("at"), wallpaper("above"), wallpaper("below")]
+    banned = [wallpaper("banned")]
+
+    vetoed = embeddings(
+        {
+            "banned": EAST,
+            "at": mapped_from_east(NEAR_DUPLICATE_SIMILARITY),
+            "above": EAST,
+            "below": mapped_from_east(NEAR_DUPLICATE_SIMILARITY - 0.0001),
+        }
+    ).near_duplicates(pool, banned)
+
+    assert vetoed.dtype == np.bool_
+    assert vetoed.tolist() == [[True], [True], [False]]
+
+
+def _always_alike(pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
+    return np.ones((len(pool), len(decided)), dtype=np.float32)
+
+
+@pytest.mark.parametrize(
+    "stored", [["b"], ["p"], []], ids=["pool unembedded", "banned unembedded", "neither"]
+)
+def test_a_pair_without_two_embeddings_is_never_a_near_duplicate(stored: list[str]) -> None:
+    """The fallback never enters it: a flat-colour pair reports 1.0 there, and a whole palette would go."""
+    held = Embeddings(
+        MemoryStore(dict.fromkeys(stored, EAST)), StubEmbed(), ModelOnDisk(), fallback=_always_alike
+    )
+
+    assert held.similarities([wallpaper("p")], [wallpaper("b")]).tolist() == [[1.0]]
+    assert held.near_duplicates([wallpaper("p")], [wallpaper("b")]).tolist() == [[False]]
+
+
+def test_the_near_duplicates_are_one_pool_by_banned_matrix() -> None:
+    """Invariant 2's shape, empty either side an ordinary answer."""
+    pool = [wallpaper("a"), wallpaper("b"), wallpaper("c")]
+    banned = [wallpaper("x"), wallpaper("y")]
+    held = embeddings({"a": EAST, "b": NORTH, "x": NORTH, "y": EAST})
+
+    assert held.near_duplicates(pool, banned).tolist() == [[False, True], [True, False], [False, False]]
+    assert held.near_duplicates(pool, []).shape == (3, 0)
+    assert held.near_duplicates([], banned).shape == (0, 2)
+    assert embeddings().near_duplicates(pool, banned).tolist() == [[False, False]] * 3
 
 
 # -- upkeep and the notice ---------------------------------------------------------------------------

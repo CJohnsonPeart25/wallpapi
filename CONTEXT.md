@@ -65,7 +65,7 @@ The mildly negative verdict given to every wallpaper in a submitted batch left u
 _Avoid_: skip, pass, no-op
 
 **Ban**:
-The strongest negative verdict. The wallpaper is never shown again, and its weight spreads to similar wallpapers.
+The strongest negative verdict. The wallpaper is never shown again, and neither is a near-duplicate of it (the same image reposted under another ID). Its weight spreads to similar wallpapers.
 _Avoid_: block, hide, reject, dislike
 
 **Draft Batch**:
@@ -111,7 +111,7 @@ How fast a verdict fades with distance inside the radius. The radius is a cliff;
 _Avoid_: falloff, gamma, damping
 
 **Zone**:
-The category a pool wallpaper falls into: banger, dud or unknown. Only undecided wallpapers have one, because only undecided wallpapers are in the pool.
+The category a pool wallpaper falls into: banger, dud or unknown. Only undecided wallpapers have one, because only undecided wallpapers are in the pool. A near-duplicate of a ban has none: it stays in the pool but is never drawn.
 _Avoid_: bucket, tier, band, class
 
 **Banger**:
