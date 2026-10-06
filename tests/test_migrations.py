@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import live, make_harness, raw_connection, write_log_entries, write_old_pool
+from tests.conftest import raw_connection, write_log_entries, write_old_pool
 from tests.fakes import catalogue_of
-from wallpapi import settings, storage
+from wallpapi import pool, settings, storage
 from wallpapi.model import Clearance, Verdict
 from wallpapi.settings import (
     RETUNED_SIMILARITY_RADIUS,
@@ -26,9 +26,16 @@ RETUNED = [
 ]
 
 
+def _migrated(db_path: Path) -> settings.Settings:
+    """Migrate the database at `db_path` the whole way, as a start-up does, and read its settings."""
+    with raw_connection(db_path) as connection:
+        storage.migrate(connection)
+        return settings.get(connection)
+
+
 def test_a_fresh_database_seeds_a_similarity_radius_of_a_tenth(db_path: Path) -> None:
     """ADR 0023: 0.15 left no **Unknown** zone once the **Decision log** had grown."""
-    assert settings.get(make_harness(db_path, fill_pool=0).connect()).similarity_radius == 0.10
+    assert _migrated(db_path).similarity_radius == 0.10
 
 
 def _stored_at(db_path: Path, version: int, setting: str, value: float) -> None:
@@ -46,8 +53,8 @@ def test_a_new_default_reaches_a_database_that_still_held_the_old_one(
     db_path = tmp_path / "old.db"
     _stored_at(db_path, before, setting, superseded)
 
-    migrated = settings.get(make_harness(db_path, fill_pool=0).connect())
-    fresh = settings.get(make_harness(tmp_path / "fresh.db", fill_pool=0).connect())
+    migrated = _migrated(db_path)
+    fresh = _migrated(tmp_path / "fresh.db")
 
     assert getattr(migrated, setting) == getattr(fresh, setting)
     assert getattr(migrated, setting) != superseded
@@ -61,7 +68,7 @@ def test_a_value_the_user_chose_is_left_exactly_as_they_set_it(
     del superseded
     _stored_at(db_path, before, setting, chosen)
 
-    assert getattr(settings.get(make_harness(db_path, fill_pool=0).connect()), setting) == chosen
+    assert getattr(_migrated(db_path), setting) == chosen
 
 
 def test_migration_retires_every_pool_member_the_decision_log_already_mentions(db_path: Path) -> None:
@@ -75,11 +82,12 @@ def test_migration_retires_every_pool_member_the_decision_log_already_mentions(d
         db_path, {"wp0000": Verdict.LIKE, "wp0001": Verdict.IGNORE, "wp0002": Clearance.CLEARED}
     )
 
-    after = make_harness(db_path, fill_pool=0)
+    with raw_connection(db_path) as connection:
+        storage.migrate(connection)
+        members = {w.id for w in pool.members(connection)}
 
-    assert after.modules.refill.status().pool_size == 9
-    batch = live(after)
-    assert not {w.id for w in batch.wallpapers} & {"wp0000", "wp0001", "wp0002"}
+    assert len(members) == 9
+    assert not members & {"wp0000", "wp0001", "wp0002"}
 
 
 def test_migration_deletes_the_revisit_weight_row(db_path: Path) -> None:

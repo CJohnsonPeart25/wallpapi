@@ -206,6 +206,20 @@ def test_a_batch_is_minted_with_the_injected_id_the_configured_size_and_utc_from
     assert dt.datetime.fromisoformat(stored).tzinfo == dt.UTC
 
 
+def test_a_new_batch_size_applies_to_the_next_batch_minted_and_not_the_live_one(rig: BatchesRig) -> None:
+    """Rebuilding the live **Batch** to fit would discard the **Draft Batch** marked against it."""
+    opened = rig.next()
+
+    rig.configure(batch_size=2)
+    still_live = rig.next()
+    assert (still_live.id, len(still_live.wallpapers)) == (opened.id, 8)
+
+    rig.submit(opened.id)
+
+    following = rig.next()
+    assert (following.size, len(following.wallpapers)) == (2, 2)
+
+
 def test_asking_again_hands_back_the_live_batch_rather_than_minting_another(rig: BatchesRig) -> None:
     """A refresh is not a decision (ADR 0002). Read back from storage, so the **Zones** come back too."""
     first = rig.next()
