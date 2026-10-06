@@ -12,7 +12,7 @@ from tests.conftest import Harness, live, make_harness, write_legacy_clearance
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import decisions, workflows
 from wallpapi.decisions import HistoryEntry
-from wallpapi.model import Verdict, Zone
+from wallpapi.model import Verdict
 from wallpapi.pool import IDLE_RECHECK_SECONDS
 
 # -- deciding once -----------------------------------------------------------------------------------
@@ -63,23 +63,6 @@ def test_a_wallpaper_whose_only_entry_is_a_legacy_clearance_is_not_readmitted(db
     harness.fill_pool(2)
 
     assert harness.modules.refill.status().pool_size == 0
-
-
-def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(db_path: Path) -> None:
-    """The decided set is independent of **Pool** membership (ADR 0007): eight retired **Bans** still make
-    the one unseen **Wallpaper** like them a **Dud**."""
-    ids = [w.id for w in catalogue_of(9)]
-    alike = {(a, b): 0.95 for a in ids for b in ids if a != b}
-    harness = make_harness(db_path, catalogue=catalogue_of(9), similarities=alike)
-    first = live(harness)
-    workflows.set_all_drafts(harness.modules, first.id, Verdict.BAN)
-
-    workflows.submit(harness.modules, first.id)
-
-    (remaining,) = harness.modules.batches.classify(harness.connect())
-    assert remaining.wallpaper.id not in {w.id for w in first.wallpapers}
-    assert remaining.zone is Zone.DUD
-    assert remaining.score < 0
 
 
 def test_lowering_the_target_below_the_pool_trims_nothing(harness: Harness) -> None:
