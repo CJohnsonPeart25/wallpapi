@@ -14,11 +14,13 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import Harness, live
-from wallpapi import settings, storage, workflows
+from wallpapi import pool, settings, storage, workflows
 from wallpapi.model import Mix
 from wallpapi.settings import (
+    DEFAULT_API_CALLS_PER_MINUTE,
     EXPLORE_MIX,
     FIELDS,
+    MAX_API_CALLS_PER_MINUTE,
     MAX_BATCH_SIZE,
     MAX_FILTER_PIXELS,
     MAX_POOL_TARGET_SIZE,
@@ -59,6 +61,9 @@ REFUSALS = [
     # A Pool of none is a page with nothing on it; above the cap, every whole-Pool scan slows for ever.
     *[("pool_target_size", bad, Reason.OUT_OF_RANGE) for bad in ("0", "-1", MAX_POOL_TARGET_SIZE + 1)],
     *[("pool_target_size", bad, Reason.NOT_A_NUMBER) for bad in ("two thousand", "1.5", "")],
+    # Above Wallhaven's own 45 is no budget at all; none a minute is a Refill that never runs.
+    *[("api_calls_per_minute", bad, Reason.OUT_OF_RANGE) for bad in ("0", "46")],
+    *[("api_calls_per_minute", bad, Reason.NOT_A_NUMBER) for bad in ("1.5", "")],
     # Zero is "no minimum"; a negative or more than any display is a typo that empties the Pool.
     *[
         (axis, bad, Reason.OUT_OF_RANGE)
@@ -117,6 +122,8 @@ def test_an_invalid_value_is_refused_with_a_reason_and_words_and_changes_nothing
         pytest.param({"batch_size": MIN_BATCH_SIZE}, {"batch_size": MIN_BATCH_SIZE}, id="the smallest batch"),
         pytest.param({"batch_size": MAX_BATCH_SIZE}, {"batch_size": MAX_BATCH_SIZE}, id="the largest batch"),
         pytest.param({"pool_target_size": "50"}, {"pool_target_size": 50}, id="a pool target, as text"),
+        pytest.param({"api_calls_per_minute": "1"}, {"api_calls_per_minute": 1}, id="the smallest budget"),
+        pytest.param({"api_calls_per_minute": "45"}, {"api_calls_per_minute": 45}, id="the largest budget"),
         # Turning a Filter off is setting it to nothing, not a second "enabled" setting.
         pytest.param(
             {"min_width": 0, "min_height": 0, "min_favourites": 0},
@@ -151,6 +158,28 @@ def test_a_valid_value_is_saved_typed_and_read_back(
     assert isinstance(saved, Settings)
     for field, value in expected.items():
         assert getattr(saved, field) == getattr(settings.get(memory), field) == value
+
+
+@pytest.mark.parametrize("posted", ["0", "46", "1.5", ""])
+def test_a_refused_api_budget_says_its_range(memory: sqlite3.Connection, posted: str) -> None:
+    refused = update(memory, api_calls_per_minute=posted)
+
+    assert isinstance(refused, SettingsRefused)
+    assert refused.message == "API calls a minute must be a whole number between 1 and 45."
+
+
+def test_a_fresh_database_budgets_below_wallhavens_own_limit(memory: sqlite3.Connection) -> None:
+    """Wallhaven allows 45 a minute per IP address, so the default leaves the rest for anything else on it;
+    the ceiling is that same 45, written out because `settings` cannot import `pool`."""
+    assert settings.get(memory).api_calls_per_minute == DEFAULT_API_CALLS_PER_MINUTE == 35
+    assert MAX_API_CALLS_PER_MINUTE == pool.CALLS_PER_MINUTE
+
+
+def test_a_database_from_before_the_budget_reads_the_default(memory: sqlite3.Connection) -> None:
+    """No migration adds the row: a missing row falls back to its default."""
+    memory.execute("DELETE FROM settings WHERE key = 'api_calls_per_minute'")
+
+    assert settings.get(memory).api_calls_per_minute == DEFAULT_API_CALLS_PER_MINUTE
 
 
 def test_an_unknown_field_is_a_programming_error(memory: sqlite3.Connection) -> None:
@@ -248,7 +277,7 @@ def test_the_form_is_the_table_grouped_by_section_in_declaration_order() -> None
     assert [(section.heading, [field.key for field in fields]) for section, fields in sections] == [
         (None, ["batch_size", "library_path"]),
         ("Filters", ["min_width", "min_height", "allowed_ratios", "min_favourites"]),
-        ("Pool", ["pool_target_size"]),
+        ("Pool", ["pool_target_size", "api_calls_per_minute"]),
         ("Scoring", ["similarity_radius", "similarity_decay"]),
         ("Thumbnails", ["thumbnail_cache_max_mb"]),
     ]
@@ -267,6 +296,7 @@ def test_every_form_field_says_how_the_form_shows_it() -> None:
         "allowed_ratios": None,
         "min_favourites": "1",
         "pool_target_size": "1",
+        "api_calls_per_minute": "1",
         "similarity_radius": "0.01",
         "similarity_decay": "0.1",
         "thumbnail_cache_max_mb": "1",

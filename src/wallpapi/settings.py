@@ -40,6 +40,17 @@ DEFAULT_POOL_TARGET_SIZE = 500
 cheaper on every **Batch** minted.
 """
 
+MIN_API_CALLS_PER_MINUTE = 1
+MAX_API_CALLS_PER_MINUTE = 45
+"""The accepted **API budget** range. 45 is Wallhaven's own limit, `pool.CALLS_PER_MINUTE`, written out
+because `pool` imports this module.
+"""
+
+DEFAULT_API_CALLS_PER_MINUTE = 35
+"""Ten a minute short of Wallhaven's 45, which it counts per IP address: room for anything else on this
+machine (ADR 0020).
+"""
+
 SUPERSEDED_POOL_TARGET_SIZE = 2000
 """The target ADR 0005 seeded, kept only because migration 10 has to recognise it."""
 
@@ -459,8 +470,19 @@ class Settings:
         message="Pool target size must be a whole number between {minimum} and {maximum}.",
         section=_POOL,
         label="Pool target size",
-        help="How many filtered wallpapers to keep waiting. The background refill fetches at full speed "
-        "until the pool reaches this, then idles.",
+        help="How many filtered wallpapers to keep waiting. The background refill fetches at up to the "
+        "API budget until the pool reaches this, then idles.",
+    )
+    api_calls_per_minute = _whole(
+        default=DEFAULT_API_CALLS_PER_MINUTE,
+        minimum=MIN_API_CALLS_PER_MINUTE,
+        maximum=MAX_API_CALLS_PER_MINUTE,
+        message="API calls a minute must be a whole number between {minimum} and {maximum}.",
+        section=_POOL,
+        label="API budget",
+        help="Wallhaven searches a minute the refill may make, {minimum} to {maximum}. Wallhaven allows "
+        "{maximum} for everything on this machine, so leave some for anything else; the refill also holds "
+        "back when Wallhaven says other traffic has used the rest.",
     )
     # Above 1 the radius would do nothing.
     similarity_radius = _decimal(
