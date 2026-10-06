@@ -12,6 +12,8 @@ on `pool.Refill` (`wait`/`step`/`running`/`status`) with its own random source;
 `pool.refill_loop` run by `background.BackgroundLoop`. `wait_needed` lives in `pool`, the `ratelimit` module
 folded in. `status` also carries the **Pool**'s breakdown by `source` (`pool.breakdown`), counted from the
 table rather than kept in memory, so the page can say how much of the **Pool** the like: search brought in.
+The like: rotation is superseded by ADR 0022: **Likes** are subjects too, and turns go by groups of similar
+subjects rather than one **Favourite** at a time.
 
 ## Context
 
