@@ -142,6 +142,53 @@ def test_an_ignore_after_a_favourite_resolves_to_ignore(connection: sqlite3.Conn
     assert resolved(connection, SUBJECT) == ResolvedVerdict(verdict=Verdict.IGNORE, value=-10)
 
 
+@pytest.mark.parametrize(
+    ("submitted", "edits", "expected"),
+    [
+        # Passing something over twice is not twice the dislike, and "ignored" is not "never seen".
+        pytest.param(None, [Verdict.IGNORE], ResolvedVerdict(Verdict.IGNORE, -10), id="ignores do not stack"),
+        pytest.param(
+            None,
+            [Verdict.IGNORE, Verdict.LIKE],
+            ResolvedVerdict(Verdict.LIKE, 50),
+            id="a verdict overturns ignores",
+        ),
+        pytest.param(
+            Verdict.LIKE,
+            [Verdict.FAVOURITE],
+            ResolvedVerdict(Verdict.FAVOURITE, 100),
+            id="replaced, not added to",
+        ),
+        pytest.param(
+            Verdict.LIKE,
+            [Verdict.IGNORE],
+            ResolvedVerdict(Verdict.IGNORE, -10),
+            id="an ignore withdraws a verdict",
+        ),
+    ],
+)
+def test_the_latest_entry_decides(
+    connection: sqlite3.Connection, submitted: Verdict | None, edits: list[Verdict], expected: ResolvedVerdict
+) -> None:
+    """Submitted in a **Batch** (unmarked is an **Ignore**), then edited from **History**: what came before
+    the latest counts for nothing. An edit carries no **Batch**, which is how the log tells it apart."""
+    append(connection, {SUBJECT: submitted or Verdict.IGNORE}, batch_id="b1")
+
+    for verdict in edits:
+        assert isinstance(edit(connection, SUBJECT, verdict), HistoryEntry)
+
+    assert resolved(connection, SUBJECT) == expected
+    assert decisions.entries(connection, wallpaper_id=SUBJECT)[-1].batch_id is None
+
+
+def test_editing_an_unknown_wallpaper_is_refused_and_appends_nothing(connection: sqlite3.Connection) -> None:
+    """A refusal in the house style rather than the foreign key's `IntegrityError`."""
+    refused = edit(connection, "never-seen", Verdict.IGNORE)
+
+    assert refused == HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+    assert decisions.entries(connection) == []
+
+
 def test_a_legacy_clearance_resolves_to_nothing_and_anything_after_it_decides(
     connection: sqlite3.Connection,
 ) -> None:

@@ -22,7 +22,7 @@ from tests.fakes import catalogue_of, wallpaper
 from wallpapi import batches, decisions, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
-from wallpapi.decisions import HistoryEntry
+from wallpapi.decisions import HistoryEntry, ResolvedVerdict
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.rng import SeededRandom
@@ -716,3 +716,83 @@ def test_showing_is_the_live_batch_until_it_is_submitted(rig: BatchesRig) -> Non
     rig.submit(batch.id)
 
     assert batches.showing(rig.connection) == set()
+
+
+# -- History edits and the Batch (ADR 0015)
+
+SUBJECT = "wp0000"
+
+
+def _down_to(rig: BatchesRig, size: int) -> None:
+    """Keep the first `size` of the **Pool** and make a **Batch** that size, so every one is drawn."""
+    rig.retire(*(w.id for w in catalogue_of(24)[size:]))
+    rig.configure(batch_size=size)
+
+
+def test_a_ban_from_history_excludes_a_wallpaper_and_an_ignore_makes_it_eligible_again(
+    rig: BatchesRig,
+) -> None:
+    """Un-**Banning** falls out of building **Batches** by *resolved* **Verdict**. Banned before any
+    **Batch** showed it, since a shown **Wallpaper** has left the **Pool** for good (ADR 0016)."""
+    _down_to(rig, 1)
+    assert isinstance(rig.edit(SUBJECT, Verdict.BAN), HistoryEntry)
+    assert isinstance(rig.batches.next(rig.connection), BatchUnavailable), "the Ban must exclude it"
+
+    assert isinstance(rig.edit(SUBJECT, Verdict.IGNORE), HistoryEntry)
+
+    reoffered = rig.next()
+    assert [w.id for w in reoffered.wallpapers] == [SUBJECT]
+    assert reoffered.drafts == {}, "an Ignore is not pre-filled: the tile comes up unmarked"
+
+
+def test_a_history_edit_does_not_reach_the_batch_already_open(rig: BatchesRig) -> None:
+    """Deliberately not handled (ADR 0015): the open tile is unmarked, so submitting it untouched records
+    an **Ignore**, which is the latest entry and overturns the edit. The tile shows what it will record."""
+    _down_to(rig, 1)
+    open_batch = rig.next()
+
+    assert isinstance(rig.edit(SUBJECT, Verdict.LIKE), HistoryEntry)
+
+    assert rig.next() == open_batch, "the edit neither rerolled nor re-marked the open Batch"
+    rig.submit(open_batch.id)
+    assert decisions.resolve(rig.connection, [SUBJECT])[SUBJECT].verdict is Verdict.IGNORE
+
+
+def test_a_reshown_wallpaper_comes_up_marked_with_its_latest_verdict(rig: BatchesRig) -> None:
+    """Minted with each **Explicit Verdict** already in the **Draft Batch**, wherever it was decided. An
+    **Ignore** is not pre-filled, and a **Ban** is never drawn. Decided from **History** and then minted:
+    the one way a **Batch** still draws a decided **Wallpaper**, since an edit takes nothing out of the
+    **Pool**."""
+    _down_to(rig, 8)
+    liked, favourite, banned, ignored, overturned = "wp0000", "wp0001", "wp0002", "wp0003", "wp0004"
+    assert isinstance(rig.edit(overturned, Verdict.FAVOURITE), HistoryEntry)
+    for wallpaper_id, verdict in {
+        liked: Verdict.LIKE,
+        favourite: Verdict.FAVOURITE,
+        banned: Verdict.BAN,
+        ignored: Verdict.IGNORE,
+        overturned: Verdict.LIKE,
+    }.items():
+        assert isinstance(rig.edit(wallpaper_id, verdict), HistoryEntry)
+
+    reshown = rig.next()
+
+    assert reshown.drafts == {liked: Verdict.LIKE, favourite: Verdict.FAVOURITE, overturned: Verdict.LIKE}
+    assert ignored in {w.id for w in reshown.wallpapers}
+    assert banned not in {w.id for w in reshown.wallpapers}, "a Ban is never reshown"
+    assert reshown == rig.next(), "read back from storage, so a reload keeps it"
+
+
+def test_leaving_a_reshown_wallpaper_alone_records_its_verdict_again(rig: BatchesRig) -> None:
+    _down_to(rig, 8)
+    assert isinstance(rig.edit(SUBJECT, Verdict.LIKE), HistoryEntry)
+
+    rig.submit(rig.next().id)
+
+    assert [e.entry for e in decisions.entries(rig.connection, wallpaper_id=SUBJECT)] == [
+        Verdict.LIKE,
+        Verdict.LIKE,
+    ]
+    assert decisions.resolve(rig.connection, [SUBJECT])[SUBJECT] == ResolvedVerdict(
+        verdict=Verdict.LIKE, value=50
+    )
