@@ -41,9 +41,10 @@ def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(web: We
 
 
 def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web) -> None:
-    """**Ignore** has no control: it is what leaving a tile alone says. `hx-sync="this:replace"` on every
-    control, or a slower response to an earlier click swaps a stale tile back in. The **Batch** has its
-    select-all and select-none controls once."""
+    """**Ignore** has no control: it is what leaving a tile alone says. One post per tile at a time
+    (`closest .tile:drop`): with a sync per button, Ban clicked while Like is in flight lands on a detached
+    tile and the screen shows **Like** while the server holds **Ban**. Bulk and tile controls disable each
+    other. The **Batch** has its select-all and select-none controls once."""
     harness, client = web
     body = client.get("/batch").text
     shown = live(harness).wallpapers[0].id
@@ -54,10 +55,16 @@ def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web)
 
     controls = re.findall(r"<button\b[^>]*data-verdict=[^>]*>", tile)
     assert {re.search(r'data-verdict="(\w*)"', c).group(1) for c in controls} >= {"favourite", "like", "ban"}  # pyright: ignore[reportOptionalMemberAccess]
-    assert all('hx-sync="this:replace"' in control for control in controls)
+    for control in controls + re.findall(r"<button\b[^>]*data-verdict=[^>]*>", body):
+        assert 'hx-sync="closest .tile:drop"' in control
+        assert "this:replace" not in control
+        assert 'hx-disabled-elt=".bulk-verdict"' in control
     assert 'data-verdict="ignore"' not in body
     for choice in ("favourite", "like", "ban", ""):
-        assert f'data-bulk-verdict="{choice}"' in body
+        bulk = re.search(rf'<button\b[^>]*data-bulk-verdict="{choice}"[^>]*>', body)
+        assert bulk is not None
+        assert 'hx-sync="#batch-grid:replace"' in bulk.group(0)
+        assert 'hx-disabled-elt=".verdict"' in bulk.group(0)
     assert 'data-bulk-verdict="ignore"' not in body
 
 
@@ -122,6 +129,11 @@ def test_a_history_row_shows_its_thumbnail_verdict_time_and_link(db_path: Path) 
     assert ">favourite<" in judged
     assert "2026-09-24 11:30 UTC" in judged
     assert 'href="https://wallhaven.cc/w/judged"' in judged
+    controls = re.findall(r"<button\b[^>]*>", judged)
+    assert len(controls) == 4
+    for control in controls:
+        assert 'hx-sync="closest tr:drop"' in control, "one post per row, or a late entry lands unseen"
+        assert "this:replace" not in control
     pressed = [b for b in re.findall(r"<button\b[^>]*>", row("ignored")) if 'aria-pressed="true"' in b]
     assert len(pressed) == 1
     assert 'data-verdict="ignore"' in pressed[0]
