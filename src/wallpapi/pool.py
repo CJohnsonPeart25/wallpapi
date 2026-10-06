@@ -27,6 +27,7 @@ from wallpapi.clock import Clock, iso_utc
 from wallpapi.model import Wallpaper
 from wallpapi.rng import SeededRandom
 from wallpapi.settings import Settings
+from wallpapi.similarity import Similarity
 from wallpapi.wallhaven import REQUEST_TIMEOUT, RateLimited, SearchPage, Wallhaven
 
 SFW_PURITY = "100"
@@ -61,8 +62,8 @@ LIKE_QUERY_PREFIX = "like:"
 LIKE_SORTING = "relevance"
 """How a like: search is sorted: most similar first, because the walk is capped and the tail is weak."""
 
-LIKE_PAGES_PER_FAVOURITE = 3
-"""How far a like: walk goes before the next **Favourite**'s turn: 72 **Wallpapers**, and the tail is weak."""
+LIKE_PAGES_PER_SUBJECT = 3
+"""How far a like: walk goes before the next subject's turn: 72 **Wallpapers**, and the tail is weak."""
 
 RATIO_TOLERANCE = 0.08
 """How far a **Wallpaper**'s own width/height may sit from a named ratio and still count as it.
@@ -74,7 +75,7 @@ under half the gap between `16x9` (1.78) and `16x10` (1.60).
 
 class RefillStrategy(StrEnum):
     """Which search a refill step makes, and so the `source` it tags what it admits with: a random walk, or
-    a like: search on a **Favourite**.
+    a like: search on a **Favourite** or a **Like**.
     """
 
     RANDOM = "random"
@@ -92,7 +93,8 @@ class RefillStatus:
     last_error: str | None
     last_error_at: dt.datetime | None
     last_strategy: RefillStrategy | None
-    """Which search the last step made, or `None`. A stalled like: rotation means no **Favourites** yet."""
+    """Which search the last step made, or `None`. A stalled like: rotation means no **Favourites** or
+    **Likes** yet."""
     by_strategy: Mapping[RefillStrategy, int]
     """The **Pool** counted by the strategy that brought each member in: whether like: is feeding it."""
 
@@ -122,7 +124,9 @@ def wait_needed(
 
 @dataclass(frozen=True, slots=True)
 class _Walk:
-    """Where one walk has got to. `subject` is a like: walk's **Favourite**, and `None` for the random one."""
+    """Where one walk has got to. `subject` is a like: walk's **Favourite** or **Like**, and `None` for the
+    random one.
+    """
 
     subject: str | None = None
     seed: str | None = None
@@ -144,11 +148,13 @@ class Refill:
         self,
         connect: Callable[[], sqlite3.Connection],
         wallhaven: Wallhaven,
+        similarities: Similarity,
         clock: Clock,
         random_source: SeededRandom,
     ) -> None:
         self._connect = connect
         self._wallhaven = wallhaven
+        self._similarities = similarities
         self._clock = clock
         self._random = random_source
 
@@ -162,8 +168,9 @@ class Refill:
         # The two walks are kept apart: they interleave, and would clobber a shared place.
         self._walk = _FRESH
         self._like_walk = _FRESH
-        self._like_walked: frozenset[str] = frozenset()
-        """The **Favourites** already walked this cycle, so every one has a turn before any has a second."""
+        self._like_steps = 0
+        self._like_turns: dict[str, int] = {}
+        """The like: step at which each subject's latest walk began, so turns go by group (ADR 0022)."""
         self._last_strategy: RefillStrategy | None = None
         self._retry_not_before: float | None = None
         self._last_run: dt.datetime | None = None
@@ -205,8 +212,10 @@ class Refill:
     def step(self) -> None:
         """One step: at most one **API call**, and never an exception from it: the thread must not die.
 
-        The random and like: strategies take strict turns; with no **Favourites** every step is random. A
-        failure is recorded, the walk keeps its place, and `wait` backs off.
+        The random and like: strategies take strict turns; with no **Favourite** or **Like** every step is
+        random. The subjects are grouped when a like: walk is taken up and only then (ADR 0022), outside the
+        lock because the **Similarity provider** runs SQL. A failure is recorded, the walk keeps its place,
+        and `wait` backs off.
         """
         connection = self._connect()
         current = settings_module.get(connection)
@@ -219,14 +228,20 @@ class Refill:
                 self._walk = _FRESH
             return
 
-        favourites = decisions.favourites(connection)
+        subjects = decisions.lookalike_subjects(connection)
         with self._lock:
-            strategy = _alternated(self._last_strategy, has_favourites=bool(favourites))
+            strategy = _alternated(self._last_strategy, has_subjects=bool(subjects))
             self._last_strategy = strategy
+            # Only this thread moves the walks, so the walk read here is still the walk below.
+            taking_up = strategy is RefillStrategy.LIKE and self._like_walk.subject not in subjects
+        groups = self._groups(connection, subjects, current.similarity_radius) if taking_up else None
+        with self._lock:
             if strategy is RefillStrategy.LIKE:
-                self._like_walk, self._like_walked = _take_up_a_like_walk(
-                    self._like_walk, self._like_walked, favourites, self._random
-                )
+                self._like_steps += 1
+                if groups is not None:
+                    self._like_walk, self._like_turns = _take_up_a_like_walk(
+                        groups, self._like_turns, self._like_steps, self._random
+                    )
                 walk = self._like_walk
             else:
                 walk = self._walk
@@ -256,9 +271,7 @@ class Refill:
             admit(write, page.wallpapers, current, source=strategy, at=self._clock.now())
         with self._lock:
             if strategy is RefillStrategy.LIKE:
-                self._like_walk, self._like_walked = _advance_like_walk(
-                    self._like_walk, self._like_walked, page
-                )
+                self._like_walk = _advance_like_walk(self._like_walk, page)
             else:
                 self._walk = _advance_walk(self._walk, page)
             self._retry_not_before = None
@@ -277,6 +290,18 @@ class Refill:
         finally:
             with self._lock:
                 self._running = False
+
+    def _groups(
+        self, connection: sqlite3.Connection, subjects: Sequence[str], radius: float
+    ) -> list[list[str]]:
+        """The subjects grouped by taste: one subjects x subjects matrix, decided x decided (invariant 2), at
+        the **Similarity radius** scoring uses. Made afresh for each walk taken up, and never stored.
+        """
+        recorded = wallpapers(connection, subjects)
+        # Every subject has a row: the **Decision log**'s foreign key holds it.
+        ordered = [recorded[subject] for subject in subjects]
+        grouped = similar_groups(self._similarities(ordered, ordered), radius)
+        return [[subjects[i] for i in group] for group in grouped]
 
     def _failed(self, failure: Exception, backoff: float) -> None:
         """Remember why the last **API call** failed, for the page, and how long to leave Wallhaven alone."""
@@ -307,9 +332,9 @@ def _note_call(call_times: deque[float], at: float) -> None:
     call_times.append(at)
 
 
-def _alternated(last: RefillStrategy | None, *, has_favourites: bool) -> RefillStrategy:
+def _alternated(last: RefillStrategy | None, *, has_subjects: bool) -> RefillStrategy:
     """Whichever strategy did not take the last step, while both have work: strict turns are an even split."""
-    if not has_favourites or last is RefillStrategy.LIKE:
+    if not has_subjects or last is RefillStrategy.LIKE:
         return RefillStrategy.RANDOM
     return RefillStrategy.RANDOM if last is None else RefillStrategy.LIKE
 
@@ -339,30 +364,41 @@ def _advance_walk(walk: _Walk, page: SearchPage) -> _Walk:
     return replace(walk, seed=page.seed or walk.seed, page=walk.page + 1)
 
 
+_NEVER = -1
+"""The turn of a subject never walked: older than any like: step, which counts from 1."""
+
+
 def _take_up_a_like_walk(
-    walk: _Walk, walked: frozenset[str], favourites: Sequence[str], random_source: SeededRandom
-) -> tuple[_Walk, frozenset[str]]:
-    """The like: walk the next search makes, and the **Favourites** walked this cycle.
+    groups: Sequence[Sequence[str]], turns: Mapping[str, int], step: int, random_source: SeededRandom
+) -> tuple[_Walk, dict[str, int]]:
+    """A new like: walk, and the current subjects' latest turns with this one stamped at `step`.
 
-    Carries on with the walk in progress while its subject is still a **Favourite**; otherwise starts on one
-    that has not had a turn this cycle, so every **Favourite** gets one.
+    Turns go by group, then by subject within it (ADR 0022): the group whose latest turn is oldest goes
+    next, a group never walked oldest of all, and in it the subject walked longest ago, the never-walked
+    first. So a taste has turns as a taste, however many subjects it holds. Ties go to `random_source`.
     """
-    if walk.subject is not None and walk.subject in favourites:
-        return walk, walked
-    walked = walked.intersection(favourites)
-    remaining = [f for f in favourites if f not in walked]
-    if not remaining:
-        walked, remaining = frozenset[str](), list(favourites)
-    return _Walk(subject=random_source.sample(remaining, 1)[0]), walked
+    current = {subject for group in groups for subject in group}
+    turns = {subject: turn for subject, turn in turns.items() if subject in current}
+
+    def last_turn(subject: str) -> int:
+        return turns.get(subject, _NEVER)
+
+    def latest(group: Sequence[str]) -> int:
+        return max(map(last_turn, group))
+
+    oldest = min(map(latest, groups))
+    group = random_source.sample([g for g in groups if latest(g) == oldest], 1)[0]
+    longest_ago = min(map(last_turn, group))
+    subject = random_source.sample([s for s in group if last_turn(s) == longest_ago], 1)[0]
+    turns[subject] = step
+    return _Walk(subject=subject), turns
 
 
-def _advance_like_walk(walk: _Walk, walked: frozenset[str], page: SearchPage) -> tuple[_Walk, frozenset[str]]:
-    """Page on through one **Favourite**'s lookalikes until an empty page or `LIKE_PAGES_PER_FAVOURITE`."""
-    if page.wallpapers and walk.page < LIKE_PAGES_PER_FAVOURITE:
-        return replace(walk, seed=page.seed or walk.seed, page=walk.page + 1), walked
-    if walk.subject is not None:
-        walked = walked | {walk.subject}
-    return _FRESH, walked
+def _advance_like_walk(walk: _Walk, page: SearchPage) -> _Walk:
+    """Page on through one subject's lookalikes until an empty page or `LIKE_PAGES_PER_SUBJECT`."""
+    if page.wallpapers and walk.page < LIKE_PAGES_PER_SUBJECT:
+        return replace(walk, seed=page.seed or walk.seed, page=walk.page + 1)
+    return _FRESH
 
 
 # -- the Pool's own storage ------------------------------------------------------------------------------

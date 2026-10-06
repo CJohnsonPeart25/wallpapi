@@ -22,7 +22,7 @@ import pytest
 from numpy.typing import NDArray
 
 from tests.conftest import FIXED_NOW
-from tests.fakes import FakeClock, FakeWallhavenClient, catalogue_of, wallpaper
+from tests.fakes import FakeClock, FakeSimilarities, FakeWallhavenClient, catalogue_of, wallpaper
 from wallpapi import decisions, pool, settings, storage
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.pool import (
@@ -30,7 +30,7 @@ from wallpapi.pool import (
     ERROR_BACKOFF_SECONDS,
     IDLE_RECHECK_SECONDS,
     JOIN_TIMEOUT,
-    LIKE_PAGES_PER_FAVOURITE,
+    LIKE_PAGES_PER_SUBJECT,
     WINDOW_SECONDS,
     Refill,
     RefillStatus,
@@ -39,6 +39,7 @@ from wallpapi.pool import (
     wait_needed,
 )
 from wallpapi.rng import SeededRandom
+from wallpapi.similarity import Similarity
 
 
 @dataclass
@@ -93,12 +94,17 @@ def rig_over(
     catalogue: Sequence[Wallpaper] | None = None,
     target: int | None = 1000,
     steps: int = 0,
+    similarities: Similarity | None = None,
     **client: object,
 ) -> Rig:
-    """A Rig whose refill would keep going unless `target` says otherwise: 1000 is far above any catalogue."""
+    """A Rig whose refill would keep going unless `target` says otherwise: 1000 is far above any catalogue.
+
+    Unless told otherwise, no two subjects are alike, so each is a group of its own."""
     wallhaven = FakeWallhavenClient(catalogue_of(24) if catalogue is None else catalogue, **client)  # pyright: ignore[reportArgumentType]
     clock = FakeClock(FIXED_NOW)
-    rig = Rig(connection, Refill(lambda: connection, wallhaven, clock, SeededRandom(1)), wallhaven, clock)
+    alike = FakeSimilarities() if similarities is None else similarities
+    refill = Refill(lambda: connection, wallhaven, alike, clock, SeededRandom(1))
+    rig = Rig(connection, refill, wallhaven, clock)
     if target is not None:
         rig.configure(pool_target_size=target)
     rig.step(steps)
@@ -483,7 +489,7 @@ def test_the_status_is_one_snapshot_while_a_step_is_mid_search(tmp_path: Path) -
     storage.migrate(connections.get())
     wallhaven = FakeWallhavenClient(catalogue_of(24), fail_from_call=1)
     clock = FakeClock(FIXED_NOW)
-    refill = Refill(connections.get, wallhaven, clock, SeededRandom(1))
+    refill = Refill(connections.get, wallhaven, FakeSimilarities(), clock, SeededRandom(1))
     refill.step()
     failed = refill.status()
     assert failed.last_error is not None
@@ -659,7 +665,7 @@ def test_a_like_walk_stops_at_the_page_cap_and_moves_to_the_next_favourite(
     walked = rig.like_searches()
     first = walked[0][0]
     assert [page for subject, page in walked if subject == first] == [1, 2, 3]
-    assert walked[LIKE_PAGES_PER_FAVOURITE][0] != first
+    assert walked[LIKE_PAGES_PER_SUBJECT][0] != first
 
 
 def test_every_favourite_gets_a_turn_before_any_is_walked_twice(connection: sqlite3.Connection) -> None:
@@ -722,7 +728,10 @@ def test_the_combined_refill_still_stops_at_forty_five_calls_a_minute(connection
     assert {None, "like:wp0000"} <= set(rig.queries()), "both strategies ran inside the 45"
 
 
-def test_a_favourite_that_is_replaced_drops_out_of_the_rotation(connection: sqlite3.Connection) -> None:
+@pytest.mark.parametrize("demotion", [Verdict.BAN, Verdict.IGNORE])
+def test_a_subject_that_stops_being_a_favourite_or_like_drops_out_of_the_rotation(
+    connection: sqlite3.Connection, demotion: Verdict
+) -> None:
     """**Verdict resolution**, not the raw log, and mid-walk: the walk abandons the pages it had left."""
     rig = liking(
         connection,
@@ -734,11 +743,151 @@ def test_a_favourite_that_is_replaced_drops_out_of_the_rotation(connection: sqli
     walking_subject = rig.like_searches()[0][0]
     demoted = str(walking_subject).removeprefix("like:")
 
-    rig.decide(Verdict.LIKE, demoted)
+    rig.decide(demotion, demoted)
     rig.step(6)
 
     assert walking_subject not in rig.queries()[-6:]
     assert rig.like_searches()[-1][0] != walking_subject
+
+
+def test_likes_are_subjects_and_neither_a_ban_nor_an_ignore_is(connection: sqlite3.Connection) -> None:
+    """A log of **Likes** and no **Favourite** used never to search like: at all (#38)."""
+    rig = liking(connection, {})
+    rig.decide(Verdict.BAN, "wp0000")
+    rig.decide(Verdict.IGNORE, "wp0001")
+    rig.step(4)
+    assert rig.queries() == [None] * 5, "with no Favourite or Like every step is random"
+
+    rig.decide(Verdict.LIKE, "wp0001")
+    rig.step(2)
+
+    assert rig.queries()[-2:] == ["like:wp0001", None]
+
+
+# -- lookalike turns by taste ------------------------------------------------------------------------
+
+
+MOUNTAINS = tuple(f"wp{n:04d}" for n in range(40))
+NEON = tuple(f"wp{n:04d}" for n in range(40, 45))
+
+
+def tastes(*groups: Sequence[str]) -> FakeSimilarities:
+    """Every pair inside one group alike, well within any radius, and nothing alike across groups."""
+    return FakeSimilarities({(a, b): 0.99 for group in groups for a in group for b in group})
+
+
+def walked(rig: Rig) -> list[str]:
+    """The subject of every like: search, in order: with empty like: results, one per walk."""
+    return [str(q).removeprefix("like:") for q, _ in rig.like_searches()]
+
+
+def two_tastes(connection: sqlite3.Connection, like_walks: int) -> list[str]:
+    """40 mountain **Favourites** and 5 neon ones, walked `like_walks` times."""
+    rig = rig_over(
+        connection, catalogue=catalogue_of(45), page_size=45, steps=1, similarities=tastes(MOUNTAINS, NEON)
+    )
+    rig.favourite(*MOUNTAINS, *NEON)
+    rig.step(2 * like_walks)
+    subjects = walked(rig)
+    assert len(subjects) == like_walks
+    return subjects
+
+
+def test_lookalike_turns_alternate_between_tastes_however_many_subjects_each_has(
+    connection: sqlite3.Connection,
+) -> None:
+    """Turn by **Favourite** gave neon about one walk in nine and grew the **Banger** zone with mountains;
+    turn by taste gives it every other one."""
+    in_neon = [subject in NEON for subject in two_tastes(connection, like_walks=20)]
+
+    assert in_neon == [in_neon[0], not in_neon[0]] * 10
+
+
+def test_within_a_taste_every_subject_has_a_turn_before_any_has_a_second(
+    connection: sqlite3.Connection,
+) -> None:
+    subjects = two_tastes(connection, like_walks=20)
+    neon = [s for s in subjects if s in NEON]
+    mountains = [s for s in subjects if s in MOUNTAINS]
+
+    assert set(neon[:5]) == set(neon[5:]) == set(NEON)
+    assert len(set(mountains)) == len(mountains) == 10
+
+
+def test_a_new_subject_unlike_the_rest_has_the_next_lookalike_walk(connection: sqlite3.Connection) -> None:
+    """Never walked is oldest of all, so a new taste is asked about at once, mid-rotation or not."""
+    alike = ("wp0000", "wp0001", "wp0002")
+    rig = rig_over(connection, catalogue=catalogue_of(4), steps=1, similarities=tastes(alike))
+    rig.favourite(*alike)
+    rig.step(2)
+
+    rig.decide(Verdict.LIKE, "wp0003")
+    rig.step(2)
+
+    assert walked(rig)[0] in alike
+    assert walked(rig)[-1] == "wp0003"
+
+
+@pytest.mark.parametrize(
+    ("radius", "turns_for_the_odd_one_out"),
+    [pytest.param("0.15", 3, id="two groups"), pytest.param("0.05", 2, id="three groups")],
+)
+def test_the_similarity_radius_setting_decides_the_groups(
+    connection: sqlite3.Connection, radius: str, turns_for_the_odd_one_out: int
+) -> None:
+    """`wp0000` and `wp0001` are 0.1 apart: one taste at 0.15, two at 0.05. Read from the setting scoring
+    uses, so retuning it retunes both."""
+    near = FakeSimilarities({("wp0000", "wp0001"): 0.9, ("wp0001", "wp0000"): 0.9})
+    rig = rig_over(connection, catalogue=catalogue_of(3), steps=1, similarities=near)
+    rig.configure(similarity_radius=radius)
+    rig.favourite("wp0000", "wp0001", "wp0002")
+
+    rig.step(12)
+
+    assert walked(rig).count("wp0002") == turns_for_the_odd_one_out
+
+
+class StatusProbe:
+    """A **Similarity provider** that, whenever it is called, asks the Refill for its status from another
+    thread: an answer means the Refill's lock was free. Otherwise no two subjects are alike."""
+
+    def __init__(self) -> None:
+        self.refill: Refill | None = None
+        self.calls: list[tuple[str, ...]] = []
+        self.lock_was_free: list[bool] = []
+
+    def __call__(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
+        assert self.refill is not None
+        self.calls.append(tuple(w.id for w in pool))
+        reading = threading.Thread(target=self.refill.status, daemon=True)
+        reading.start()
+        reading.join(JOIN_TIMEOUT)
+        self.lock_was_free.append(not reading.is_alive())
+        return FakeSimilarities()(pool, decided)
+
+
+def test_the_subjects_are_grouped_once_per_walk_taken_up_and_never_under_the_lock(tmp_path: Path) -> None:
+    """Two subjects, three pages each: six like: steps take up two walks, and only those two group. The
+    **Similarity provider** runs SQL, so it is never called with the lock held."""
+    connections = storage.ThreadConnections(tmp_path / "wallpapi.db")
+    storage.migrate(connections.get())
+    wallhaven = FakeWallhavenClient(
+        catalogue_of(2),
+        page_size=2,
+        like_results={"wp0000": catalogue_of(6, prefix="la"), "wp0001": catalogue_of(6, prefix="lb")},
+    )
+    clock = FakeClock(FIXED_NOW)
+    probe = StatusProbe()
+    probe.refill = Refill(connections.get, wallhaven, probe, clock, SeededRandom(1))
+    rig = Rig(connections.get(), probe.refill, wallhaven, clock)
+    rig.step()
+    rig.favourite("wp0000", "wp0001")
+
+    rig.step(12)
+
+    assert len(rig.like_searches()) == 2 * LIKE_PAGES_PER_SUBJECT
+    assert probe.calls == [("wp0000", "wp0001")] * 2
+    assert probe.lock_was_free == [True, True]
 
 
 # -- grouping the lookalike subjects -----------------------------------------------------------------

@@ -51,7 +51,7 @@ def compose(
     """
     connect = storage.ThreadConnections(db_path).get
     storage.migrate(connect())
-    refill = pool.Refill(connect, wallhaven, clock, refill_random_source)
+    refill = pool.Refill(connect, wallhaven, similarity.similarities, clock, refill_random_source)
     return Modules(
         connect=connect,
         clock=clock,
