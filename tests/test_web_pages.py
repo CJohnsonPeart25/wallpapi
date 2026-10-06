@@ -10,12 +10,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import Harness, batch_id_of, judge, live, make_harness, serving
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi import workflows
+from wallpapi import settings, workflows
 from wallpapi.model import Verdict
+from wallpapi.settings import Field, Section, Settings
+from wallpapi.web.app import TEMPLATES_DIR
 
 Web = tuple[Harness, TestClient]
 ASSETS = re.compile(r'<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"')
@@ -165,6 +168,56 @@ def test_the_switcher_offers_every_mix_with_its_percentages_and_marks_the_active
         assert f'value="{name}"' in page
         assert shares in page
     assert 'data-mix-active="explore"' in page
+
+
+def test_the_settings_templates_spell_no_setting_and_no_mix_field() -> None:
+    """Adding a setting or a **Mix** field is a change to `settings.py` alone. A setting's key is a word of
+    its own; a **Mix** field is an ordinary word too ("name" is also an attribute), so for those only a
+    quoted literal, an attribute lookup or a word inside a tag counts. Comments are prose, and so is the
+    **Mixes** intro, which names the zones."""
+    tags = re.compile(r"{{.*?}}|{%.*?%}", re.S)
+    for template in ("settings.html", "settings_field.html"):
+        source = re.sub(r"{#.*?#}", "", (TEMPLATES_DIR / template).read_text(encoding="utf-8"), flags=re.S)
+        in_tags = " ".join(tags.findall(source))
+        for key in (field.key for field in settings.FIELDS):
+            assert not re.search(rf"\b{key}\b", source), f"{template} spells the setting {key}"
+        for key in settings.MIX_FORM_FIELDS:
+            spelled = rf"[\"']{key}[\"']|\.{key}\b"
+            assert not re.search(spelled, source), f"{template} spells the Mix field {key}"
+            assert not re.search(rf"\b{key}\b", in_tags), f"{template} spells the Mix field {key} in a tag"
+
+
+def test_a_setting_declared_in_a_new_section_shows_on_the_page_with_no_template_edit(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The form is the table: one descriptor gives the page its section, label, input and hint. It has a
+    minimum and no maximum, so the input says the one and not the other."""
+    throwaway = Section(heading="Throwaway", intro="Only here for the test.")
+    extra = Field(
+        default=3,
+        parse=int,
+        message="Never shown.",
+        minimum=2,
+        section=throwaway,
+        label="Extra knob",
+        help="From {minimum} up.",
+        step="1",
+    )
+    extra.__set_name__(Settings, "extra_knob")
+    monkeypatch.setattr(Settings, "extra_knob", extra, raising=False)
+    monkeypatch.setattr(settings, "FIELDS", (*settings.FIELDS, extra))
+    monkeypatch.setattr(settings, "FORM_FIELDS", (*settings.FORM_FIELDS, extra))
+    harness = make_harness(db_path)
+
+    with serving(harness) as client:
+        page = client.get("/settings").text
+
+    article = page.split("<h2>Throwaway</h2>", 1)[1].split("</article>", 1)[0]
+    assert "<p><small>Only here for the test.</small></p>" in article
+    assert '<label for="extra_knob">Extra knob</label>' in article
+    attributes = ('type="number"', 'id="extra_knob"', 'name="extra_knob"', 'min="2"', 'step="1"', 'value="3"')
+    assert re.search(r"<input\s+" + r"\s+".join(attributes) + r"\s+/>", article)
+    assert "<small>From 2 up.</small>" in article
 
 
 def test_the_settings_page_shows_what_is_stored_and_offers_what_can_be_done(

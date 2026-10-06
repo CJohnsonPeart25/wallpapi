@@ -18,6 +18,9 @@ minimum width its pixel ceiling). The words therefore sit on the `Field` beside 
 (`_MIX_REFUSALS`). Moving them into `REFUSALS` would split each field's rule from its message and make the web
 layer spell every setting's bounds a second time.
 
+Amended in wallpapi-81: the `Field` table also says how the settings form shows each field (its `Section`,
+label, hint and step), so the form is rendered from the table and adding a setting needs no template edit.
+
 ## Context
 
 Settings existed from #2 as two string-keyed methods over a `settings` table: `get_setting(key) -> str` and
