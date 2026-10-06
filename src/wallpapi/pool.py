@@ -2,9 +2,9 @@
 stocked.
 
 The Refill owns its state, its lock, its random source and its rate limiter; nothing outside reads its fields.
-The **Pool**'s own storage (admit, prune, retire, size, members) is a set of functions taking a connection,
-and the **Filters** check and the ratio band live beside them because admitting and pruning share them (ADR
-0005, ADR 0016).
+The **Pool**'s own storage (admit, prune, retire, size, breakdown, members) is a set of functions taking a
+connection, and the **Filters** check and the ratio band live beside them because admitting and pruning share
+them (ADR 0005, ADR 0016).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import datetime as dt
 import sqlite3
 import threading
 from collections import deque
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -90,6 +90,8 @@ class RefillStatus:
     last_error_at: dt.datetime | None
     last_strategy: RefillStrategy | None
     """Which search the last step made, or `None`. A stalled like: rotation means no **Favourites** yet."""
+    by_strategy: Mapping[RefillStrategy, int]
+    """The **Pool** counted by the strategy that brought each member in: whether like: is feeding it."""
 
     @property
     def at_target(self) -> bool:
@@ -172,6 +174,7 @@ class Refill:
         """
         connection = self._connect()
         pool_size = size(connection)
+        by_strategy = breakdown(connection)
         target_size = settings_module.get(connection).pool_target_size
         with self._lock:
             return RefillStatus(
@@ -182,6 +185,7 @@ class Refill:
                 last_error=self._last_error,
                 last_error_at=self._last_error_at,
                 last_strategy=self._last_strategy,
+                by_strategy=by_strategy,
             )
 
     def wait(self) -> float:
@@ -389,6 +393,16 @@ def size(connection: sqlite3.Connection) -> int:
     return int(connection.execute("SELECT COUNT(*) FROM pool").fetchone()[0])
 
 
+def breakdown(connection: sqlite3.Connection) -> dict[RefillStrategy, int]:
+    """How many **Pool** members each strategy brought in, every strategy a key. Counted from the `source`
+    column, not kept in memory: a count in memory restarts at zero and counts pages, not **Wallpapers**.
+
+    A `source` no strategy spells is left out rather than raised on: every **Batch** page renders this.
+    """
+    counted = {str(row[0]): int(row[1]) for row in connection.execute(_COUNT_BY_SOURCE)}
+    return {strategy: counted.get(strategy.value, 0) for strategy in RefillStrategy}
+
+
 def contains(connection: sqlite3.Connection, wallpaper_id: str) -> bool:
     """Whether the **Wallpaper** is in the **Pool** now."""
     return (
@@ -512,6 +526,8 @@ ON CONFLICT (wallpaper_id) DO NOTHING
 
 `DO NOTHING`, so `fetched_at` stays the first arrival.
 """
+
+_COUNT_BY_SOURCE = "SELECT source, COUNT(*) FROM pool GROUP BY source"
 
 _SELECT_DECIDED_WALLPAPERS = f"""
 SELECT w.*

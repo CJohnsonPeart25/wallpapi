@@ -361,6 +361,41 @@ def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Pat
     assert ("searching at random" in text) is not favourited
 
 
+@pytest.mark.parametrize(
+    ("arrange", "lookalikes"),
+    [
+        pytest.param("empty", None, id="an empty pool says nothing of lookalikes"),
+        pytest.param("random", 0, id="none yet is said as a zero"),
+        pytest.param("favourited", 4, id="lookalikes counted"),
+    ],
+)
+def test_the_indicator_says_how_much_of_the_pool_is_lookalikes(
+    db_path: Path, arrange: str, lookalikes: int | None
+) -> None:
+    """Whether the like: search is feeding the **Pool** once there are **Favourites**. A zero on a stocked
+    **Pool** is the point: lookalikes are not arriving."""
+    harness = make_harness(
+        db_path,
+        catalogue=catalogue_of(2),
+        like_results={"wp0000": catalogue_of(4, prefix="lk")},
+        fill_pool=0 if arrange == "empty" else 1,
+    )
+    if arrange == "favourited":
+        workflows.save_settings(harness.modules, pool_target_size=1000)
+        favourite(harness, "wp0000")
+        harness.fill_pool(1)
+    status = harness.modules.refill.status()
+
+    with serving(harness) as client:
+        text = client.get("/batch").text
+
+    if lookalikes is None:
+        assert f"Pool 0 of {status.target_size}." in text
+        assert "of them lookalikes" not in text
+    else:
+        assert f"Pool {status.pool_size} of {status.target_size}, {lookalikes} of them lookalikes." in text
+
+
 # -- History -----------------------------------------------------------------------------------------
 
 

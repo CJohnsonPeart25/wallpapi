@@ -194,6 +194,7 @@ QUIET = RefillStatus(
     last_error=None,
     last_error_at=None,
     last_strategy=None,
+    by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
 )
 """A Refill that has neither run nor failed."""
 
@@ -341,6 +342,7 @@ def test_an_empty_pool_after_a_failed_refill_says_wallhaven_is_unreachable(rig: 
         last_error="connection refused",
         last_error_at=FIXED_NOW,
         last_strategy=RefillStrategy.RANDOM,
+        by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
     )
 
     result = rig.batches.next(rig.connection)

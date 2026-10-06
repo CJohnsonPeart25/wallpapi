@@ -331,6 +331,7 @@ def test_the_status_reports_the_pool_against_its_target_and_whether_the_loop_is_
         last_error=None,
         last_error_at=None,
         last_strategy=RefillStrategy.RANDOM,
+        by_strategy={RefillStrategy.RANDOM: 24, RefillStrategy.LIKE: 0},
     )
     assert not status.at_target
     with rig.refill.running():
@@ -536,6 +537,43 @@ def test_like_searches_take_every_other_step_once_there_is_a_favourite_and_never
     rig.step(4)
 
     assert rig.queries()[3:] == ["like:wp0000", None, "like:wp0000", None]
+
+
+def test_the_status_counts_the_pool_by_the_strategy_that_brought_each_member_in(
+    connection: sqlite3.Connection,
+) -> None:
+    """Whether the like: search is feeding the **Pool** at all, once there are **Favourites**. A strategy
+    with no members is there as a zero, not missing."""
+    rig = liking(connection, {"wp0000": catalogue_of(8, prefix="lk")})
+    assert rig.refill.status().by_strategy == {RefillStrategy.RANDOM: 2, RefillStrategy.LIKE: 0}
+
+    rig.favourite("wp0000")
+    rig.step()
+
+    assert rig.refill.status().by_strategy == {RefillStrategy.RANDOM: 2, RefillStrategy.LIKE: 8}
+
+
+def test_retiring_members_lowers_their_strategys_count(connection: sqlite3.Connection) -> None:
+    rig = liking(connection, {"wp0000": catalogue_of(8, prefix="lk")})
+    rig.favourite("wp0000")
+    rig.step()
+
+    with storage.write(connection) as write:
+        pool.retire(write, ["lk0000", "lk0001", "lk0002", "wp0001"])
+
+    assert rig.refill.status().by_strategy == {RefillStrategy.RANDOM: 1, RefillStrategy.LIKE: 5}
+
+
+def test_a_member_met_again_by_the_other_strategy_keeps_its_first_source(
+    connection: sqlite3.Connection,
+) -> None:
+    """`wp0001` arrived at random; a like: search finding it too does not make it a lookalike."""
+    met_again = catalogue_of(2)[1]
+    rig = liking(connection, {"wp0000": (*catalogue_of(3, prefix="lk"), met_again)})
+    rig.favourite("wp0000")
+    rig.step()
+
+    assert rig.refill.status().by_strategy == {RefillStrategy.RANDOM: 2, RefillStrategy.LIKE: 3}
 
 
 def test_a_like_search_carries_the_favourite_and_the_same_filters(connection: sqlite3.Connection) -> None:

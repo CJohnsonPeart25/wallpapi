@@ -9,10 +9,12 @@
   would be a request a second for something nobody is watching.
 
   The last run says which of the two strategies made it, because a pool that only ever grows at random has
-  no favourites in the decision log yet, and the reader can do something about that.
+  no favourites in the decision log yet, and the reader can do something about that. How much of the pool
+  is lookalikes says whether that search is feeding it, so a stocked pool says so even when it is none.
 #}
 <p data-refill data-pool-size="{{ status.pool_size }}"><small>
-  Pool {{ status.pool_size }} of {{ status.target_size }}.
+  Pool {{ status.pool_size }} of {{ status.target_size }}{%
+    if status.pool_size %}, {{ status.by_strategy["like"] }} of them lookalikes{% endif %}.
   {% if not status.running %}
     <span data-refill-problem="stopped">Refill not running.</span>
   {% elif status.at_target %}
