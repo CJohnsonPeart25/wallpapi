@@ -9,20 +9,33 @@ once. Every write takes the caller's write handle, behind one claim check.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import sqlite3
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from uuid import uuid4
 
 from wallpapi import decisions, pool, settings, storage
-from wallpapi.allocation import ScoredWallpaper, draw
+from wallpapi.allocation import PERCENT, ScoredWallpaper, draw
 from wallpapi.clock import Clock, iso_utc
-from wallpapi.model import Verdict, Wallpaper, Zone
+from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 from wallpapi.similarity import Embeddings
+
+
+@dataclass(frozen=True, slots=True)
+class UnknownShort:
+    """The **Unknown** zone held fewer **Wallpapers** than the active **Mix** can ask of it, in a **Pool**
+    that could fill a **Batch**: the **Similarity radius** has covered the space (ADR 0023).
+    """
+
+    unknowns: int
+    slots: int
+    """The most **Unknown** slots the **Mix** can be allocated: its share of the **Batch**, rounded up."""
+    mix: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +44,8 @@ class Batch:
 
     `drafts` holds only marked **Wallpapers**: absence is an **Ignore**. `zones` is the **Zone** each was
     drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones** existed.
+    `unknown_short` is set only on the **Batch** as minted, from the classification the mint computed, and is
+    never stored: a reload has nothing to say (ADR 0023).
     """
 
     id: str
@@ -39,6 +54,7 @@ class Batch:
     wallpapers: tuple[Wallpaper, ...]
     drafts: Mapping[str, Verdict]
     zones: Mapping[str, Zone]
+    unknown_short: UnknownShort | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -132,7 +148,8 @@ class Batches:
         # From the one sequence, so a row of `vectors` cannot drift from its **Wallpaper**.
         vectors = self._embeddings.vectors([scored.wallpaper for scored in classified])
         size = settings.get(connection).batch_size
-        chosen = draw(settings.active_mix(connection), classified, size, self._random, vectors)
+        mix = settings.active_mix(connection)
+        chosen = draw(mix, classified, size, self._random, vectors)
         created_at = self._clock.now()
         batch_id = self._new_id()
 
@@ -173,6 +190,7 @@ class Batches:
             wallpapers=tuple(scored.wallpaper for scored in chosen),
             drafts=drafts,
             zones={scored.wallpaper.id: scored.zone for scored in chosen},
+            unknown_short=_unknown_short(mix, classified, size),
         )
 
     def classify(self, connection: sqlite3.Connection) -> tuple[ScoredWallpaper, ...]:
@@ -242,6 +260,17 @@ class Batches:
                 error_at=status.last_error_at,
             )
         return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
+
+
+def _unknown_short(mix: Mix, classified: Sequence[ScoredWallpaper], size: int) -> UnknownShort | None:
+    """Whether the **Unknown** zone could not serve every allocation `mix` can roll for a **Batch** of
+    `size`. A **Pool** smaller than a **Batch** is not the radius's doing, so it says nothing.
+    """
+    slots = math.ceil(mix.percentage(Zone.UNKNOWN) * size / PERCENT)
+    unknowns = sum(1 for scored in classified if scored.zone is Zone.UNKNOWN)
+    if unknowns >= slots or len(classified) < size:
+        return None
+    return UnknownShort(unknowns=unknowns, slots=slots, mix=mix.name)
 
 
 def set_draft(

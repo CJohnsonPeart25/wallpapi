@@ -66,11 +66,15 @@ DEFAULT_MIN_FAVOURITES = 10
 SUPERSEDED_SIMILARITY_RADIUS = 0.5
 """The radius ADR 0007 seeded, kept only because migration 9 has to recognise it."""
 
-DEFAULT_SIMILARITY_RADIUS = 0.15
+RETUNED_SIMILARITY_RADIUS = 0.15
+"""The radius ADR 0013 seeded, kept only because migration 11 has to recognise it."""
+
+DEFAULT_SIMILARITY_RADIUS = 0.10
 """How far a decided **Wallpaper**'s influence reaches, as a distance in `[0, 1]`.
 
-Not the accuracy-maximising value, deliberately: 0.2 got the sign right more often but left 1% of the **Pool**
-**Unknown**, and **Unknown** is what **Explore** draws from. See ADR 0013.
+Sized to leave an **Unknown** zone, which is what **Explore** draws from. A fixed radius covers more of the
+space with every decision, so this decays as the **Decision log** grows: 0.15 left none at 692 decided. See
+ADR 0023.
 """
 
 DEFAULT_SIMILARITY_DECAY = 4.0

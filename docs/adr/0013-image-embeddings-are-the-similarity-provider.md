@@ -11,7 +11,9 @@ background downloader now fetches every **Pool** member's thumbnail, so the work
 losing providers' selectability is withdrawn — the tag provider, its cache and the Wallhaven tag endpoint,
 the `WALLPAPI_SIMILARITY` switch and `scripts/similarity_spike.py` are deleted, and the spike's write-up
 `docs/spikes/0014-similarity-tags-versus-embeddings.md` survives in git history only. The baseline stays as
-the per-pair fallback, now `metadata_similarity` in the one `similarity` module.
+the per-pair fallback, now `metadata_similarity` in the one `similarity` module. Its **Similarity radius**
+default of 0.15 is superseded by ADR 0023: 0.10, by migration 11, because a grown **Decision log** left
+no **Unknown** zone at 0.15.
 
 ## Context
 
