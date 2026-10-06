@@ -7,7 +7,6 @@ the fields, what is accepted, a partial update, a restart, and a refusal that wr
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 
@@ -36,13 +35,6 @@ from wallpapi.settings import (
 )
 
 Reason = SettingsRefused.Reason
-
-
-@pytest.fixture
-def memory() -> Iterator[sqlite3.Connection]:
-    with closing(storage.connect(":memory:")) as connection:
-        storage.migrate(connection)
-        yield connection
 
 
 def update(connection: sqlite3.Connection, **fields: object) -> Settings | SettingsRefused:

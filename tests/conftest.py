@@ -1,11 +1,11 @@
 """Rigs for the tests, and the guard that keeps them off the network.
 
 A test of one module's rule builds that module over an in-memory database with a fake only for its external
-collaborator (invariant 14, ADR 0019), as `library_rig` does. `make_harness` composes every module the way
-the routes do, and is for tests whose subject is a workflow: a transaction across modules, or what follows
-its commit. Rule tests still on the harness are moving off it (#80). The only reach past the modules is the
-raw connection the migration and legacy-Clearance tests need, because nothing the modules offer can produce
-an older database's rows or a Clearance any more.
+collaborator (invariant 14, ADR 0019), as `library_rig` and `batches_rig` do. `make_harness` composes every
+module the way the routes do, and is for tests whose subject is a workflow (a transaction across modules, or
+what follows its commit), for the web tests and for the background threads; `test_rigs.py` holds that list.
+The only reach past the modules is the raw connection the migration and legacy-Clearance tests need, because
+nothing the modules offer can produce an older database's rows or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -16,9 +16,11 @@ import re
 import socket
 import sqlite3
 import subprocess
+import threading
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import count
 from pathlib import Path
 
 import numpy as np
@@ -37,13 +39,13 @@ from tests.fakes import (
     StubEmbed,
     catalogue_of,
 )
-from wallpapi import decisions, pool, settings, storage, workflows
-from wallpapi.batches import Batch
+from wallpapi import batches, decisions, pool, settings, storage, workflows
+from wallpapi.batches import Batch, Batches, SubmissionRefused, Submitted
 from wallpapi.compose import Modules, compose
-from wallpapi.decisions import HistoryEntry
+from wallpapi.decisions import HistoryEntry, HistoryRefused
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
-from wallpapi.model import Clearance, Verdict, Wallpaper
-from wallpapi.pool import RefillStrategy
+from wallpapi.model import Clearance, DecisionEntry, Verdict, Wallpaper
+from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.rng import SeededRandom
 from wallpapi.similarity import EMBED_BATCH, Embeddings
 from wallpapi.web.app import create_app
@@ -333,6 +335,124 @@ def library_rig(
         rig = LibraryRig(connection, writer, tmp_path / "Library", FakeClock(FIXED_NOW))
         rig.admit(wallpapers)
         yield rig
+
+
+@pytest.fixture
+def memory() -> Iterator[sqlite3.Connection]:
+    """A migrated in-memory database, for a module whose rules need nothing but a connection."""
+    with closing(storage.connect(":memory:")) as connection:
+        storage.migrate(connection)
+        yield connection
+
+
+QUIET = RefillStatus(
+    pool_size=0,
+    target_size=0,
+    running=False,
+    last_run_at=None,
+    last_error=None,
+    last_error_at=None,
+    last_strategy=None,
+    by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
+)
+"""A Refill that has neither run nor failed."""
+
+
+@dataclass
+class BatchesRig:
+    """`Batches` over one database, with the fakes behind it: a real `Embeddings` falling back to hand-defined
+    similarities, and the fake clock. **Wallpapers** are admitted, retired and decided as `pool` and
+    `decisions` do, each in its own write."""
+
+    connection: sqlite3.Connection
+    similarity: FakeSimilarities
+    clock: FakeClock
+    minted: list[str] = field(default_factory=list[str])
+    status: RefillStatus = QUIET
+
+    def __post_init__(self) -> None:
+        ids = count(1)
+
+        def new_id() -> str:
+            self.minted.append(f"batch-{next(ids)}")
+            return self.minted[-1]
+
+        self.store = MemoryStore()
+        self.embeddings = Embeddings(self.store, StubEmbed(), ModelOnDisk(), fallback=self.similarity)
+        self.batches = Batches(
+            self.embeddings, lambda: self.status, self.clock, SeededRandom(1), new_id=new_id
+        )
+
+    def stock(self, wallpapers: Sequence[Wallpaper]) -> None:
+        """Admit `wallpapers` to the **Pool**, as the Refill does."""
+        with storage.write(self.connection) as write:
+            pool.admit(
+                write, wallpapers, settings.get(write), source=RefillStrategy.RANDOM, at=self.clock.now()
+            )
+
+    def retire(self, *wallpaper_ids: str) -> None:
+        """Take them out of the **Pool**, as a submission does."""
+        with storage.write(self.connection) as write:
+            pool.retire(write, wallpaper_ids)
+
+    def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
+        """Append `verdict` for each, outside any **Batch**. They stay in the **Pool**; `retire` them to stand
+        for a submission."""
+        with storage.write(self.connection) as write:
+            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+
+    def edit(self, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:
+        """A **History** edit, which takes nothing out of the **Pool**."""
+        with storage.write(self.connection) as write:
+            return decisions.edit(write, wallpaper_id, verdict, at=self.clock.now())
+
+    def open_model(self, nowhere: Path) -> None:
+        """Open the similarity model, as the similarity thread does, with no thumbnails to embed."""
+        self.embeddings.catch_up(nowhere, threading.Event())
+
+    def configure(self, **fields: object) -> None:
+        with storage.write(self.connection) as write:
+            assert isinstance(settings.update(write, **fields), settings.Settings)
+
+    def next(self) -> Batch:
+        batch = self.batches.next(self.connection)
+        assert isinstance(batch, Batch), batch
+        return batch
+
+    def set_draft(
+        self, batch_id: str, wallpaper_id: str, verdict: Verdict | None
+    ) -> Batch | SubmissionRefused:
+        with storage.write(self.connection) as write:
+            return batches.set_draft(write, batch_id, wallpaper_id, verdict)
+
+    def set_all_drafts(self, batch_id: str, verdict: Verdict | None) -> Batch | SubmissionRefused:
+        with storage.write(self.connection) as write:
+            return batches.set_all_drafts(write, batch_id, verdict)
+
+    def submit(self, batch_id: str) -> Submitted | SubmissionRefused:
+        with storage.write(self.connection) as write:
+            return self.batches.submit(write, batch_id)
+
+    def logged(self, batch_id: str | None = None) -> list[DecisionEntry]:
+        return decisions.entries(self.connection, batch_id=batch_id)
+
+    def drafted_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM draft_batch").fetchone()[0])
+
+    def empty_the_pool(self) -> None:
+        with storage.write(self.connection) as write:
+            pool.retire(write, [w.id for w in pool.members(write)])
+
+
+@contextmanager
+def batches_rig(
+    database: str | Path = ":memory:", similarities: dict[tuple[str, str], float] | None = None
+) -> Generator[BatchesRig]:
+    """A `BatchesRig` over a migrated `database`, nothing in the **Pool**. A file path is how a restart is
+    tested: a second rig over the same file is a second connection."""
+    with closing(storage.connect(database)) as connection:
+        storage.migrate(connection)
+        yield BatchesRig(connection, FakeSimilarities(similarities), FakeClock(FIXED_NOW))
 
 
 @contextmanager
