@@ -73,7 +73,7 @@ def test_the_lifespan_starts_the_similarity_upkeep_without_a_request(db_path: Pa
 
 def test_the_upkeep_embeds_the_thumbnail_cache(db_path: Path) -> None:
     """The images wallpapi holds are the **Thumbnail cache** (`thumbnails.py`); a **Wallpaper** with no
-    thumbnail there is simply not embedded and falls back to the baseline."""
+    thumbnail there is simply not embedded."""
     harness = make_harness(db_path)
     harness.modules.thumbnails.directory.mkdir(parents=True, exist_ok=True)
     (harness.modules.thumbnails.directory / "wp0003.jpg").write_bytes(b"thumbnail")

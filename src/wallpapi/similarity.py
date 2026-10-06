@@ -1,5 +1,6 @@
-"""How alike **Wallpapers** are: thumbnails compared by a CLIP image encoder (ADR 0013), and a
-colours-and-category baseline wherever either side has no embedding yet.
+"""How alike **Wallpapers** are: thumbnails compared by a CLIP image encoder (ADR 0013). Until its model is
+open, a colours-and-category baseline answers every pair where either side has no embedding yet; once it is
+open, such a pair is 0.0 and the **Wallpaper** an honest **Unknown** (ADR 0024).
 
 One matrix, **Pool** x decided, never pairwise (invariant 2): a pairwise call forces a Python loop and tempts
 caching **Scores**. Cosine is mapped by `(1 + cosine) / 2` into `[0, 1]`. `onnxruntime`, `pillow` and the
@@ -171,8 +172,8 @@ _FAILED = (
 )
 
 _COVERAGE = (
-    "Image similarity covers {embedded:,} of {pool:,} Pool wallpapers so far — the rest are compared by "
-    "colour and category until their thumbnails are embedded."
+    "Image similarity covers {embedded:,} of {pool:,} Pool wallpapers so far — the rest count as Unknown "
+    "until their thumbnails are embedded."
 )
 
 _UNUSABLE = (
@@ -213,8 +214,9 @@ class EmbeddingStore(Protocol):
 
 
 class Embeddings:
-    """Cosine between stored CLIP embeddings, mapped into `[0, 1]`, with `fallback` for every pair where
-    either side has none; and the upkeep that fetches the model and embeds the **Thumbnail cache**.
+    """Cosine between stored CLIP embeddings, mapped into `[0, 1]`; for every pair where either side has
+    none, `fallback` until the model is open and 0.0 after (ADR 0024); and the upkeep that fetches the model
+    and embeds the **Thumbnail cache**.
     """
 
     def __init__(
@@ -237,13 +239,19 @@ class Embeddings:
         self._lock = threading.Lock()
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
-        """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`."""
-        fallback = self._fallback(pool, decided)
+        """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`. A pair without two **Embeddings**
+        is the fallback's until the model is open and 0.0 after, beyond every radius (ADR 0024).
+        """
+        # Read once: `_open` sets it on the similarity thread, and a bool needs no lock.
+        if self._opened:
+            unembedded = np.zeros((len(pool), len(decided)), dtype=np.float32)
+        else:
+            unembedded = self._fallback(pool, decided)
         embedded = self._embedded(pool, decided)
         if embedded is None:
-            return fallback
+            return unembedded
         mapped, both = embedded
-        blended = np.where(both, mapped, fallback)
+        blended = np.where(both, mapped, unembedded)
         return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
     def near_duplicates(self, pool: Sequence[Wallpaper], banned: Sequence[Wallpaper]) -> NDArray[np.bool_]:
