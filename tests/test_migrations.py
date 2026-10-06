@@ -12,13 +12,23 @@ from tests.conftest import live, make_harness, raw_connection, write_log_entries
 from tests.fakes import catalogue_of
 from wallpapi import settings, storage
 from wallpapi.model import Clearance, Verdict
-from wallpapi.settings import SUPERSEDED_POOL_TARGET_SIZE, SUPERSEDED_SIMILARITY_RADIUS
+from wallpapi.settings import (
+    RETUNED_SIMILARITY_RADIUS,
+    SUPERSEDED_POOL_TARGET_SIZE,
+    SUPERSEDED_SIMILARITY_RADIUS,
+)
 
 RETUNED = [
     # (setting, the default it replaced, a value a user chose, the version before the migration)
     pytest.param("similarity_radius", SUPERSEDED_SIMILARITY_RADIUS, 0.42, 8, id="radius, migration 9"),
     pytest.param("pool_target_size", SUPERSEDED_POOL_TARGET_SIZE, 3000, 9, id="pool target, migration 10"),
+    pytest.param("similarity_radius", RETUNED_SIMILARITY_RADIUS, 0.2, 10, id="radius, migration 11"),
 ]
+
+
+def test_a_fresh_database_seeds_a_similarity_radius_of_a_tenth(db_path: Path) -> None:
+    """ADR 0023: 0.15 left no **Unknown** zone once the **Decision log** had grown."""
+    assert settings.get(make_harness(db_path, fill_pool=0).connect()).similarity_radius == 0.10
 
 
 def _stored_at(db_path: Path, version: int, setting: str, value: float) -> None:

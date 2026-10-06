@@ -9,6 +9,18 @@ keyword updates where `None` leaves a field alone, text in and typed out, and a 
 that writes nothing. What holds it is no longer the **Core service** but `settings.py`, whose one table of
 `Field` descriptors on `Settings` replaces the per-setting validators, defaults and keywords below.
 
+Amended in wallpapi-82: settings refusals keep their own words in `settings.py`, and the web layer's
+`REFUSALS` table holds only the refusals the **Batch** and **History** pages answer. A settings refusal is
+always a 400 on the settings page, so the page needs no status from a table; what differs is the words, and
+those differ per field, because each fills in its own `Field`'s bounds (a batch size names 1 and 64, a
+minimum width its pixel ceiling). The words therefore sit on the `Field` beside those bounds
+(`Field.message`, read through `SettingsRefused.message`), with the **Mix** refusals beside the **Mix** rules
+(`_MIX_REFUSALS`). Moving them into `REFUSALS` would split each field's rule from its message and make the web
+layer spell every setting's bounds a second time.
+
+Amended in wallpapi-81: the `Field` table also says how the settings form shows each field (its `Section`,
+label, hint and step), so the form is rendered from the table and adding a setting needs no template edit.
+
 ## Context
 
 Settings existed from #2 as two string-keyed methods over a `settings` table: `get_setting(key) -> str` and
@@ -87,7 +99,8 @@ ADR 0002 rather than being chosen here: the **Batch** persists until it is submi
 fit a new size would discard the **Draft Batch** marked against it. The settings page says so.
 
 Every later setting inherits the shape: a field, a default, a validator, a reason. A reason added to
-`SettingsRefused.Reason` must be given words on the settings page, or it renders as the fallback branch.
+`SettingsRefused.Reason` must be given words in `settings.py`, on its `Field` or in `_MIX_REFUSALS`, or it
+renders as the fallback branch, which names the reason rather than describing it (wallpapi-82).
 
 Nothing in this change uses Pydantic. That is allowed — "Pydantic at the edges only" bounds where it may
 appear, and here the edge has nothing left to validate once the form fields are known to be strings.

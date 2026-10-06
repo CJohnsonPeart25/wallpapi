@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+import threading
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from itertools import count
+from pathlib import Path
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from tests.conftest import FIXED_NOW
 from tests.fakes import (
@@ -30,12 +34,12 @@ from tests.fakes import (
 )
 from wallpapi import batches, decisions, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
-from wallpapi.batches import Batch, Batches, BatchUnavailable, SubmissionRefused, Submitted
+from wallpapi.batches import Batch, Batches, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
 from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.rng import SeededRandom
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
-from wallpapi.similarity import Embeddings
+from wallpapi.similarity import NEAR_DUPLICATE_SIMILARITY, Embeddings
 
 SCORE = 50.0
 """A **Score** well clear of zero either way, for an arranged **Banger** or **Dud**."""
@@ -194,6 +198,7 @@ QUIET = RefillStatus(
     last_error=None,
     last_error_at=None,
     last_strategy=None,
+    by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
 )
 """A Refill that has neither run nor failed."""
 
@@ -215,8 +220,11 @@ class Rig:
             self.minted.append(f"batch-{next(ids)}")
             return self.minted[-1]
 
-        embeddings = Embeddings(MemoryStore(), StubEmbed(), ModelOnDisk(), fallback=self.similarity)
-        self.batches = Batches(embeddings, lambda: self.status, self.clock, SeededRandom(1), new_id=new_id)
+        self.store = MemoryStore()
+        self.embeddings = Embeddings(self.store, StubEmbed(), ModelOnDisk(), fallback=self.similarity)
+        self.batches = Batches(
+            self.embeddings, lambda: self.status, self.clock, SeededRandom(1), new_id=new_id
+        )
 
     def stock(self, wallpapers: Sequence[Wallpaper]) -> None:
         """Admit `wallpapers` to the **Pool**, as the Refill does."""
@@ -224,6 +232,10 @@ class Rig:
             pool.admit(
                 write, wallpapers, settings.get(write), source=RefillStrategy.RANDOM, at=self.clock.now()
             )
+
+    def open_model(self, nowhere: Path) -> None:
+        """Open the similarity model, as the similarity thread does, with no thumbnails to embed."""
+        self.embeddings.catch_up(nowhere, threading.Event())
 
     def configure(self, **fields: object) -> None:
         with storage.write(self.connection) as write:
@@ -309,7 +321,7 @@ def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_
         settings.save_mix(write, "duds only", unknown=0, banger=0, dud=100)
     ids = [w.id for w in catalogue_of(24)]
     rig.similarity.similarity_by_pair.update(
-        {(i, "loved"): 0.9 for i in ids[:8]} | {(i, "loathed"): 0.9 for i in ids[8:16]}
+        {(i, "loved"): 0.95 for i in ids[:8]} | {(i, "loathed"): 0.95 for i in ids[8:16]}
     )
     rig.configure(active_mix="duds only")
 
@@ -319,6 +331,63 @@ def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_
     assert Counter(classified.values()) == {Zone.BANGER: 8, Zone.DUD: 8, Zone.UNKNOWN: 8}
     assert {w.id for w in batch.wallpapers} == set(ids[8:16])
     assert batch.zones == {w.id: classified[w.id] for w in batch.wallpapers}
+
+
+def _ban_near_everything(rig: Rig) -> None:
+    """A **Ban** outside the **Pool** that every member sits within the radius of: the whole **Pool** a
+    **Dud**, as the maintainer's was at 0.15 (ADR 0023)."""
+    rig.stock([wallpaper("loathed")])
+    with storage.write(rig.connection) as write:
+        decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
+        pool.retire(write, ["loathed"])
+    rig.similarity.similarity_by_pair.update({(w.id, "loathed"): 1.0 for w in catalogue_of(24)})
+
+
+def test_a_batch_minted_from_a_pool_with_no_unknowns_says_the_unknown_zone_is_short(rig: Rig) -> None:
+    """**Explore** asks six of eight from **Unknown**, and the radius has left it none."""
+    _ban_near_everything(rig)
+
+    batch = rig.next()
+
+    assert batch.unknown_short == UnknownShort(unknowns=0, slots=6, mix=EXPLORE_MIX.name)
+    assert {batch.zones[w.id] for w in batch.wallpapers} == {Zone.DUD}
+
+
+def test_a_batch_minted_with_unknowns_to_spare_says_nothing(rig: Rig) -> None:
+    assert rig.next().unknown_short is None
+
+
+def test_unknowns_exactly_filling_the_slots_are_not_short(rig: Rig) -> None:
+    """Six **Unknowns** for **Explore**'s six slots: every roll is served."""
+    _ban_near_everything(rig)
+    rig.similarity.similarity_by_pair.update({(w.id, "loathed"): 0.0 for w in catalogue_of(6)})
+
+    assert rig.next().unknown_short is None
+
+
+def test_a_pool_too_small_for_a_batch_is_not_blamed_on_the_radius(rig: Rig) -> None:
+    """Every member **Unknown**, but fewer than the slots: the refill line already says why, and lowering
+    the radius would not help."""
+    with storage.write(rig.connection) as write:
+        pool.retire(write, [w.id for w in catalogue_of(24)[3:]])
+
+    batch = rig.next()
+
+    assert len(batch.wallpapers) == 3
+    assert batch.unknown_short is None
+
+
+def test_the_unknown_zone_is_judged_at_mint_and_not_on_a_reload(rig: Rig) -> None:
+    """Derived from the classification the mint computes and never stored (ADR 0023): the live **Batch**
+    read back has nothing to say."""
+    _ban_near_everything(rig)
+    minted = rig.next()
+
+    reloaded = rig.next()
+
+    assert minted.unknown_short is not None
+    assert reloaded.unknown_short is None
+    assert reloaded == minted, "not part of what the Batch is"
 
 
 def test_an_empty_pool_with_no_refill_yet_says_so(rig: Rig) -> None:
@@ -341,6 +410,7 @@ def test_an_empty_pool_after_a_failed_refill_says_wallhaven_is_unreachable(rig: 
         last_error="connection refused",
         last_error_at=FIXED_NOW,
         last_strategy=RefillStrategy.RANDOM,
+        by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
     )
 
     result = rig.batches.next(rig.connection)
@@ -348,6 +418,123 @@ def test_an_empty_pool_after_a_failed_refill_says_wallhaven_is_unreachable(rig: 
     assert result == BatchUnavailable(
         reason=BatchUnavailable.Reason.WALLHAVEN_UNREACHABLE, error="connection refused", error_at=FIXED_NOW
     )
+
+
+# -- near-duplicates of a Ban
+
+REPOST = catalogue_of(24)[0].id
+"""The **Pool** member arranged against the **Ban**."""
+
+
+def unit_at(similarity: float) -> NDArray[np.float32]:
+    """A unit vector whose mapped similarity to `(1, 0)` is `similarity`."""
+    cosine = np.float32(2.0 * similarity - 1.0)
+    return np.array([cosine, np.sqrt(1.0 - float(cosine) ** 2)], dtype=np.float32)
+
+
+def _ban_one_outside_the_pool(rig: Rig, *, repost: NDArray[np.float32] | None) -> None:
+    """**Ban** "loathed", retired as every decision is, embedded at `(1, 0)`; `REPOST` gets `repost`, or no
+    **Embedding**. The fallback calls the pair 0.95, so without the veto `REPOST` is a **Dud**."""
+    rig.stock([wallpaper("loathed")])
+    with storage.write(rig.connection) as write:
+        decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
+        pool.retire(write, ["loathed"])
+    rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 0.95
+    rig.store.store("loathed", np.array([1.0, 0.0], dtype=np.float32))
+    if repost is not None:
+        rig.store.store(REPOST, repost)
+
+
+def _zones(rig: Rig) -> dict[str, Zone]:
+    return {s.wallpaper.id: s.zone for s in rig.batches.classify(rig.connection)}
+
+
+def test_a_near_duplicate_of_a_ban_is_in_no_zone(rig: Rig) -> None:
+    """ADR 0021: a repost of a **Banned** image is excluded the way the **Ban** is, whatever its **Score**.
+    It stays in the **Pool**; only the classification leaves it out."""
+    _ban_one_outside_the_pool(rig, repost=unit_at(NEAR_DUPLICATE_SIMILARITY))
+
+    zones = _zones(rig)
+
+    assert REPOST not in zones
+    assert len(zones) == 23
+    assert REPOST in {w.id for w in pool.members(rig.connection)}
+
+
+def test_a_wallpaper_just_short_of_a_near_duplicate_is_classified_as_before(rig: Rig) -> None:
+    """The ordinary spread still reaches it: a look-alike of a **Ban** is a **Dud**, not vetoed."""
+    _ban_one_outside_the_pool(rig, repost=unit_at(NEAR_DUPLICATE_SIMILARITY - 0.0001))
+
+    assert _zones(rig)[REPOST] is Zone.DUD
+
+
+def test_a_history_edit_away_from_ban_brings_the_near_duplicate_back(rig: Rig) -> None:
+    """Derived, never stored: nothing to invalidate, the next classification sees the **Ignore**."""
+    _ban_one_outside_the_pool(rig, repost=unit_at(1.0))
+    assert REPOST not in _zones(rig)
+
+    with storage.write(rig.connection) as write:
+        decisions.edit(write, "loathed", Verdict.IGNORE, at=FIXED_NOW)
+
+    assert _zones(rig)[REPOST] is Zone.DUD
+
+
+def test_an_unembedded_wallpaper_is_never_vetoed_however_alike_the_fallback_calls_it(rig: Rig) -> None:
+    """Flat-colour images score 1.0 on colours and category; only two **Embeddings** can say "the same
+    image"."""
+    _ban_one_outside_the_pool(rig, repost=None)
+    rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 1.0
+
+    assert _zones(rig)[REPOST] is Zone.DUD
+
+
+# -- no Embedding once the model is open (ADR 0024)
+
+NEWCOMER = catalogue_of(24)[0].id
+"""The **Pool** member the fallback puts near the **Favourite**."""
+
+
+def _favour_one_outside_the_pool(rig: Rig, *, embedded: bool) -> None:
+    """**Favourite** "loved", retired as every decision is. The fallback calls `NEWCOMER` 0.95 to it, inside
+    the radius, so while the fallback answers `NEWCOMER` is a **Banger**."""
+    rig.stock([wallpaper("loved")])
+    with storage.write(rig.connection) as write:
+        decisions.append(write, {"loved": Verdict.FAVOURITE}, batch_id=None, at=FIXED_NOW)
+        pool.retire(write, ["loved"])
+    rig.similarity.similarity_by_pair[(NEWCOMER, "loved")] = 0.95
+    rig.store.store("loved" if embedded else NEWCOMER, np.array([1.0, 0.0], dtype=np.float32))
+
+
+def _scored(rig: Rig) -> dict[str, ScoredWallpaper]:
+    return {s.wallpaper.id: s for s in rig.batches.classify(rig.connection)}
+
+
+def test_once_the_model_is_open_an_unembedded_pool_member_is_an_honest_unknown(
+    rig: Rig, tmp_path: Path
+) -> None:
+    """Not placed by its palette against embedded neighbours: a **Score** of exactly 0.0."""
+    _favour_one_outside_the_pool(rig, embedded=True)
+    assert _scored(rig)[NEWCOMER].zone is Zone.BANGER
+
+    rig.open_model(tmp_path / "never_created")
+
+    newcomer = _scored(rig)[NEWCOMER]
+    assert (newcomer.score, newcomer.zone) == (0.0, Zone.UNKNOWN)
+
+
+def test_once_the_model_is_open_an_unembedded_decided_wallpaper_contributes_nothing(
+    rig: Rig, tmp_path: Path
+) -> None:
+    """Its embedded **Pool** neighbour is one the fallback would put inside the radius."""
+    _favour_one_outside_the_pool(rig, embedded=False)
+    assert _scored(rig)[NEWCOMER].zone is Zone.BANGER
+
+    rig.open_model(tmp_path / "never_created")
+
+    scored = _scored(rig)
+    assert len(scored) == 24
+    assert {s.score for s in scored.values()} == {0.0}
+    assert {s.zone for s in scored.values()} == {Zone.UNKNOWN}
 
 
 # -- the Draft Batch

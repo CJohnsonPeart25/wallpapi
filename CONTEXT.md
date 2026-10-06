@@ -27,7 +27,7 @@ Which search a refill step makes, and so how a pool member got there: random, or
 _Avoid_: mode, channel, feed, phase
 
 **Lookalike search**:
-A search for the wallpapers Wallhaven considers similar to one favourite. The refill strategy that grows the banger zone, as against the random one that stocks the unknown zone. Wallhaven spells it `like:` and its results are few, so a walk through them is capped.
+A search for the wallpapers Wallhaven considers similar to one favourite or like; turns go by groups of similar subjects, so each taste is asked about in turn however many favourites and likes it holds. The refill strategy that grows the banger zone, as against the random one that stocks the unknown zone. Wallhaven spells it `like:` and its results are few, so a walk through them is capped.
 _Avoid_: similar search, related, recommendations, more like this
 
 **Pool target size**:
@@ -35,7 +35,7 @@ How many wallpapers the refill keeps waiting in the pool. Below it the refill sp
 _Avoid_: quota, capacity, limit, threshold
 
 **Walk**:
-One continuous sweep of search pages for one refill strategy. A random walk carries the seed Wallhaven returned so its pages do not repeat each other, and ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed. A lookalike walk is about one favourite and ends at an empty page or its page cap, after which the next favourite has its turn. The two walks keep their places separately.
+One continuous sweep of search pages for one refill strategy. A random walk carries the seed Wallhaven returned so its pages do not repeat each other, and ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed. A lookalike walk is about one subject, a favourite or like, and ends at an empty page or its page cap, after which the next group has its turn. The two walks keep their places separately.
 _Avoid_: crawl, scan, sweep, pass
 
 **Batch**:
@@ -65,7 +65,7 @@ The mildly negative verdict given to every wallpaper in a submitted batch left u
 _Avoid_: skip, pass, no-op
 
 **Ban**:
-The strongest negative verdict. The wallpaper is never shown again, and its weight spreads to similar wallpapers.
+The strongest negative verdict. The wallpaper is never shown again, and neither is a near-duplicate of it (the same image reposted under another ID). Its weight spreads to similar wallpapers.
 _Avoid_: block, hide, reject, dislike
 
 **Draft Batch**:
@@ -95,7 +95,7 @@ A wallpaper's derived value, calculated from the decision log with each resolved
 _Avoid_: rating, weight, rank, affinity
 
 **Similarity provider**:
-The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
+The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded until the model is ready. After that an unembedded wallpaper counts for nothing: it is an Unknown, and as a decided wallpaper it moves no score. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
 _Avoid_: embedder, model, comparator, CLIP
 
 **Embedding**:
@@ -111,7 +111,7 @@ How fast a verdict fades with distance inside the radius. The radius is a cliff;
 _Avoid_: falloff, gamma, damping
 
 **Zone**:
-The category a pool wallpaper falls into: banger, dud or unknown. Only undecided wallpapers have one, because only undecided wallpapers are in the pool.
+The category a pool wallpaper falls into: banger, dud or unknown. Only undecided wallpapers have one, because only undecided wallpapers are in the pool. A near-duplicate of a ban has none: it stays in the pool but is never drawn.
 _Avoid_: bucket, tier, band, class
 
 **Banger**:

@@ -6,6 +6,7 @@ reached it. `TestClient` runs the app in process over the fakes, with no backgro
 
 from __future__ import annotations
 
+import html
 import re
 import threading
 from collections.abc import Callable
@@ -95,8 +96,8 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
 
 def test_a_tile_post_sets_the_mark_and_answers_with_the_tile(web: Web) -> None:
     """The marked control posts an empty **Verdict**, so a second click says "end up clear" rather than
-    "flip it" (invariant 6). The tile keeps its **Zone** label when swapped alone, and a reload shows the
-    mark, because marks are server state."""
+    "flip it" (`set_draft` sets rather than toggles). The tile keeps its **Zone** label when swapped
+    alone, and a reload shows the mark, because marks are server state."""
     harness, client = web
     batch_id = batch_id_of(client.get("/batch").text)
     marked = live(harness).wallpapers[0].id
@@ -274,6 +275,17 @@ def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
     assert 'data-mix-active="refine"' in reloaded
 
 
+def test_switching_to_a_mix_nobody_has_heard_of_is_a_400_and_changes_nothing(web: Web) -> None:
+    """Only a second tab that deleted the **Mix**, or a hand-made post, can send one."""
+    harness, client = web
+
+    refused = client.post("/mix", data={"mix": "nope"})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert 'data-mix-active="explore"' in refused.text
+    assert settings.active_mix(harness.connect()) == EXPLORE_MIX
+
+
 # -- when there is nothing to show -------------------------------------------------------------------
 
 
@@ -321,6 +333,32 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
     assert "Image similarity is still starting up" in text
 
 
+def test_a_batch_minted_with_no_unknowns_says_to_lower_the_similarity_radius(web: Web) -> None:
+    """Every **Pool** member within the radius of a **Ban**: the next **Batch** is all **Duds**, and the page
+    says why, once, as it is minted (ADR 0023)."""
+    harness, client = web
+    shown = live(harness)
+    banned = shown.wallpapers[0].id
+    harness.similarity.similarity_by_pair.update({(w.id, banned): 1.0 for w in catalogue_of(24)})
+    workflows.set_draft(harness.modules, shown.id, banned, Verdict.BAN)
+    client.post("/submit", data={"batch_id": shown.id})
+
+    minted = client.get("/batch").text
+    reloaded = client.get("/batch").text
+
+    words = " ".join(html.unescape(re.sub(r"<[^>]+>", "", minted)).split())
+    assert "data-unknown-short" in minted
+    assert "Only 0 unknown wallpapers in the pool, fewer than the explore mix's 6 unknown slots" in words
+    assert "Lower the similarity radius in Settings" in words
+    assert "data-unknown-short" not in reloaded
+
+
+def test_a_batch_with_unknowns_to_spare_adds_no_unknown_line(web: Web) -> None:
+    _, client = web
+
+    assert "data-unknown-short" not in client.get("/batch").text
+
+
 def test_a_provider_at_full_strength_adds_no_line(web: Web) -> None:
     """The model open and every **Pool** **Wallpaper** embedded."""
     harness, client = web
@@ -345,7 +383,8 @@ def test_the_indicator_shows_the_last_refill_error_on_a_stocked_page(db_path: Pa
 
 @pytest.mark.parametrize("favourited", [False, True], ids=["random", "lookalikes"])
 def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Path, favourited: bool) -> None:
-    """A **Pool** growing only at random means there are no **Favourites** yet: something to act on."""
+    """A **Pool** growing only at random means there are no **Favourites** or **Likes** yet: something to
+    act on."""
     harness = make_harness(
         db_path, catalogue=catalogue_of(2), like_results={"wp0000": catalogue_of(4, prefix="lk")}
     )
@@ -357,8 +396,43 @@ def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Pat
     with serving(harness) as client:
         text = client.get("/batch").text
 
-    assert ("searching for lookalikes of a favourite" in text) is favourited
+    assert ("searching for lookalikes of a favourite or like" in text) is favourited
     assert ("searching at random" in text) is not favourited
+
+
+@pytest.mark.parametrize(
+    ("arrange", "lookalikes"),
+    [
+        pytest.param("empty", None, id="an empty pool says nothing of lookalikes"),
+        pytest.param("random", 0, id="none yet is said as a zero"),
+        pytest.param("favourited", 4, id="lookalikes counted"),
+    ],
+)
+def test_the_indicator_says_how_much_of_the_pool_is_lookalikes(
+    db_path: Path, arrange: str, lookalikes: int | None
+) -> None:
+    """Whether the like: search is feeding the **Pool** once there are **Favourites**. A zero on a stocked
+    **Pool** is the point: lookalikes are not arriving."""
+    harness = make_harness(
+        db_path,
+        catalogue=catalogue_of(2),
+        like_results={"wp0000": catalogue_of(4, prefix="lk")},
+        fill_pool=0 if arrange == "empty" else 1,
+    )
+    if arrange == "favourited":
+        workflows.save_settings(harness.modules, pool_target_size=1000)
+        favourite(harness, "wp0000")
+        harness.fill_pool(1)
+    status = harness.modules.refill.status()
+
+    with serving(harness) as client:
+        text = client.get("/batch").text
+
+    if lookalikes is None:
+        assert f"Pool 0 of {status.target_size}." in text
+        assert "of them lookalikes" not in text
+    else:
+        assert f"Pool {status.pool_size} of {status.target_size}, {lookalikes} of them lookalikes." in text
 
 
 # -- History -----------------------------------------------------------------------------------------
@@ -578,6 +652,18 @@ def test_an_invalid_mix_shows_the_reason_and_what_was_typed(
     if posted["name"] == "explore":
         row = refused.text.split('data-mix-row="explore"', 1)[1].split("</tr>", 1)[0]
         assert row.count('value="30"') == 3
+
+
+def test_a_mix_post_missing_a_field_is_refused_in_words_and_never_a_500(web: Web) -> None:
+    """Only a hand-made post can leave one out; it reads as empty, so the settings module says why."""
+    harness, client = web
+
+    refused = client.post("/settings/mixes", data={"name": "night", "unknown": "50", "banger": "50"})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert "add up to 100" in refused.text
+    assert 'value="night"' in refused.text.split("data-mix-new", 1)[1]
+    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (EXPLORE_MIX, REFINE_MIX)
 
 
 @pytest.mark.parametrize(

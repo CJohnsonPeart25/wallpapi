@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 from tests.conftest import SOURCE, make_harness
 from tests.fakes import (
     STUB_DIRECTION,
+    FakeSimilarities,
     MemoryStore,
     ModelOnDisk,
     ModelThatFails,
@@ -27,9 +28,11 @@ from tests.fakes import (
     wallpaper,
 )
 from wallpapi.main import build_similarity
+from wallpapi.model import Wallpaper
 from wallpapi.similarity import (
     CATEGORY_SHARE,
     CAUGHT_UP,
+    NEAR_DUPLICATE_SIMILARITY,
     RETRY_MODEL,
     EmbeddingCache,
     Embeddings,
@@ -111,7 +114,9 @@ PROVIDERS: dict[str, Callable[[Sequence[str]], Similarity]] = {
 def test_the_matrix_is_pool_by_decided_in_range_and_one_on_the_diagonal(name: str) -> None:
     """Invariant 2's shape: **Pool** x decided, never **Pool** x **Pool**, empty either side an ordinary
     answer. float32 inside [0, 1], and 1.0 on the diagonal, including for a **Wallpaper** with no
-    **Embedding**: the fallback must not cost a decided **Wallpaper** its own weight."""
+    **Embedding** while the model is not open: the fallback must not cost a decided **Wallpaper** its own
+    weight. Once it is open an unembedded one counts for nothing (ADR 0024), but the **Pool** and the decided
+    side never share a **Wallpaper** (ADR 0016), so no **Score** reads that diagonal."""
     pool = [wallpaper("a", colours=RED), wallpaper("b", colours=BLUE_AND_WHITE), wallpaper("nodata")]
     decided = [wallpaper("c", colours=RED), wallpaper("d", colours=BLUE_AND_WHITE)]
     similarities = PROVIDERS[name](["a", "b", "c", "d"])
@@ -128,15 +133,83 @@ def test_the_matrix_is_pool_by_decided_in_range_and_one_on_the_diagonal(name: st
     assert np.all(itself <= 1.0)
 
 
-@pytest.mark.parametrize("missing", ["pool", "decided"])
-def test_a_side_with_no_embedding_falls_back_to_the_baseline(missing: str) -> None:
-    """A **Pool** fills faster than it can be embedded. A 0.0 there would say the **Wallpaper** is unlike
-    every **Ban** as well as every **Favourite**."""
-    pool = [wallpaper("p")]
-    decided = [wallpaper("d")]
-    similarities = _all_embedded(["d"] if missing == "pool" else ["p"])
+def not_open(state: str, vectors: Mapping[str, NDArray[np.float32]], tmp_path: Path) -> Embeddings:
+    """`Embeddings` holding `vectors` with its model short of open: never tried yet, its fetch failed, or
+    its file would not open."""
+    if state == "pending":
+        return embeddings(vectors)
+    if state == "failed":
+        similarity = embeddings(vectors, model=ModelThatFails("connection refused"))
+    else:
+        similarity = embeddings(vectors, embed=StubEmbed(will_not_open=True))
+    assert similarity.catch_up(tmp_path / "never_created", threading.Event()) == RETRY_MODEL
+    return similarity
 
-    assert similarities(pool, decided) == pytest.approx(metadata_similarity(pool, decided))
+
+def opened(similarity: Embeddings, tmp_path: Path) -> Embeddings:
+    """`similarity` with its model open, and nothing in the **Thumbnail cache** to embed."""
+    similarity.catch_up(tmp_path / "never_created", threading.Event())
+    return similarity
+
+
+def _one_side_missing(
+    missing: str,
+) -> tuple[list[Wallpaper], list[Wallpaper], dict[str, NDArray[np.float32]]]:
+    """**Pool** `p, e` against decided `d, f`: `e` and `f` at a right angle, and the side named `missing`
+    leaves its first **Wallpaper** with no **Embedding** while the other side's first is held."""
+    held = {"e": EAST, "f": NORTH, ("d" if missing == "pool" else "p"): EAST}
+    return [wallpaper("p"), wallpaper("e")], [wallpaper("d"), wallpaper("f")], held
+
+
+def _unembedded(missing: str) -> tuple[int | slice, int | slice]:
+    """The pairs `_one_side_missing` leaves without two **Embeddings**: a row or a column."""
+    return (0, slice(None)) if missing == "pool" else (slice(None), 0)
+
+
+@pytest.mark.parametrize("state", ["pending", "failed", "unusable"])
+@pytest.mark.parametrize("missing", ["pool", "decided"])
+def test_a_side_with_no_embedding_falls_back_to_the_baseline(
+    missing: str, state: str, tmp_path: Path
+) -> None:
+    """Until the model is open (ADR 0024). Before then nothing is embedded, so a 0.0 would make every
+    **Wallpaper** an **Unknown**; and a failed model still works, one notch cruder (ADR 0013)."""
+    pool, decided, held = _one_side_missing(missing)
+
+    matrix = not_open(state, held, tmp_path).similarities(pool, decided)
+
+    unembedded = _unembedded(missing)
+    assert matrix[unembedded].tolist() == metadata_similarity(pool, decided)[unembedded].tolist()
+    assert float(matrix[1, 1]) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("missing", ["pool", "decided"])
+def test_once_the_model_is_open_a_side_with_no_embedding_counts_for_nothing(
+    missing: str, tmp_path: Path
+) -> None:
+    """ADR 0024: 0.0 is beyond every **Similarity radius**, so the **Wallpaper** is an honest **Unknown**
+    rather than placed by its palette. The baseline would have called these pairs alike."""
+    pool, decided, held = _one_side_missing(missing)
+    unembedded = _unembedded(missing)
+    assert np.all(metadata_similarity(pool, decided)[unembedded] > 0.5)
+
+    matrix = opened(embeddings(held), tmp_path).similarities(pool, decided)
+
+    assert matrix[unembedded].tolist() == [0.0, 0.0]
+    assert float(matrix[1, 1]) == pytest.approx(0.5)
+
+
+def test_once_the_model_is_open_with_nothing_held_the_matrix_is_zero_and_the_fallback_is_not_asked(
+    tmp_path: Path,
+) -> None:
+    fallback = FakeSimilarities()
+    similarity = opened(Embeddings(MemoryStore(), StubEmbed(), ModelOnDisk(), fallback=fallback), tmp_path)
+
+    matrix = similarity.similarities([wallpaper("a"), wallpaper("b"), wallpaper("c")], [wallpaper("a")] * 2)
+
+    assert matrix.shape == (3, 2)
+    assert matrix.dtype == np.float32
+    assert not np.any(matrix)
+    assert fallback.calls == []
 
 
 def test_numpy_is_a_direct_dependency() -> None:
@@ -295,6 +368,64 @@ def test_the_vectors_are_its_rows_in_pool_order_with_zeros_for_no_embedding() ->
     assert nothing.shape == (2, 0)
 
 
+# -- near-duplicates ---------------------------------------------------------------------------------
+
+
+def mapped_from_east(similarity: float) -> NDArray[np.float32]:
+    """A unit vector whose mapped similarity to `EAST` is `similarity`, exactly in float32: not renormalised,
+    so the first component is the cosine as given."""
+    cosine = np.float32(2.0 * similarity - 1.0)
+    return np.array([cosine, np.sqrt(1.0 - float(cosine) ** 2)], dtype=np.float32)
+
+
+def test_a_near_duplicate_is_at_or_above_the_threshold_and_not_just_below_it() -> None:
+    """ADR 0021: a repost of the same image, measured on the real **Pool**, against the near-empty images
+    just under it."""
+    pool = [wallpaper("at"), wallpaper("above"), wallpaper("below")]
+    banned = [wallpaper("banned")]
+
+    vetoed = embeddings(
+        {
+            "banned": EAST,
+            "at": mapped_from_east(NEAR_DUPLICATE_SIMILARITY),
+            "above": EAST,
+            "below": mapped_from_east(NEAR_DUPLICATE_SIMILARITY - 0.0001),
+        }
+    ).near_duplicates(pool, banned)
+
+    assert vetoed.dtype == np.bool_
+    assert vetoed.tolist() == [[True], [True], [False]]
+
+
+def _always_alike(pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
+    return np.ones((len(pool), len(decided)), dtype=np.float32)
+
+
+@pytest.mark.parametrize(
+    "stored", [["b"], ["p"], []], ids=["pool unembedded", "banned unembedded", "neither"]
+)
+def test_a_pair_without_two_embeddings_is_never_a_near_duplicate(stored: list[str]) -> None:
+    """The fallback never enters it: a flat-colour pair reports 1.0 there, and a whole palette would go."""
+    held = Embeddings(
+        MemoryStore(dict.fromkeys(stored, EAST)), StubEmbed(), ModelOnDisk(), fallback=_always_alike
+    )
+
+    assert held.similarities([wallpaper("p")], [wallpaper("b")]).tolist() == [[1.0]]
+    assert held.near_duplicates([wallpaper("p")], [wallpaper("b")]).tolist() == [[False]]
+
+
+def test_the_near_duplicates_are_one_pool_by_banned_matrix() -> None:
+    """Invariant 2's shape, empty either side an ordinary answer."""
+    pool = [wallpaper("a"), wallpaper("b"), wallpaper("c")]
+    banned = [wallpaper("x"), wallpaper("y")]
+    held = embeddings({"a": EAST, "b": NORTH, "x": NORTH, "y": EAST})
+
+    assert held.near_duplicates(pool, banned).tolist() == [[False, True], [True, False], [False, False]]
+    assert held.near_duplicates(pool, []).shape == (3, 0)
+    assert held.near_duplicates([], banned).shape == (0, 2)
+    assert embeddings().near_duplicates(pool, banned).tolist() == [[False, False]] * 3
+
+
 # -- upkeep and the notice ---------------------------------------------------------------------------
 
 
@@ -314,8 +445,8 @@ def test_before_the_model_arrives_the_page_is_told_and_coverage_waits() -> None:
 
 
 def test_catching_up_embeds_what_is_in_the_thumbnail_cache_and_later_arrivals(tmp_path: Path) -> None:
-    """A **Wallpaper** with no thumbnail is not in the work list, so it falls back to the baseline until
-    its thumbnail arrives, and the next pass picks it up. The model is fetched once."""
+    """A **Wallpaper** with no thumbnail is not in the work list, so it has no **Embedding** until its
+    thumbnail arrives, and the next pass picks it up. The model is fetched once."""
     embed = StubEmbed()
     model = ModelOnDisk()
     store = MemoryStore()
@@ -420,8 +551,8 @@ def test_the_page_is_told_how_much_of_the_pool_is_embedded(tmp_path: Path) -> No
     large = similarity.notice([wallpaper(f"w{n:04d}") for n in range(1200)])
 
     assert partial == (
-        "Image similarity covers 2 of 3 Pool wallpapers so far — the rest are compared by colour and "
-        "category until their thumbnails are embedded."
+        "Image similarity covers 2 of 3 Pool wallpapers so far — the rest count as Unknown until their "
+        "thumbnails are embedded."
     )
     assert large is not None
     assert "0 of 1,200 Pool wallpapers" in large
