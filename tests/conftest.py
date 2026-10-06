@@ -4,8 +4,8 @@ A test of one module's rule builds that module over an in-memory database with a
 collaborator (invariant 14, ADR 0019), as `library_rig` and `batches_rig` do. `make_harness` composes every
 module the way the routes do, and is for tests whose subject is a workflow (a transaction across modules, or
 what follows its commit), for the web tests and for the background threads; `test_rigs.py` holds that list.
-The only reach past the modules is the raw connection the migration and legacy-Clearance tests need, because
-nothing the modules offer can produce an older database's rows or a Clearance any more.
+The only reach past the modules here is the raw connection the migration tests need, because nothing the
+modules offer can produce an older database's rows or a Clearance any more.
 """
 
 from __future__ import annotations
@@ -236,14 +236,6 @@ def favourite(harness: Harness, *wallpaper_ids: str) -> None:
     for wallpaper_id in wallpaper_ids:
         workflows.set_draft(harness.modules, batch.id, wallpaper_id, Verdict.FAVOURITE)
     workflows.submit(harness.modules, batch.id)
-
-
-def favourite_the_whole_batch(harness: Harness, verdict: Verdict = Verdict.FAVOURITE) -> Batch:
-    """Mark every **Wallpaper** on the live **Batch** and submit it, returning the **Batch** submitted."""
-    batch = live(harness)
-    workflows.set_all_drafts(harness.modules, batch.id, verdict)
-    workflows.submit(harness.modules, batch.id)
-    return batch
 
 
 def submit_with(harness: Harness, marks: Mapping[str, Verdict | None]) -> Batch:
@@ -499,8 +491,3 @@ def write_log_entries(db_path: Path, entries: Mapping[str, Verdict | Clearance])
             "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
             [(w, entry.value, FIXED_NOW.isoformat()) for w, entry in entries.items()],
         )
-
-
-def write_legacy_clearance(db_path: Path, *wallpaper_ids: str) -> None:
-    """Append a **Clearance** for each, as a database from before ADR 0015 may hold."""
-    write_log_entries(db_path, dict.fromkeys(wallpaper_ids, Clearance.CLEARED))
