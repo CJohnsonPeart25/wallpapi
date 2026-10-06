@@ -241,6 +241,46 @@ def test_the_form_values_are_the_settings_as_text_and_read_back_unchanged(memory
     assert settings.get(memory) == before
 
 
+def test_the_form_is_the_table_grouped_by_section_in_declaration_order() -> None:
+    """The page's grouping and order are the table's: a setting in a new section needs no template edit."""
+    sections = settings.form_sections()
+
+    assert [(section.heading, [field.key for field in fields]) for section, fields in sections] == [
+        (None, ["batch_size", "library_path"]),
+        ("Filters", ["min_width", "min_height", "allowed_ratios", "min_favourites"]),
+        ("Pool", ["pool_target_size"]),
+        ("Scoring", ["similarity_radius", "similarity_decay"]),
+        ("Thumbnails", ["thumbnail_cache_max_mb"]),
+    ]
+    assert [section.intro is not None for section, _ in sections] == [False, True, False, True, False]
+
+
+def test_every_form_field_says_how_the_form_shows_it() -> None:
+    """A step makes a number input; the two free-text settings have none."""
+    steps = {field.key: field.step for field in settings.FORM_FIELDS}
+
+    assert steps == {
+        "batch_size": "1",
+        "library_path": None,
+        "min_width": "1",
+        "min_height": "1",
+        "allowed_ratios": None,
+        "min_favourites": "1",
+        "pool_target_size": "1",
+        "similarity_radius": "0.01",
+        "similarity_decay": "0.1",
+        "thumbnail_cache_max_mb": "1",
+    }
+    assert all(field.label and field.help for field in settings.FORM_FIELDS)
+
+
+def test_the_help_fills_in_the_fields_own_bounds_and_choices() -> None:
+    """Formatted like the refusal, so the hint and the rule cannot disagree."""
+    assert Settings.batch_size.hint.startswith(f"Wallpapers per batch, {MIN_BATCH_SIZE} to {MAX_BATCH_SIZE}.")
+    assert Settings.similarity_decay.hint.startswith(f"From 0 to {MAX_SIMILARITY_DECAY}.")
+    assert Settings.allowed_ratios.hint == f"Comma-separated, from {', '.join(sorted(WALLHAVEN_RATIOS))}."
+
+
 def test_every_mix_says_whether_it_can_be_deleted(memory: sqlite3.Connection) -> None:
     """**Explore** and **Refine** never, the active **Mix** not while it is active, anything else yes."""
     with storage.write(memory) as write:
