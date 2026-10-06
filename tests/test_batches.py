@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+import threading
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from itertools import count
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -219,8 +221,10 @@ class Rig:
             return self.minted[-1]
 
         self.store = MemoryStore()
-        embeddings = Embeddings(self.store, StubEmbed(), ModelOnDisk(), fallback=self.similarity)
-        self.batches = Batches(embeddings, lambda: self.status, self.clock, SeededRandom(1), new_id=new_id)
+        self.embeddings = Embeddings(self.store, StubEmbed(), ModelOnDisk(), fallback=self.similarity)
+        self.batches = Batches(
+            self.embeddings, lambda: self.status, self.clock, SeededRandom(1), new_id=new_id
+        )
 
     def stock(self, wallpapers: Sequence[Wallpaper]) -> None:
         """Admit `wallpapers` to the **Pool**, as the Refill does."""
@@ -228,6 +232,10 @@ class Rig:
             pool.admit(
                 write, wallpapers, settings.get(write), source=RefillStrategy.RANDOM, at=self.clock.now()
             )
+
+    def open_model(self, nowhere: Path) -> None:
+        """Open the similarity model, as the similarity thread does, with no thumbnails to embed."""
+        self.embeddings.catch_up(nowhere, threading.Event())
 
     def configure(self, **fields: object) -> None:
         with storage.write(self.connection) as write:
@@ -478,6 +486,55 @@ def test_an_unembedded_wallpaper_is_never_vetoed_however_alike_the_fallback_call
     rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 1.0
 
     assert _zones(rig)[REPOST] is Zone.DUD
+
+
+# -- no Embedding once the model is open (ADR 0024)
+
+NEWCOMER = catalogue_of(24)[0].id
+"""The **Pool** member the fallback puts near the **Favourite**."""
+
+
+def _favour_one_outside_the_pool(rig: Rig, *, embedded: bool) -> None:
+    """**Favourite** "loved", retired as every decision is. The fallback calls `NEWCOMER` 0.95 to it, inside
+    the radius, so while the fallback answers `NEWCOMER` is a **Banger**."""
+    rig.stock([wallpaper("loved")])
+    with storage.write(rig.connection) as write:
+        decisions.append(write, {"loved": Verdict.FAVOURITE}, batch_id=None, at=FIXED_NOW)
+        pool.retire(write, ["loved"])
+    rig.similarity.similarity_by_pair[(NEWCOMER, "loved")] = 0.95
+    rig.store.store("loved" if embedded else NEWCOMER, np.array([1.0, 0.0], dtype=np.float32))
+
+
+def _scored(rig: Rig) -> dict[str, ScoredWallpaper]:
+    return {s.wallpaper.id: s for s in rig.batches.classify(rig.connection)}
+
+
+def test_once_the_model_is_open_an_unembedded_pool_member_is_an_honest_unknown(
+    rig: Rig, tmp_path: Path
+) -> None:
+    """Not placed by its palette against embedded neighbours: a **Score** of exactly 0.0."""
+    _favour_one_outside_the_pool(rig, embedded=True)
+    assert _scored(rig)[NEWCOMER].zone is Zone.BANGER
+
+    rig.open_model(tmp_path / "never_created")
+
+    newcomer = _scored(rig)[NEWCOMER]
+    assert (newcomer.score, newcomer.zone) == (0.0, Zone.UNKNOWN)
+
+
+def test_once_the_model_is_open_an_unembedded_decided_wallpaper_contributes_nothing(
+    rig: Rig, tmp_path: Path
+) -> None:
+    """Its embedded **Pool** neighbour is one the fallback would put inside the radius."""
+    _favour_one_outside_the_pool(rig, embedded=False)
+    assert _scored(rig)[NEWCOMER].zone is Zone.BANGER
+
+    rig.open_model(tmp_path / "never_created")
+
+    scored = _scored(rig)
+    assert len(scored) == 24
+    assert {s.score for s in scored.values()} == {0.0}
+    assert {s.zone for s in scored.values()} == {Zone.UNKNOWN}
 
 
 # -- the Draft Batch
