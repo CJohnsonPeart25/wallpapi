@@ -3,3 +3,14 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
+
+# Claude Code: per-machine settings and agent worktrees
+.claude/settings.local.json
+.claude/worktrees/

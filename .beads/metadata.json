@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "wallpapi",
+  "project_id": "e4eaa91b-4738-4349-bccf-0b798856f3a4"
+}
