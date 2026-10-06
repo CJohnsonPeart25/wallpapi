@@ -1,0 +1,16 @@
+{#
+  One line when the **Batch** just minted found the **Unknown** zone too small for the active **Mix**, and
+  nothing otherwise (ADR 0023).
+
+  A fixed **Similarity radius** covers more of the space with every decision, so the **Unknown** zone shrinks
+  as the **Decision log** grows until every **Batch** is **Duds**. This makes that visible rather than
+  silent, and names the setting that widens it again. Judged at mint and never stored, so a reload of the
+  same **Batch** shows nothing.
+#}
+{% if unknown_short %}
+  <p data-unknown-short><small>
+    Only {{ unknown_short.unknowns }} unknown wallpapers in the pool, fewer than the {{ unknown_short.mix }}
+    mix's {{ unknown_short.slots }} unknown slots. Lower the similarity radius in
+    <a href="/settings">Settings</a> to widen the unknown zone.
+  </small></p>
+{% endif %}

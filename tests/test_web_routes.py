@@ -6,6 +6,7 @@ reached it. `TestClient` runs the app in process over the fakes, with no backgro
 
 from __future__ import annotations
 
+import html
 import re
 import threading
 from collections.abc import Callable
@@ -330,6 +331,32 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
     assert f"Pool {status.pool_size} of {status.target_size}" in text
     assert "Refill not running" in text, "nothing started the thread in this app"
     assert "Image similarity is still starting up" in text
+
+
+def test_a_batch_minted_with_no_unknowns_says_to_lower_the_similarity_radius(web: Web) -> None:
+    """Every **Pool** member within the radius of a **Ban**: the next **Batch** is all **Duds**, and the page
+    says why, once, as it is minted (ADR 0023)."""
+    harness, client = web
+    shown = live(harness)
+    banned = shown.wallpapers[0].id
+    harness.similarity.similarity_by_pair.update({(w.id, banned): 1.0 for w in catalogue_of(24)})
+    workflows.set_draft(harness.modules, shown.id, banned, Verdict.BAN)
+    client.post("/submit", data={"batch_id": shown.id})
+
+    minted = client.get("/batch").text
+    reloaded = client.get("/batch").text
+
+    words = " ".join(html.unescape(re.sub(r"<[^>]+>", "", minted)).split())
+    assert "data-unknown-short" in minted
+    assert "Only 0 unknown wallpapers in the pool, fewer than the explore mix's 6 unknown slots" in words
+    assert "Lower the similarity radius in Settings" in words
+    assert "data-unknown-short" not in reloaded
+
+
+def test_a_batch_with_unknowns_to_spare_adds_no_unknown_line(web: Web) -> None:
+    _, client = web
+
+    assert "data-unknown-short" not in client.get("/batch").text
 
 
 def test_a_provider_at_full_strength_adds_no_line(web: Web) -> None:

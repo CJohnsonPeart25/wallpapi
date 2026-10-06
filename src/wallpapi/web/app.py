@@ -139,7 +139,11 @@ def _batch_view(request: Request, modules: Modules, result: Batch | BatchUnavail
         "similarity_notice": modules.similarity.notice(modules.thumbnails.obtainable(modules.connect())),
     }
     if isinstance(result, Batch):
-        return templates.TemplateResponse(request, "batch_view.html", {**context, "batch": result})
+        return templates.TemplateResponse(
+            request,
+            "batch_view.html",
+            {**context, "batch": result, "unknown_short": result.unknown_short},
+        )
     # 503 and never a 500: nothing failed, the **Pool** is empty and the refill may fix it.
     return templates.TemplateResponse(
         request,
