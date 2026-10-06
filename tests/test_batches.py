@@ -32,7 +32,7 @@ from tests.fakes import (
 )
 from wallpapi import batches, decisions, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
-from wallpapi.batches import Batch, Batches, BatchUnavailable, SubmissionRefused, Submitted
+from wallpapi.batches import Batch, Batches, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
 from wallpapi.model import DecisionEntry, Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.rng import SeededRandom
@@ -323,6 +323,63 @@ def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_
     assert Counter(classified.values()) == {Zone.BANGER: 8, Zone.DUD: 8, Zone.UNKNOWN: 8}
     assert {w.id for w in batch.wallpapers} == set(ids[8:16])
     assert batch.zones == {w.id: classified[w.id] for w in batch.wallpapers}
+
+
+def _ban_near_everything(rig: Rig) -> None:
+    """A **Ban** outside the **Pool** that every member sits within the radius of: the whole **Pool** a
+    **Dud**, as the maintainer's was at 0.15 (ADR 0023)."""
+    rig.stock([wallpaper("loathed")])
+    with storage.write(rig.connection) as write:
+        decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
+        pool.retire(write, ["loathed"])
+    rig.similarity.similarity_by_pair.update({(w.id, "loathed"): 1.0 for w in catalogue_of(24)})
+
+
+def test_a_batch_minted_from_a_pool_with_no_unknowns_says_the_unknown_zone_is_short(rig: Rig) -> None:
+    """**Explore** asks six of eight from **Unknown**, and the radius has left it none."""
+    _ban_near_everything(rig)
+
+    batch = rig.next()
+
+    assert batch.unknown_short == UnknownShort(unknowns=0, slots=6, mix=EXPLORE_MIX.name)
+    assert {batch.zones[w.id] for w in batch.wallpapers} == {Zone.DUD}
+
+
+def test_a_batch_minted_with_unknowns_to_spare_says_nothing(rig: Rig) -> None:
+    assert rig.next().unknown_short is None
+
+
+def test_unknowns_exactly_filling_the_slots_are_not_short(rig: Rig) -> None:
+    """Six **Unknowns** for **Explore**'s six slots: every roll is served."""
+    _ban_near_everything(rig)
+    rig.similarity.similarity_by_pair.update({(w.id, "loathed"): 0.0 for w in catalogue_of(6)})
+
+    assert rig.next().unknown_short is None
+
+
+def test_a_pool_too_small_for_a_batch_is_not_blamed_on_the_radius(rig: Rig) -> None:
+    """Every member **Unknown**, but fewer than the slots: the refill line already says why, and lowering
+    the radius would not help."""
+    with storage.write(rig.connection) as write:
+        pool.retire(write, [w.id for w in catalogue_of(24)[3:]])
+
+    batch = rig.next()
+
+    assert len(batch.wallpapers) == 3
+    assert batch.unknown_short is None
+
+
+def test_the_unknown_zone_is_judged_at_mint_and_not_on_a_reload(rig: Rig) -> None:
+    """Derived from the classification the mint computes and never stored (ADR 0023): the live **Batch**
+    read back has nothing to say."""
+    _ban_near_everything(rig)
+    minted = rig.next()
+
+    reloaded = rig.next()
+
+    assert minted.unknown_short is not None
+    assert reloaded.unknown_short is None
+    assert reloaded == minted, "not part of what the Batch is"
 
 
 def test_an_empty_pool_with_no_refill_yet_says_so(rig: Rig) -> None:
