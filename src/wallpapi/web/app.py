@@ -65,9 +65,6 @@ REFUSALS: dict[StrEnum, Refusal] = {
 """Every refusal a module can return, as the page answers it. A settings refusal is always a 400 in the
 settings module's own words, which differ by field."""
 
-_FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
-"""The **History** filter's choices, written out so **Ignore**, the commonest, is last."""
-
 
 @dataclass(frozen=True, slots=True)
 class HistoryRow:
@@ -313,7 +310,7 @@ def history_page(request: Request, modules: Wired, verdict: str = "", page: int 
             "history": listing,
             "rows": _history_rows(connection, listing.entries),
             "verdict": chosen,
-            "verdicts": _FILTERABLE_VERDICTS,
+            "verdicts": decisions.HISTORY_FILTERS,
         },
     )
 

@@ -315,3 +315,10 @@ def test_an_empty_log_has_one_empty_page(connection: sqlite3.Connection) -> None
     listing = decisions.history(connection, Verdict.LIKE)
 
     assert (listing.entries, listing.total, listing.page, listing.pages) == ((), 0, 1, 1)
+
+
+def test_the_history_filter_offers_every_verdict_once_with_ignore_last() -> None:
+    """**Ignore**, the commonest by thousands a week, goes last, after the ones worth looking for."""
+    assert sorted(decisions.HISTORY_FILTERS) == sorted(Verdict)
+    assert decisions.HISTORY_FILTERS[-1] is Verdict.IGNORE
+    assert decisions.HISTORY_FILTERS[:2] == (Verdict.FAVOURITE, Verdict.LIKE)
