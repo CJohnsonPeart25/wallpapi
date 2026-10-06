@@ -58,7 +58,7 @@ walks as a taste with forty, and that one subject is walked forty times as often
 is the intent: the refill asks about tastes, and scoring weighs them.
 
 The grouping is only as good as the **Similarity provider**. On the colours-and-category fallback, groups
-are coarse. Once the model is open, an unembedded subject scores 0 against the rest (wallpapi-55), so it is
+are coarse. Once the model is open, an unembedded subject scores 0 against the rest (ADR 0024), so it is
 a group of its own and gets turns as one until it is embedded.
 
 A like: walk's group is decided when the walk starts. A **History** edit that would regroup the subjects
