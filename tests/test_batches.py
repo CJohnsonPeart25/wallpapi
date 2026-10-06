@@ -313,7 +313,7 @@ def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_
         settings.save_mix(write, "duds only", unknown=0, banger=0, dud=100)
     ids = [w.id for w in catalogue_of(24)]
     rig.similarity.similarity_by_pair.update(
-        {(i, "loved"): 0.9 for i in ids[:8]} | {(i, "loathed"): 0.9 for i in ids[8:16]}
+        {(i, "loved"): 0.95 for i in ids[:8]} | {(i, "loathed"): 0.95 for i in ids[8:16]}
     )
     rig.configure(active_mix="duds only")
 
