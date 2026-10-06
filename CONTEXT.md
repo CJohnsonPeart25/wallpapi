@@ -27,7 +27,7 @@ Which search a refill step makes, and so how a pool member got there: random, or
 _Avoid_: mode, channel, feed, phase
 
 **Lookalike search**:
-A search for the wallpapers Wallhaven considers similar to one favourite. The refill strategy that grows the banger zone, as against the random one that stocks the unknown zone. Wallhaven spells it `like:` and its results are few, so a walk through them is capped.
+A search for the wallpapers Wallhaven considers similar to one favourite or like; turns go by groups of similar subjects, so each taste is asked about in turn however many favourites and likes it holds. The refill strategy that grows the banger zone, as against the random one that stocks the unknown zone. Wallhaven spells it `like:` and its results are few, so a walk through them is capped.
 _Avoid_: similar search, related, recommendations, more like this
 
 **Pool target size**:
@@ -35,7 +35,7 @@ How many wallpapers the refill keeps waiting in the pool. Below it the refill sp
 _Avoid_: quota, capacity, limit, threshold
 
 **Walk**:
-One continuous sweep of search pages for one refill strategy. A random walk carries the seed Wallhaven returned so its pages do not repeat each other, and ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed. A lookalike walk is about one favourite and ends at an empty page or its page cap, after which the next favourite has its turn. The two walks keep their places separately.
+One continuous sweep of search pages for one refill strategy. A random walk carries the seed Wallhaven returned so its pages do not repeat each other, and ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed. A lookalike walk is about one subject, a favourite or like, and ends at an empty page or its page cap, after which the next group has its turn. The two walks keep their places separately.
 _Avoid_: crawl, scan, sweep, pass
 
 **Batch**:

@@ -167,6 +167,17 @@ def favourites(connection: sqlite3.Connection) -> list[str]:
     return [str(row["wallpaper_id"]) for row in connection.execute(query, (Verdict.FAVOURITE.value,))]
 
 
+def lookalike_subjects(connection: sqlite3.Connection) -> list[str]:
+    """Every **Wallpaper** whose resolved **Verdict** is **Favourite** or **Like**: what a **Lookalike
+    search** may be about (ADR 0022). By id, so the grouping and a seeded draw repeat.
+    """
+    query = _resolution_query(
+        "SELECT wallpaper_id FROM resolution WHERE resolved IN (?, ?) ORDER BY wallpaper_id"
+    )
+    subjects = (Verdict.FAVOURITE.value, Verdict.LIKE.value)
+    return [str(row["wallpaper_id"]) for row in connection.execute(query, subjects)]
+
+
 def explicitly_decided(connection: sqlite3.Connection) -> set[str]:
     """Every **Wallpaper** with an **Explicit Verdict** standing. The only spelling of "explicit"."""
     return {str(row["wallpaper_id"]) for row in connection.execute(_EXPLICITLY_DECIDED)}

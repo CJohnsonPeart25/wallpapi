@@ -162,6 +162,19 @@ def test_favourites_are_what_resolves_to_favourite_now(connection: sqlite3.Conne
     assert decisions.favourites(connection) == ["wp0001", "wp0003", "wp0006"], "by id, for a seeded draw"
 
 
+def test_the_lookalike_subjects_are_what_resolves_to_favourite_or_like_now(
+    connection: sqlite3.Connection,
+) -> None:
+    """A **Like** stands beside a **Favourite** as a subject; a later **Ban**, **Ignore** or **Clearance**
+    takes either away, and a **Ban** turned **Like** brings one in."""
+    append(connection, EACH_VERDICT)
+    append(connection, {"wp0006": Verdict.LIKE, "wp0005": Verdict.FAVOURITE, "wp0004": Verdict.BAN})
+    append(connection, {"wp0006": Verdict.BAN, "wp0004": Verdict.LIKE, "wp0007": Verdict.LIKE})
+    append_legacy_clearance(connection, "wp0007")
+
+    assert decisions.lookalike_subjects(connection) == ["wp0000", "wp0001", "wp0004", "wp0005"], "by id"
+
+
 def test_mentioned_is_every_wallpaper_with_any_entry_at_all(connection: sqlite3.Connection) -> None:
     """What the **Pool** refuses (ADR 0016): an **Ignore** and a legacy **Clearance** are mentions too."""
     append(connection, {"wp0000": Verdict.IGNORE})

@@ -383,7 +383,8 @@ def test_the_indicator_shows_the_last_refill_error_on_a_stocked_page(db_path: Pa
 
 @pytest.mark.parametrize("favourited", [False, True], ids=["random", "lookalikes"])
 def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Path, favourited: bool) -> None:
-    """A **Pool** growing only at random means there are no **Favourites** yet: something to act on."""
+    """A **Pool** growing only at random means there are no **Favourites** or **Likes** yet: something to
+    act on."""
     harness = make_harness(
         db_path, catalogue=catalogue_of(2), like_results={"wp0000": catalogue_of(4, prefix="lk")}
     )
@@ -395,7 +396,7 @@ def test_the_indicator_names_the_strategy_the_last_refill_step_used(db_path: Pat
     with serving(harness) as client:
         text = client.get("/batch").text
 
-    assert ("searching for lookalikes of a favourite" in text) is favourited
+    assert ("searching for lookalikes of a favourite or like" in text) is favourited
     assert ("searching at random" in text) is not favourited
 
 

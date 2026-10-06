@@ -9,7 +9,7 @@
   would be a request a second for something nobody is watching.
 
   The last run says which of the two strategies made it, because a pool that only ever grows at random has
-  no favourites in the decision log yet, and the reader can do something about that. How much of the pool
+  no favourites or likes in the decision log yet, and the reader can do something about that. How much of the pool
   is lookalikes says whether that search is feeding it, so a stocked pool says so even when it is none.
 #}
 <p data-refill data-pool-size="{{ status.pool_size }}"><small>
@@ -29,7 +29,7 @@
     </span>
   {% elif status.last_run_at %}
     Last run {{ status.last_run_at.strftime("%H:%M") }} UTC{%
-      if status.last_strategy == "like" %}, searching for lookalikes of a favourite{%
+      if status.last_strategy == "like" %}, searching for lookalikes of a favourite or like{%
       elif status.last_strategy %}, searching at random{% endif %}.
   {% endif %}
 </small></p>
