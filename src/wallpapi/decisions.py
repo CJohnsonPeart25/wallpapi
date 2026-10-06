@@ -18,6 +18,11 @@ from wallpapi.model import Clearance, DecisionEntry, Verdict
 HISTORY_PAGE_SIZE = 100
 """Rows on one page of **History**: it grows by thousands of **Ignores** a week and needs *a* bound."""
 
+HISTORY_FILTERS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
+"""The **History** filter's choices in display order, written out so **Ignore**, the commonest, is last.
+The `Verdict` enum keeps its own order.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedVerdict:

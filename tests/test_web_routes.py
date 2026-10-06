@@ -274,6 +274,17 @@ def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
     assert 'data-mix-active="refine"' in reloaded
 
 
+def test_switching_to_a_mix_nobody_has_heard_of_is_a_400_and_changes_nothing(web: Web) -> None:
+    """Only a second tab that deleted the **Mix**, or a hand-made post, can send one."""
+    harness, client = web
+
+    refused = client.post("/mix", data={"mix": "nope"})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert 'data-mix-active="explore"' in refused.text
+    assert settings.active_mix(harness.connect()) == EXPLORE_MIX
+
+
 # -- when there is nothing to show -------------------------------------------------------------------
 
 
@@ -613,6 +624,18 @@ def test_an_invalid_mix_shows_the_reason_and_what_was_typed(
     if posted["name"] == "explore":
         row = refused.text.split('data-mix-row="explore"', 1)[1].split("</tr>", 1)[0]
         assert row.count('value="30"') == 3
+
+
+def test_a_mix_post_missing_a_field_is_refused_in_words_and_never_a_500(web: Web) -> None:
+    """Only a hand-made post can leave one out; it reads as empty, so the settings module says why."""
+    harness, client = web
+
+    refused = client.post("/settings/mixes", data={"name": "night", "unknown": "50", "banger": "50"})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert "add up to 100" in refused.text
+    assert 'value="night"' in refused.text.split("data-mix-new", 1)[1]
+    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (EXPLORE_MIX, REFINE_MIX)
 
 
 @pytest.mark.parametrize(

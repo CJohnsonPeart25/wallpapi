@@ -563,6 +563,60 @@ def delete_mix(write: sqlite3.Connection, name: str) -> SettingsRefused | None:
     return None
 
 
+MIX_FORM_FIELDS = ("name", "unknown", "banger", "dud")
+"""The keys a **Mix** form posts, the add row and every edit row alike: `save_mix`'s parameters."""
+
+
+@dataclass(frozen=True, slots=True)
+class MixFormRow:
+    """One row of the **Mixes** form: the text each input shows, by `MIX_FORM_FIELDS` key, and whether the row
+    is the active **Mix** and may be deleted. The add row is never either.
+    """
+
+    name: str
+    unknown: str
+    banger: str
+    dud: str
+    active: bool = False
+    deletable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MixForm:
+    """The **Mixes** section of the settings form: a row per stored **Mix**, then the add row."""
+
+    rows: tuple[MixFormRow, ...]
+    add: MixFormRow
+
+
+def mix_form(connection: sqlite3.Connection, posted: Mapping[str, str] | None = None) -> MixForm:
+    """What the **Mixes** form shows. `posted` is a refused save put back: on the row of the **Mix** it
+    names, matched as `save_mix` would store it, or on the add row if it names none.
+    """
+    typed = {key: (posted or {}).get(key, "") for key in MIX_FORM_FIELDS}
+    typed_name = typed["name"].strip()
+    active = get(connection).active_mix
+    rows: list[MixFormRow] = []
+    for listed in list_mixes(connection):
+        mix = listed.mix
+        stored = {key: str(getattr(mix, key)) for key in MIX_FORM_FIELDS}
+        shown = {**typed, "name": mix.name} if typed_name == mix.name else stored
+        rows.append(_mix_form_row(shown, active=mix.name == active, deletable=listed.deletable))
+    put_back = posted is not None and typed_name not in {row.name for row in rows}
+    return MixForm(rows=tuple(rows), add=_mix_form_row(typed if put_back else dict.fromkeys(typed, "")))
+
+
+def _mix_form_row(text: Mapping[str, str], *, active: bool = False, deletable: bool = False) -> MixFormRow:
+    return MixFormRow(
+        name=text["name"],
+        unknown=text["unknown"],
+        banger=text["banger"],
+        dud=text["dud"],
+        active=active,
+        deletable=deletable,
+    )
+
+
 def _whole_number(value: object) -> int | None:
     """The value as a whole number, or `None`: "1.5" and "1e3" are refused rather than coerced."""
     try:
