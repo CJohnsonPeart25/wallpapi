@@ -75,6 +75,14 @@ def save_settings(modules: Modules, **fields: object) -> Settings | SettingsRefu
         return updated
 
 
+def choose_mix(modules: Modules, name: str) -> Settings | SettingsRefused:
+    """Make that **Mix** the active one, or say why not. A **Mix** switch changes no **Filter**, so the
+    **Pool** is left as it is; the live **Batch** keeps the **Mix** it was built with.
+    """
+    with storage.write(modules.connect()) as write:
+        return settings.update(write, active_mix=name)
+
+
 def save_mix(
     modules: Modules, name: str, *, unknown: int | str, banger: int | str, dud: int | str
 ) -> Mix | SettingsRefused:

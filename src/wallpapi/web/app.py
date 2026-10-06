@@ -334,7 +334,7 @@ def history_verdict(
 @router.post("/mix", response_class=HTMLResponse)
 def choose_mix(request: Request, modules: Wired, mix: Annotated[str, Form()]) -> HTMLResponse:
     """Switch the active **Mix**. The live **Batch** is untouched, so its **Draft Batch** survives."""
-    refused = isinstance(workflows.save_settings(modules, active_mix=mix), SettingsRefused)
+    refused = isinstance(workflows.choose_mix(modules, mix), SettingsRefused)
     return templates.TemplateResponse(
         request,
         "mix.html",

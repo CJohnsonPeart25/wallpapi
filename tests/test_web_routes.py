@@ -274,6 +274,17 @@ def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
     assert 'data-mix-active="refine"' in reloaded
 
 
+def test_switching_to_a_mix_nobody_has_heard_of_is_a_400_and_changes_nothing(web: Web) -> None:
+    """Only a second tab that deleted the **Mix**, or a hand-made post, can send one."""
+    harness, client = web
+
+    refused = client.post("/mix", data={"mix": "nope"})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert 'data-mix-active="explore"' in refused.text
+    assert settings.active_mix(harness.connect()) == EXPLORE_MIX
+
+
 # -- when there is nothing to show -------------------------------------------------------------------
 
 
