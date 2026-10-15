@@ -42,6 +42,7 @@ subject.
 """
 
 CALLS_PER_MINUTE = 45
+"""Wallhaven's own limit, counted per IP address: the most any **API budget** may be."""
 
 WINDOW_SECONDS = 60.0
 
@@ -173,6 +174,9 @@ class Refill:
         """The like: step at which each subject's latest walk began, so turns go by group (ADR 0022)."""
         self._last_strategy: RefillStrategy | None = None
         self._retry_not_before: float | None = None
+        self._remaining: int | None = None
+        self._remaining_at = 0.0
+        """Wallhaven's count of **API calls** left on this IP from the last answer, and when it arrived."""
         self._last_run: dt.datetime | None = None
         self._last_error: str | None = None
         self._last_error_at: dt.datetime | None = None
@@ -199,15 +203,25 @@ class Refill:
             )
 
     def wait(self) -> float:
-        """Seconds before the next `step`: the longest of idling at target, the limiter and a back-off."""
+        """Seconds before the next `step`: the longest of idling at target, the limiter at the **API budget**,
+        a back-off, and Wallhaven's count holding it back.
+
+        Whichever is stricter, Wallhaven's count or ours: when its remaining count says other traffic on this
+        IP has used everything the budget leaves it, the next call waits a minute from that answer. Wallhaven
+        sends no reset time, and asking sooner would spend a call (ADR 0020).
+        """
         now = self._clock.monotonic()
         connection = self._connect()
-        if size(connection) >= settings_module.get(connection).pool_target_size:
+        current = settings_module.get(connection)
+        if size(connection) >= current.pool_target_size:
             return IDLE_RECHECK_SECONDS
+        budget = current.api_calls_per_minute
         with self._lock:
-            limited = wait_needed(self._call_times, now=now)
+            limited = wait_needed(self._call_times, now=now, limit=budget)
             backing_off = 0.0 if self._retry_not_before is None else self._retry_not_before - now
-        return max(limited, backing_off, 0.0)
+            used_up = self._remaining is not None and self._remaining <= CALLS_PER_MINUTE - budget
+            held = self._remaining_at + WINDOW_SECONDS - now if used_up else 0.0
+        return max(limited, backing_off, held, 0.0)
 
     def step(self) -> None:
         """One step: at most one **API call**, and never an exception from it: the thread must not die.
@@ -267,9 +281,13 @@ class Refill:
             self._failed(failure, ERROR_BACKOFF_SECONDS)
             return
 
+        answered_at = self._clock.monotonic()
         with storage.write(connection) as write:
             admit(write, page.wallpapers, current, source=strategy, at=self._clock.now())
         with self._lock:
+            # An answer without the header clears an older count: no header is today's behaviour.
+            self._remaining = page.remaining
+            self._remaining_at = answered_at
             if strategy is RefillStrategy.LIKE:
                 self._like_walk = _advance_like_walk(self._like_walk, page)
             else:
@@ -309,6 +327,8 @@ class Refill:
             self._last_error = str(failure) or type(failure).__name__
             self._last_error_at = self._clock.now()
             self._retry_not_before = self._clock.monotonic() + backoff
+            # The back-off is the fresher word: a 429's Retry-After beats a count from an earlier answer.
+            self._remaining = None
 
 
 def refill_loop(refill: Refill, stop_event: threading.Event) -> None:

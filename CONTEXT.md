@@ -19,7 +19,7 @@ The hard rules a wallpaper must satisfy before it enters the pool: minimum resol
 _Avoid_: criteria, constraints, preferences
 
 **Refill**:
-The background work that keeps the pool stocked: Wallhaven searches, filtered, at up to 45 API calls a minute while the pool is below its target size. A thread, started with the app and stopped with it, and the only thing in wallpapi that searches Wallhaven.
+The background work that keeps the pool stocked: Wallhaven searches, filtered, at up to the API budget while the pool is below its target size. A thread, started with the app and stopped with it, and the only thing in wallpapi that searches Wallhaven.
 _Avoid_: fetcher, crawler, scraper, sync
 
 **Refill strategy**:
@@ -33,6 +33,10 @@ _Avoid_: similar search, related, recommendations, more like this
 **Pool target size**:
 How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. Every submitted batch takes the pool below it again, so the pool is a stream rather than a backlog, and 500 by default is enough to draw from while keeping every whole-pool calculation cheap. Lowering it never trims the pool: one above target drains as batches are submitted. A setting.
 _Avoid_: quota, capacity, limit, threshold
+
+**API budget**:
+How many Wallhaven API calls a minute the refill may make: 35 by default, never more than Wallhaven's own 45. Wallhaven counts its 45 per IP address, across everything on the machine, so the budget leaves the rest for other callers. The refill also holds back for a minute when Wallhaven's own count of calls remaining says other traffic has used that rest. Thumbnail and full-resolution fetches are not API calls and do not spend it. A setting.
+_Avoid_: rate limit, quota, throttle
 
 **Walk**:
 One continuous sweep of search pages for one refill strategy. A random walk carries the seed Wallhaven returned so its pages do not repeat each other, and ends when the pool reaches its target or a page comes back empty; the next one starts from a fresh seed. A lookalike walk is about one subject, a favourite or like, and ends at an empty page or its page cap, after which the next group has its turn. The two walks keep their places separately.

@@ -238,6 +238,8 @@ def test_the_settings_page_shows_what_is_stored_and_offers_what_can_be_done(
         assert f'value="{value}"' in page
     for field in ("min_height", "min_favourites", "pool_target_size"):
         assert f'name="{field}"' in page
+    budget = ('name="api_calls_per_minute"', 'min="1"', 'max="45"', 'step="1"', 'value="35"')
+    assert re.search(r"\s+".join(budget), page), "the API budget renders from its descriptor"
     assert str(chosen) in page
     assert 'action="/settings/library/download"' in page
     for name in ("explore", "refine", "duds only"):

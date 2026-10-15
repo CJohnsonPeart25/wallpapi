@@ -378,17 +378,21 @@ def test_reaching_the_target_ends_the_walk(connection: sqlite3.Connection) -> No
     assert rig.wallhaven.searches[-1]["seed"] is None
 
 
-def test_forty_five_calls_a_minute_and_the_budget_frees_as_the_oldest_leave(
-    connection: sqlite3.Connection,
+@pytest.mark.parametrize("budget", [1, settings.DEFAULT_API_CALLS_PER_MINUTE, CALLS_PER_MINUTE])
+def test_the_api_budget_a_minute_and_it_frees_as_the_oldest_leave(
+    connection: sqlite3.Connection, budget: int
 ) -> None:
-    """The fake clock never moves on its own, so all 45 land in one instant and the 46th waits the whole
-    window: a limiter that slept would have made this take 45 seconds. Then it waits only until the oldest
-    ages out."""
+    """The fake clock never moves on its own, so the whole budget lands in one instant and the next call
+    waits the whole window: a limiter that slept would have made this take as many seconds. Then it waits
+    only until the oldest ages out."""
     rig = rig_over(connection, catalogue=catalogue_of(400), page_size=1)
+    rig.configure(api_calls_per_minute=budget)
 
-    rig.step(CALLS_PER_MINUTE)
+    for _ in range(CALLS_PER_MINUTE + 5):
+        if rig.refill.wait() == 0.0:
+            rig.step()
 
-    assert len(rig.wallhaven.searches) == CALLS_PER_MINUTE
+    assert len(rig.wallhaven.searches) == budget
     assert rig.refill.wait() == WINDOW_SECONDS
 
     rig.clock.advance(WINDOW_SECONDS - 10)
@@ -397,7 +401,108 @@ def test_forty_five_calls_a_minute_and_the_budget_frees_as_the_oldest_leave(
     rig.clock.advance(10)
     assert rig.refill.wait() == 0.0
     rig.step()
-    assert len(rig.wallhaven.searches) == CALLS_PER_MINUTE + 1
+    assert len(rig.wallhaven.searches) == budget + 1
+
+
+def test_no_minute_ever_holds_more_calls_than_the_budget(connection: sqlite3.Connection) -> None:
+    """Driven as the thread drives it, a second at a time for five minutes: whichever 60 seconds are taken,
+    no more than the budget fall inside them, and the call after a full window is the one the oldest
+    frees."""
+    rig = rig_over(connection, catalogue=catalogue_of(400), page_size=1)
+    rig.configure(api_calls_per_minute=10)
+    called_at: list[float] = []
+
+    for second in range(300):
+        while rig.refill.wait() == 0.0:
+            called_at.append(float(second))
+            rig.step()
+        rig.clock.advance(1)
+
+    assert max(sum(start <= t < start + WINDOW_SECONDS for t in called_at) for start in called_at) == 10
+    assert called_at[10] == called_at[0] + WINDOW_SECONDS
+
+
+def test_lowering_the_budget_waits_until_enough_calls_age_out(connection: sqlite3.Connection) -> None:
+    """Twenty calls a second apart, then a budget of ten: the eleventh oldest, made at t=10, must leave the
+    window before the next call, so at t=20 that is 50 seconds away. Not a whole fresh window."""
+    rig = rig_over(connection, catalogue=catalogue_of(400), page_size=1)
+    for _ in range(20):
+        rig.step()
+        rig.clock.advance(1)
+
+    rig.configure(api_calls_per_minute=10)
+
+    assert rig.refill.wait() == 50.0
+
+
+@pytest.mark.parametrize(
+    ("budget", "remaining", "wait"),
+    [
+        # 45 - 35 = 10 left is what other traffic on this IP may have; at or under it, hold the minute.
+        pytest.param(35, 10, WINDOW_SECONDS, id="at the share left for others"),
+        pytest.param(35, 0, WINDOW_SECONDS, id="none left"),
+        pytest.param(35, 11, 0.0, id="above it adds nothing"),
+        pytest.param(45, 0, WINDOW_SECONDS, id="the whole 45 still holds at none left"),
+        pytest.param(45, 1, 0.0, id="the whole 45 goes on while one is left"),
+        pytest.param(40, 5, WINDOW_SECONDS, id="a higher budget leaves others less"),
+        pytest.param(40, 6, 0.0, id="and holds only at that"),
+        pytest.param(35, None, 0.0, id="no header is today's behaviour"),
+    ],
+)
+def test_wallhavens_count_holds_the_refill_back_a_minute(
+    connection: sqlite3.Connection, budget: int, remaining: int | None, wait: float
+) -> None:
+    """Wallhaven counts every caller on this IP, so its remaining count knows about calls this process never
+    made. When it says the rest of the 45 is used, the next call waits a minute from that answer: no reset
+    header exists, and asking sooner would spend a call (ADR 0020)."""
+    rig = rig_over(connection, remaining=remaining)
+    rig.configure(api_calls_per_minute=budget)
+    rig.clock.advance(5)
+
+    rig.step()
+
+    assert rig.refill.wait() == wait
+    rig.clock.advance(20)
+    assert rig.refill.wait() == max(0.0, wait - 20)
+
+
+def test_the_hold_follows_the_latest_answer(connection: sqlite3.Connection) -> None:
+    """A later answer with room, or with no count at all, ends the hold: it is the fresher word."""
+    rig = rig_over(connection, catalogue=catalogue_of(400), page_size=1, remaining=0)
+    rig.step()
+    assert rig.refill.wait() == WINDOW_SECONDS
+
+    rig.clock.advance(WINDOW_SECONDS)
+    rig.wallhaven.remaining = None
+    rig.step()
+
+    assert rig.refill.wait() == 0.0
+
+
+def test_the_hold_reads_the_budget_when_it_waits(connection: sqlite3.Connection) -> None:
+    """Raising the budget lowers the share left for others, so a held count can stop holding at once."""
+    rig = rig_over(connection, remaining=8)
+    rig.step()
+    assert rig.refill.wait() == WINDOW_SECONDS
+
+    rig.configure(api_calls_per_minute=40)
+
+    assert rig.refill.wait() == 0.0
+
+
+def test_a_failed_call_drops_wallhavens_count_and_the_back_off_decides(
+    connection: sqlite3.Connection,
+) -> None:
+    """A 429 saying "five seconds" is fresher than a count from an earlier answer, so the hold goes and the
+    back-off alone decides."""
+    rig = rig_over(connection, catalogue=catalogue_of(400), page_size=1, remaining=0)
+    rig.step()
+    rig.wallhaven.rate_limited_calls = 2
+    rig.wallhaven.retry_after = 5.0
+
+    rig.step()
+
+    assert rig.refill.wait() == 5.0
 
 
 FULL = [0.0] * CALLS_PER_MINUTE
@@ -718,6 +823,7 @@ def test_the_combined_refill_still_stops_at_forty_five_calls_a_minute(connection
         steps=1,
     )
     rig.favourite("wp0000")
+    rig.configure(api_calls_per_minute=CALLS_PER_MINUTE)
 
     for _ in range(90):
         if rig.refill.wait() == 0.0:
