@@ -1,7 +1,8 @@
 """The route layer: status codes, redirects, `HX-Trigger`, fragment versus page, and refusals in words.
 
-What a write means is tested through the workflows elsewhere; here it is only checked that the route
-reached it. `TestClient` runs the app in process over the fakes, with no background threads.
+What a write means is tested through the modules elsewhere; here it is only checked that the route
+reached it. `TestClient` runs the app in process over `make_harness`, the real modules composed as the app
+composes them (ADR 0019) with the fakes behind them, and no background threads.
 """
 
 from __future__ import annotations

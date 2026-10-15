@@ -2,7 +2,8 @@
 
 No browser, so neither Pico's styling nor Alpine's behaviour is exercised. What is asserted is content a
 regression would drop silently: where assets come from, which controls exist, the preview's deferred image,
-and the words and values each page shows.
+and the words and values each page shows. Over `make_harness`, because a page is rendered over the real
+modules composed as the app composes them (ADR 0019).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import Harness, batch_id_of, judge, live, make_harness, serving
+from tests.conftest import Harness, batch_id_of, judge, live, make_harness, serving, submit_with
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import settings, workflows
 from wallpapi.model import Verdict
@@ -141,6 +142,25 @@ def test_a_history_row_shows_its_thumbnail_verdict_time_and_link(db_path: Path) 
     assert len(pressed) == 1
     assert 'data-verdict="ignore"' in pressed[0]
     assert "untouched" not in body
+
+
+def test_a_history_row_carries_the_wallpaper_its_resolved_verdict_and_its_latest_timestamp(
+    db_path: Path,
+) -> None:
+    """The *resolved* **Verdict**, which is the difference between **History** and a print-out of the
+    log, as data attributes and a machine-readable time. Read off the page, which is where the
+    **Wallpaper** is joined on."""
+    harness = make_harness(db_path, catalogue=(wallpaper("only"),))
+    workflows.save_settings(harness.modules, batch_size=1)
+    submit_with(harness, {"only": Verdict.LIKE})
+
+    with serving(harness) as client:
+        page = client.get("/history").text
+
+    assert 'data-wallpaper-id="only"' in page
+    assert 'href="https://wallhaven.cc/w/only"' in page
+    assert 'data-resolved-verdict="like"' in page
+    assert f'<time datetime="{harness.clock.now().isoformat()}">' in page
 
 
 def test_an_empty_history_says_so_and_so_does_an_empty_filter(db_path: Path) -> None:

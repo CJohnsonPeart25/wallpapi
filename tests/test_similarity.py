@@ -5,6 +5,7 @@ source, and the SQLite store under `tmp_path`. No model, no `onnxruntime` and no
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -16,10 +17,12 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import SOURCE, make_harness
+from tests.conftest import FIXED_NOW, SOURCE
 from tests.fakes import (
     STUB_DIRECTION,
+    FakeClock,
     FakeSimilarities,
+    FakeWallhavenClient,
     MemoryStore,
     ModelOnDisk,
     ModelThatFails,
@@ -27,8 +30,10 @@ from tests.fakes import (
     catalogue_of,
     wallpaper,
 )
+from wallpapi import pool, settings, storage
 from wallpapi.main import build_similarity
 from wallpapi.model import Wallpaper
+from wallpapi.pool import RefillStrategy
 from wallpapi.similarity import (
     CATEGORY_SHARE,
     CAUGHT_UP,
@@ -40,6 +45,7 @@ from wallpapi.similarity import (
     Similarity,
     metadata_similarity,
 )
+from wallpapi.thumbnails import Thumbnails
 
 RED = ("#ff0000", "#880000")
 NEARLY_RED = ("#fa0505", "#850303")
@@ -560,12 +566,16 @@ def test_the_page_is_told_how_much_of_the_pool_is_embedded(tmp_path: Path) -> No
     assert similarity.notice([]) is None
 
 
-def test_the_notice_is_asked_about_the_whole_pool(db_path: Path) -> None:
-    harness = make_harness(db_path, catalogue=catalogue_of(24))
-    harness.store.vector_by_id["wp0000"] = STUB_DIRECTION
-    harness.modules.similarity.catch_up(harness.modules.thumbnails.directory, threading.Event())
+def test_the_notice_is_asked_about_the_whole_pool(memory: sqlite3.Connection, tmp_path: Path) -> None:
+    """What the page hands it: everything the **Thumbnail cache** can obtain, which with nothing given up
+    is the whole **Pool**. `Thumbnails` and `Embeddings` built by hand over one database."""
+    with storage.write(memory) as write:
+        pool.admit(write, catalogue_of(24), settings.get(write), source=RefillStrategy.RANDOM, at=FIXED_NOW)
+    cache = Thumbnails(tmp_path / "thumbnails", FakeWallhavenClient(catalogue_of(24)), FakeClock(FIXED_NOW))
+    similarity = embeddings({"wp0000": STUB_DIRECTION})
+    similarity.catch_up(cache.directory, threading.Event())
 
-    notice = harness.modules.similarity.notice(harness.modules.thumbnails.obtainable(harness.connect()))
+    notice = similarity.notice(cache.obtainable(memory))
 
     assert notice is not None
     assert "1 of 24 Pool wallpapers" in notice

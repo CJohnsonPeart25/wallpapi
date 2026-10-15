@@ -10,12 +10,13 @@ import datetime as dt
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
 from tests.conftest import SOURCE
 from wallpapi import decisions, storage
-from wallpapi.decisions import HISTORY_PAGE_SIZE, ResolvedVerdict
+from wallpapi.decisions import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Clearance, Verdict
 
 AT = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
@@ -34,13 +35,18 @@ EACH_VERDICT = {
 def connection() -> Iterator[sqlite3.Connection]:
     """A migrated database holding the `wallpapers` rows the log's foreign key wants, and nothing decided."""
     with closing(storage.connect(":memory:")) as connection:
-        storage.migrate(connection)
-        with storage.write(connection) as write:
-            write.executemany(
-                "INSERT INTO wallpapers VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
-                [(w,) for w in WALLPAPERS],
-            )
+        _migrated_with_wallpapers(connection)
         yield connection
+
+
+def _migrated_with_wallpapers(connection: sqlite3.Connection) -> None:
+    storage.migrate(connection)
+    with storage.write(connection) as write:
+        write.executemany(
+            "INSERT OR IGNORE INTO wallpapers "
+            "VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
+            [(w,) for w in WALLPAPERS],
+        )
 
 
 def append(
@@ -57,6 +63,14 @@ def append(
                 (batch_id, at.isoformat(), len(verdicts)),
             )
         decisions.append(write, verdicts, batch_id=batch_id, at=at)
+
+
+def edit(
+    connection: sqlite3.Connection, wallpaper_id: str, verdict: Verdict
+) -> HistoryEntry | HistoryRefused:
+    """A **History** edit in its own write transaction, as the workflow makes it."""
+    with storage.write(connection) as write:
+        return decisions.edit(write, wallpaper_id, verdict, at=AT)
 
 
 def append_legacy_clearance(connection: sqlite3.Connection, wallpaper_id: str) -> None:
@@ -126,6 +140,53 @@ def test_an_ignore_after_a_favourite_resolves_to_ignore(connection: sqlite3.Conn
     append(connection, {SUBJECT: Verdict.IGNORE}, at=LATER)
 
     assert resolved(connection, SUBJECT) == ResolvedVerdict(verdict=Verdict.IGNORE, value=-10)
+
+
+@pytest.mark.parametrize(
+    ("submitted", "edits", "expected"),
+    [
+        # Passing something over twice is not twice the dislike, and "ignored" is not "never seen".
+        pytest.param(None, [Verdict.IGNORE], ResolvedVerdict(Verdict.IGNORE, -10), id="ignores do not stack"),
+        pytest.param(
+            None,
+            [Verdict.IGNORE, Verdict.LIKE],
+            ResolvedVerdict(Verdict.LIKE, 50),
+            id="a verdict overturns ignores",
+        ),
+        pytest.param(
+            Verdict.LIKE,
+            [Verdict.FAVOURITE],
+            ResolvedVerdict(Verdict.FAVOURITE, 100),
+            id="replaced, not added to",
+        ),
+        pytest.param(
+            Verdict.LIKE,
+            [Verdict.IGNORE],
+            ResolvedVerdict(Verdict.IGNORE, -10),
+            id="an ignore withdraws a verdict",
+        ),
+    ],
+)
+def test_the_latest_entry_decides(
+    connection: sqlite3.Connection, submitted: Verdict | None, edits: list[Verdict], expected: ResolvedVerdict
+) -> None:
+    """Submitted in a **Batch** (unmarked is an **Ignore**), then edited from **History**: what came before
+    the latest counts for nothing. An edit carries no **Batch**, which is how the log tells it apart."""
+    append(connection, {SUBJECT: submitted or Verdict.IGNORE}, batch_id="b1")
+
+    for verdict in edits:
+        assert isinstance(edit(connection, SUBJECT, verdict), HistoryEntry)
+
+    assert resolved(connection, SUBJECT) == expected
+    assert decisions.entries(connection, wallpaper_id=SUBJECT)[-1].batch_id is None
+
+
+def test_editing_an_unknown_wallpaper_is_refused_and_appends_nothing(connection: sqlite3.Connection) -> None:
+    """A refusal in the house style rather than the foreign key's `IntegrityError`."""
+    refused = edit(connection, "never-seen", Verdict.IGNORE)
+
+    assert refused == HistoryRefused(reason=HistoryRefused.Reason.UNKNOWN_WALLPAPER)
+    assert decisions.entries(connection) == []
 
 
 def test_a_legacy_clearance_resolves_to_nothing_and_anything_after_it_decides(
@@ -214,6 +275,35 @@ def test_an_append_is_part_of_the_callers_transaction(connection: sqlite3.Connec
         raise RuntimeError
 
     assert decisions.entries(connection) == []
+
+
+def test_a_second_ignore_is_appended_not_folded_into_the_first(connection: sqlite3.Connection) -> None:
+    """Append-only: an entry the same as the latest is a second entry, not a no-op. **History** is the only
+    way to decide a submitted **Wallpaper** again."""
+    append(connection, {SUBJECT: Verdict.IGNORE}, batch_id="b1")
+
+    assert isinstance(edit(connection, SUBJECT, Verdict.IGNORE), HistoryEntry)
+
+    assert [e.entry for e in decisions.entries(connection, wallpaper_id=SUBJECT)] == [
+        Verdict.IGNORE,
+        Verdict.IGNORE,
+    ]
+
+
+def test_the_decision_log_survives_a_restart(tmp_path: Path) -> None:
+    """A second connection over the same file, migrated again: nothing appended is lost or rewritten."""
+    path = tmp_path / "wallpapi.db"
+    with closing(storage.connect(path)) as first:
+        _migrated_with_wallpapers(first)
+        append(first, EACH_VERDICT, batch_id="b1")
+        recorded = decisions.entries(first)
+
+    with closing(storage.connect(path)) as second:
+        _migrated_with_wallpapers(second)
+        restored = decisions.entries(second)
+
+    assert len(restored) == len(EACH_VERDICT)
+    assert restored == recorded
 
 
 def test_a_legacy_clearance_is_read_back_as_one(connection: sqlite3.Connection) -> None:

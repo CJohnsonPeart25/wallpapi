@@ -1,9 +1,10 @@
 """The three background threads: they start with the app, run their loop, and stop when told.
 
-What the loops *decide* belongs to their modules (the pool's refill, the similarity upkeep, the Core
-service's downloader), which the other tests drive by hand. What is left here is what a fake cannot stand in
+What the loops *decide* belongs to their modules (the pool's refill, the similarity upkeep, the **Thumbnail
+cache**'s downloader), which the other tests drive by hand. What is left here is what a fake cannot stand in
 for: a loop on another thread, and a shutdown that has to end it. Every wait is on an event a fake sets, never
-a sleep, and fails the test rather than hanging.
+a sleep, and fails the test rather than hanging. Over `make_harness`, because the loops are started by the
+composed app's lifespan.
 """
 
 from __future__ import annotations

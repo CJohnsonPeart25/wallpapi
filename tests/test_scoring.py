@@ -1,73 +1,72 @@
 """**Scores** and **Zones**: what a **Verdict** spreads to, how far, and what it makes of the **Pool**.
 
-The fake provider's hand-defined similarities stand in for a real one. Most tests mint a **Batch** of two so
-that submitting decides exactly the two **Wallpapers** meant: at eight, every unmarked one would pick up an
-**Ignore**, which spreads like any other **Verdict**.
+Through `Batches.classify` on `conftest.BatchesRig`: a real in-memory database, and the fake provider's
+hand-defined similarities standing in for a real one. A submission is stood for by what it does to these
+tables: a **Verdict** appended for each **Wallpaper** shown, an unmarked one an **Ignore**, and every one of
+them retired from the **Pool**.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from tests.conftest import Harness, live, make_harness
+from tests.conftest import BatchesRig, batches_rig
 from tests.fakes import catalogue_of
-from wallpapi import workflows
 from wallpapi.allocation import ScoredWallpaper
 from wallpapi.decisions import HistoryEntry
 from wallpapi.model import Verdict, Zone
 from wallpapi.scoring import classify
 
 POOL_SIZE = 5
+SHOWN = ("wp0000", "wp0001")
+"""The two a submission decides; the rest of the **Pool** is undecided."""
+REST = ("wp0002", "wp0003", "wp0004")
 
 
-def _decide_two(harness: Harness) -> tuple[str, str, list[str]]:
-    """Show a **Batch** of two, unsubmitted, and hand back its two IDs and the undecided rest, sorted."""
-    workflows.save_settings(harness.modules, batch_size=2)
-    batch = live(harness)
-    shown = [w.id for w in batch.wallpapers]
-    rest = sorted({f"wp{n:04d}" for n in range(POOL_SIZE)} - set(shown))
-    return shown[0], shown[1], rest
+@pytest.fixture
+def rig() -> Iterator[BatchesRig]:
+    with batches_rig() as made:
+        made.stock(catalogue_of(POOL_SIZE))
+        yield made
 
 
-def _submit(harness: Harness, **marks: Verdict) -> None:
-    batch = live(harness)
-    for wallpaper_id, verdict in marks.items():
-        workflows.set_draft(harness.modules, batch.id, wallpaper_id, verdict)
-    workflows.submit(harness.modules, batch.id)
+def _submit(rig: BatchesRig, **marks: Verdict) -> None:
+    """Submit the two `SHOWN`: each its mark, or an **Ignore** if it has none, and both retired."""
+    for wallpaper_id in SHOWN:
+        rig.decide(marks.get(wallpaper_id, Verdict.IGNORE), wallpaper_id)
+    rig.retire(*SHOWN)
 
 
-def _zones(harness: Harness) -> dict[str, Zone]:
-    return {
-        scored.wallpaper.id: scored.zone for scored in harness.modules.batches.classify(harness.connect())
-    }
+def _zones(rig: BatchesRig) -> dict[str, Zone]:
+    return {scored.wallpaper.id: scored.zone for scored in rig.batches.classify(rig.connection)}
 
 
-def _scores(harness: Harness) -> dict[str, float]:
-    return {
-        scored.wallpaper.id: scored.score for scored in harness.modules.batches.classify(harness.connect())
-    }
+def _scores(rig: BatchesRig) -> dict[str, float]:
+    return {scored.wallpaper.id: scored.score for scored in rig.batches.classify(rig.connection)}
 
 
-def test_a_favourite_spreads_a_banger_a_ban_spreads_a_dud_and_the_distant_stay_unknown(db_path: Path) -> None:
+def test_a_favourite_spreads_a_banger_a_ban_spreads_a_dud_and_the_distant_stay_unknown(
+    rig: BatchesRig,
+) -> None:
     """The **Score** is the resolved values fading with distance: one like the **Favourite** is positive,
     one like the **Ban** negative, and one beyond the radius of both exactly zero, so **Unknown**."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, hated, (like_the_favourite, like_the_ban, unlike_either) = _decide_two(harness)
-    harness.similarity.similarity_by_pair.update(
-        {(like_the_favourite, loved): 0.95, (like_the_ban, hated): 0.95}
-    )
-    _submit(harness, **{loved: Verdict.FAVOURITE, hated: Verdict.BAN})
+    loved, hated = SHOWN
+    like_the_favourite, like_the_ban, unlike_either = REST
+    rig.similarity.similarity_by_pair.update({(like_the_favourite, loved): 0.95, (like_the_ban, hated): 0.95})
+    _submit(rig, **{loved: Verdict.FAVOURITE, hated: Verdict.BAN})
 
-    zones = _zones(harness)
+    zones = _zones(rig)
 
     assert zones[like_the_favourite] is Zone.BANGER
     assert zones[like_the_ban] is Zone.DUD
     assert zones[unlike_either] is Zone.UNKNOWN
 
 
-def test_a_decided_pool_member_scores_its_own_value_and_a_banned_one_is_in_no_zone(db_path: Path) -> None:
+def test_a_decided_pool_member_scores_its_own_value_and_a_banned_one_is_in_no_zone(rig: BatchesRig) -> None:
     """At distance 0 the weight is exactly 1, so a **Favourite** scores exactly its resolved value. A
     **Ban** means never shown, so it is left out of the classification rather than called a **Dud**.
 
@@ -75,12 +74,11 @@ def test_a_decided_pool_member_scores_its_own_value_and_a_banned_one_is_in_no_zo
     is the one way a decided **Wallpaper** is still in the **Pool** (ADR 0016): after a submission a
     **Banned** one is absent whatever its **Verdict**, so that could not tell a **Ban** from an **Ignore**.
     """
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    assert isinstance(workflows.edit_verdict(harness.modules, "wp0000", Verdict.FAVOURITE), HistoryEntry)
-    assert isinstance(workflows.edit_verdict(harness.modules, "wp0001", Verdict.BAN), HistoryEntry)
-    assert isinstance(workflows.edit_verdict(harness.modules, "wp0002", Verdict.IGNORE), HistoryEntry)
+    assert isinstance(rig.edit("wp0000", Verdict.FAVOURITE), HistoryEntry)
+    assert isinstance(rig.edit("wp0001", Verdict.BAN), HistoryEntry)
+    assert isinstance(rig.edit("wp0002", Verdict.IGNORE), HistoryEntry)
 
-    scores, zones = _scores(harness), _zones(harness)
+    scores, zones = _scores(rig), _zones(rig)
 
     assert scores["wp0000"] == 100.0
     assert zones["wp0000"] is Zone.BANGER
@@ -88,113 +86,122 @@ def test_a_decided_pool_member_scores_its_own_value_and_a_banned_one_is_in_no_zo
     assert zones["wp0002"] is Zone.DUD, "an Ignore stays in a Zone; only a Ban leaves them all"
 
 
-def test_equal_and_opposite_verdicts_cancel_to_exactly_zero_and_so_to_unknown(db_path: Path) -> None:
+def test_equal_and_opposite_verdicts_cancel_to_exactly_zero_and_so_to_unknown(rig: BatchesRig) -> None:
     """IEEE arithmetic cancels exact negatives to 0.0, which is what the rule asks for: a tolerance would
     turn a **Wallpaper** the evidence points at into an **Unknown**."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, hated, rest = _decide_two(harness)
-    torn = rest[0]
-    harness.similarity.similarity_by_pair.update({(torn, loved): 0.95, (torn, hated): 0.95})
-    _submit(harness, **{loved: Verdict.FAVOURITE, hated: Verdict.BAN})
+    loved, hated = SHOWN
+    torn = REST[0]
+    rig.similarity.similarity_by_pair.update({(torn, loved): 0.95, (torn, hated): 0.95})
+    _submit(rig, **{loved: Verdict.FAVOURITE, hated: Verdict.BAN})
 
-    assert _scores(harness)[torn] == 0.0
-    assert _zones(harness)[torn] is Zone.UNKNOWN
+    assert _scores(rig)[torn] == 0.0
+    assert _zones(rig)[torn] is Zone.UNKNOWN
 
 
-def test_a_ban_still_spreads_to_everything_like_it(db_path: Path) -> None:
+def test_a_ban_still_spreads_to_everything_like_it(rig: BatchesRig) -> None:
     """ "Never show me this" is also "show me less of this sort of thing": leaving **Bans** out of the
     decided set would keep the **Zone** rule and throw the strongest signal away. Below -10, so an
     **Ignore** in the same place could not pass for it."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    _, hated, rest = _decide_two(harness)
-    like_the_ban = rest[0]
-    harness.similarity.similarity_by_pair[(like_the_ban, hated)] = 0.95
-    _submit(harness, **{hated: Verdict.BAN})
+    hated = SHOWN[1]
+    like_the_ban = REST[0]
+    rig.similarity.similarity_by_pair[(like_the_ban, hated)] = 0.95
+    _submit(rig, **{hated: Verdict.BAN})
 
-    assert _scores(harness)[like_the_ban] < -10.0
-    assert _zones(harness)[like_the_ban] is Zone.DUD
+    assert _scores(rig)[like_the_ban] < -10.0
+    assert _zones(rig)[like_the_ban] is Zone.DUD
 
 
-def test_an_ignore_spreads_as_a_mild_negative(db_path: Path) -> None:
+def test_an_ignore_spreads_as_a_mild_negative(rig: BatchesRig) -> None:
     """Nothing is marked, so both shown **Wallpapers** get the derived **Ignore**, at -10 not -100."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    ignored, _, rest = _decide_two(harness)
-    like_the_ignored = rest[0]
-    harness.similarity.similarity_by_pair[(like_the_ignored, ignored)] = 0.95
-    _submit(harness)
+    ignored = SHOWN[0]
+    like_the_ignored = REST[0]
+    rig.similarity.similarity_by_pair[(like_the_ignored, ignored)] = 0.95
+    _submit(rig)
 
-    assert _zones(harness)[like_the_ignored] is Zone.DUD
-    assert -10.0 < _scores(harness)[like_the_ignored] < 0.0
+    assert _zones(rig)[like_the_ignored] is Zone.DUD
+    assert -10.0 < _scores(rig)[like_the_ignored] < 0.0
 
 
-def test_the_next_classification_follows_the_decision_log_with_no_restart(db_path: Path) -> None:
+def test_a_retired_wallpaper_still_shapes_the_scores_of_the_pool(rig: BatchesRig) -> None:
+    """The decided set is independent of **Pool** membership (ADR 0007): a retired **Ban** still makes the
+    unseen **Wallpaper** like it a **Dud**."""
+    remaining = REST[0]
+    rig.similarity.similarity_by_pair.update({(remaining, decided): 0.95 for decided in SHOWN})
+    _submit(rig, **dict.fromkeys(SHOWN, Verdict.BAN))
+
+    scored = {s.wallpaper.id: s for s in rig.batches.classify(rig.connection)}
+
+    assert not set(SHOWN) & set(scored), "retired, so no longer classified"
+    assert scored[remaining].zone is Zone.DUD
+    assert scored[remaining].score < 0
+
+
+def test_the_next_classification_follows_the_decision_log_with_no_restart(rig: BatchesRig) -> None:
     """**Scores** are derived on every read (invariant 2): a stored or memoised one would hold the first
     answer while the log changed underneath it."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, hated, rest = _decide_two(harness)
-    swayed = rest[0]
-    harness.similarity.similarity_by_pair.update({(swayed, loved): 0.93, (swayed, hated): 0.97})
-    assert _zones(harness)[swayed] is Zone.UNKNOWN
+    loved, hated = SHOWN
+    swayed = REST[0]
+    rig.similarity.similarity_by_pair.update({(swayed, loved): 0.93, (swayed, hated): 0.97})
+    assert _zones(rig)[swayed] is Zone.UNKNOWN
 
-    _submit(harness, **{loved: Verdict.FAVOURITE})
-    assert _zones(harness)[swayed] is Zone.BANGER
+    _submit(rig, **{loved: Verdict.FAVOURITE})
+    assert _zones(rig)[swayed] is Zone.BANGER
 
-    assert isinstance(workflows.edit_verdict(harness.modules, hated, Verdict.BAN), HistoryEntry)
+    assert isinstance(rig.edit(hated, Verdict.BAN), HistoryEntry)
 
-    assert _zones(harness)[swayed] is Zone.DUD
+    assert _zones(rig)[swayed] is Zone.DUD
 
 
-def test_a_restart_derives_the_same_classification(db_path: Path) -> None:
-    """The other half of never stored: the answer survives when nothing changes."""
+def test_a_restart_derives_the_same_classification(tmp_path: Path) -> None:
+    """The other half of never stored: a second connection over the same file, with nothing changed,
+    derives the same answer."""
+    database = tmp_path / "wallpapi.db"
     similarities = {("wp0004", "wp0000"): 0.95}
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE), similarities=similarities)
-    workflows.save_settings(harness.modules, batch_size=POOL_SIZE)
-    _submit(harness, wp0000=Verdict.FAVOURITE)
-    before = _scores(harness)
+    with batches_rig(database, similarities) as first:
+        first.stock(catalogue_of(POOL_SIZE))
+        first.decide(Verdict.FAVOURITE, "wp0000")
+        first.retire("wp0000")
+        before = _scores(first)
 
-    restarted = make_harness(
-        db_path, catalogue=catalogue_of(POOL_SIZE), fill_pool=0, similarities=similarities
-    )
+    with batches_rig(database, similarities) as restarted:
+        after = _scores(restarted)
 
-    assert _scores(restarted) == before
+    assert before["wp0004"] > 0.0
+    assert after == before
 
 
-def test_widening_the_radius_brings_a_distant_wallpaper_into_a_zone(db_path: Path) -> None:
+def test_widening_the_radius_brings_a_distant_wallpaper_into_a_zone(rig: BatchesRig) -> None:
     """The radius is a cliff: at distance 0.6 the **Favourite** counts for nothing until it is wider."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, _, rest = _decide_two(harness)
-    distant = rest[0]
-    harness.similarity.similarity_by_pair[(distant, loved)] = 0.4
-    _submit(harness, **{loved: Verdict.FAVOURITE})
-    assert _zones(harness)[distant] is Zone.UNKNOWN
+    loved = SHOWN[0]
+    distant = REST[0]
+    rig.similarity.similarity_by_pair[(distant, loved)] = 0.4
+    _submit(rig, **{loved: Verdict.FAVOURITE})
+    assert _zones(rig)[distant] is Zone.UNKNOWN
 
-    workflows.save_settings(harness.modules, similarity_radius=0.7)
+    rig.configure(similarity_radius=0.7)
 
-    assert _zones(harness)[distant] is Zone.BANGER
+    assert _zones(rig)[distant] is Zone.BANGER
 
 
-def test_raising_the_decay_shrinks_what_a_distant_verdict_is_worth(db_path: Path) -> None:
+def test_raising_the_decay_shrinks_what_a_distant_verdict_is_worth(rig: BatchesRig) -> None:
     """The decay is a slope inside the radius: it takes **Score** away and leaves the sign alone."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, _, rest = _decide_two(harness)
-    nearby = rest[0]
-    harness.similarity.similarity_by_pair[(nearby, loved)] = 0.95
-    _submit(harness, **{loved: Verdict.FAVOURITE})
-    gentle = _scores(harness)[nearby]
+    loved = SHOWN[0]
+    nearby = REST[0]
+    rig.similarity.similarity_by_pair[(nearby, loved)] = 0.95
+    _submit(rig, **{loved: Verdict.FAVOURITE})
+    gentle = _scores(rig)[nearby]
 
-    workflows.save_settings(harness.modules, similarity_decay=10.0)
-    steep = _scores(harness)[nearby]
+    rig.configure(similarity_decay=10.0)
+    steep = _scores(rig)[nearby]
 
     assert 0.0 < steep < gentle
-    assert _zones(harness)[nearby] is Zone.BANGER
+    assert _zones(rig)[nearby] is Zone.BANGER
 
 
-def test_an_undecided_pool_is_every_wallpaper_unknown_and_a_score_a_plain_float(db_path: Path) -> None:
+def test_an_undecided_pool_is_every_wallpaper_unknown_and_a_score_a_plain_float(rig: BatchesRig) -> None:
     """A matrix with no columns is where every install starts, so it is the ordinary path. A `float`, not
     a numpy scalar a template would print as `np.float64(…)`."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-
-    classified = harness.modules.batches.classify(harness.connect())
+    classified = rig.batches.classify(rig.connection)
 
     assert len(classified) == POOL_SIZE
     assert all(isinstance(scored, ScoredWallpaper) and type(scored.score) is float for scored in classified)
@@ -202,19 +209,18 @@ def test_an_undecided_pool_is_every_wallpaper_unknown_and_a_score_a_plain_float(
     assert all(scored.score == 0.0 for scored in classified)
 
 
-def test_the_similarity_provider_is_asked_for_one_matrix_of_the_whole_pool(db_path: Path) -> None:
+def test_the_similarity_provider_is_asked_for_one_matrix_of_the_whole_pool(rig: BatchesRig) -> None:
     """Invariant 2's shape, which has no observable but the fake's record: once, **Pool** by decided. The
     decided side includes the derived **Ignore** and the retired **Wallpapers**, which are columns and
     never rows (ADR 0007)."""
-    harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
-    loved, ignored, _ = _decide_two(harness)
-    _submit(harness, **{loved: Verdict.FAVOURITE})
-    harness.similarity.calls.clear()
+    loved, ignored = SHOWN
+    _submit(rig, **{loved: Verdict.FAVOURITE})
+    rig.similarity.calls.clear()
 
-    harness.modules.batches.classify(harness.connect())
+    rig.batches.classify(rig.connection)
 
-    assert len(harness.similarity.calls) == 1
-    pool_side, decided_side = harness.similarity.calls[0]
+    assert len(rig.similarity.calls) == 1
+    pool_side, decided_side = rig.similarity.calls[0]
     assert len(pool_side) == POOL_SIZE - 2
     assert set(decided_side) == {loved, ignored}
     assert not set(pool_side) & set(decided_side), "a retired Wallpaper is a column, never a row"

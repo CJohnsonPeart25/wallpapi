@@ -5,7 +5,8 @@ A real in-memory database, a temporary directory handed to the constructor, the 
 fake clock. **Wallpapers** are admitted, retired and decided as `pool` and `decisions` do. The downloader is
 driven by hand, as the refill is: `wait` says how long the thread would wait and `step` does at most one
 fetch. The rule ADR 0009 recorded is held here: a size cap never evicts a **Wallpaper** with an **Explicit
-Verdict**.
+Verdict**. One test uses `make_harness`, because its subject is a workflow's tail: eviction after a
+submission.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FIXED_NOW, live, make_harness, raw_connection
+from tests.conftest import FIXED_NOW, live, make_harness
 from tests.fakes import (
     THUMBNAIL_BYTES,
     FakeClock,
@@ -499,7 +500,7 @@ def test_the_thumbnail_gap(last: float | None, now: float, wait: float) -> None:
     assert gap_needed(last, now=now) == pytest.approx(wait)  # pyright: ignore[reportUnknownMemberType]
 
 
-# -- the modules and workflows: the tail of a submission, and the page's notice ----------------------
+# -- the tail of a submission, a workflow on the harness, and the page's notice ----------------------
 
 
 def test_a_submission_evicts_what_it_retired_without_a_verdict(db_path: Path) -> None:
@@ -516,18 +517,16 @@ def test_a_submission_evicts_what_it_retired_without_a_verdict(db_path: Path) ->
     assert {p.stem for p in harness.modules.thumbnails.directory.iterdir()} == {"liked"}
 
 
-def test_the_notice_leaves_out_what_the_downloader_gave_up_on(db_path: Path) -> None:
-    """Coverage is of what can be embedded, or a dead thumbnail would hold the line on the page for ever."""
-    harness = make_harness(db_path, catalogue=OUT_OF_ORDER)
-    harness.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = ThumbnailUnavailable(404)
-    thumbnails = harness.modules.thumbnails
-    with raw_connection(db_path) as connection:
-        for _ in range(len(OUT_OF_ORDER) + 1):
-            harness.clock.advance(thumbnails.wait())
-            thumbnails.step(connection)
-    assert thumbnails.given_up() == {DEAD.id}
+def test_the_notice_leaves_out_what_the_downloader_gave_up_on(rig: Rig) -> None:
+    """Coverage is of what can be embedded, or a dead thumbnail would hold the line on the page for ever.
+    `Embeddings` built by hand over the cache the rig filled, and handed what the cache can obtain."""
+    rig.wallhaven.failing_thumbnails[DEAD.thumbnail_url] = ThumbnailUnavailable(404)
+    rig.run(len(OUT_OF_ORDER) + 1)
+    assert rig.thumbnails.given_up() == {DEAD.id}
+    embed = StubEmbed()
+    similarity = Embeddings(MemoryStore(), embed, ModelOnDisk(), fallback=FakeSimilarities())
 
-    harness.modules.similarity.catch_up(harness.modules.thumbnails.directory, threading.Event())
+    similarity.catch_up(rig.directory, threading.Event())
 
-    assert set(harness.embed.seen) == {"cc0003", "bb0002"}
-    assert harness.modules.similarity.notice(harness.modules.thumbnails.obtainable(harness.connect())) is None
+    assert set(embed.seen) == {"cc0003", "bb0002"}
+    assert similarity.notice(rig.thumbnails.obtainable(rig.connection)) is None

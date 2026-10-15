@@ -1,22 +1,32 @@
 """**Mixes**: the pure **Allocation** of slots, and making, editing and deleting **Mixes**.
 
 **Allocation** is a pure function and is tested as one, with a seeded source; the draw a **Batch** gets
-under a **Mix** is `test_batches.py`'s. Everything else enters through the modules and the workflows.
+under a **Mix** is `test_batches.py`'s. The **Mixes** themselves go through `settings` alone, over the
+`memory` connection, each call in its own write as the workflows make it; choosing one is the `/mix` route's
+test in `test_web_routes.py`.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from tests.conftest import make_harness
-from wallpapi import settings, workflows
+from wallpapi import settings, storage
 from wallpapi.allocation import ZONE_ORDER, allocate
 from wallpapi.model import Mix, Zone
 from wallpapi.rng import SeededRandom
-from wallpapi.settings import EXPLORE_MIX, MAX_MIX_NAME_LENGTH, MIX_TOTAL, REFINE_MIX, SettingsRefused
+from wallpapi.settings import (
+    EXPLORE_MIX,
+    MAX_MIX_NAME_LENGTH,
+    MIX_TOTAL,
+    REFINE_MIX,
+    Settings,
+    SettingsRefused,
+)
 
 ROLLS = 4000
 """Seeded **Allocations** a distribution is read off: a 50/40/10 split is unmistakable at the tolerance."""
@@ -94,79 +104,74 @@ def test_the_same_seed_allocates_the_same_way_and_a_different_one_need_not() -> 
     assert len({tuple(allocate(EXPLORE_MIX, 32, SeededRandom(seed)).items()) for seed in range(20)}) > 1
 
 
-# -- choosing ----------------------------------------------------------------------------------------
-
-
-def test_a_mix_nobody_has_heard_of_is_refused(db_path: Path) -> None:
-    """Accepted and ignored, it would leave the switcher naming a **Mix** the draw has never heard of."""
-    harness = make_harness(db_path)
-
-    refused = workflows.choose_mix(harness.modules, "nope")
-
-    assert isinstance(refused, SettingsRefused)
-    assert refused.reason is SettingsRefused.Reason.ACTIVE_MIX_UNKNOWN
-    assert settings.get(harness.connect()).active_mix == "explore"
-
-
-def test_choosing_a_stored_mix_makes_it_the_one_the_next_batch_is_drawn_under(db_path: Path) -> None:
-    harness = make_harness(db_path)
-
-    chosen = workflows.choose_mix(harness.modules, "refine")
-
-    assert isinstance(chosen, settings.Settings)
-    assert chosen.active_mix == "refine"
-    assert settings.active_mix(harness.connect()) == REFINE_MIX
-
-
 # -- making and editing ------------------------------------------------------------------------------
 
 
-def test_editing_explore_changes_the_active_mix_the_next_batch_is_drawn_under(db_path: Path) -> None:
-    harness = make_harness(db_path)
-
-    assert workflows.save_mix(harness.modules, "explore", unknown=50, banger=45, dud=5) == EDITED_EXPLORE
-
-    assert settings.active_mix(harness.connect()) == EDITED_EXPLORE
-
-
-def test_editing_a_mix_does_not_change_which_one_is_active(db_path: Path) -> None:
-    harness = make_harness(db_path)
-
-    workflows.save_mix(harness.modules, "refine", unknown=10, banger=90, dud=0)
-
-    assert settings.active_mix(harness.connect()) == EXPLORE_MIX
-    assert Mix(name="refine", unknown=10, banger=90, dud=0) in tuple(
-        listed.mix for listed in settings.list_mixes(harness.connect())
-    )
+def save_mix(
+    connection: sqlite3.Connection, name: str, *, unknown: int | str, banger: int | str, dud: int | str
+) -> Mix | SettingsRefused:
+    with storage.write(connection) as write:
+        return settings.save_mix(write, name, unknown=unknown, banger=banger, dud=dud)
 
 
-def test_a_custom_mix_can_be_made_and_selected(db_path: Path) -> None:
-    harness = make_harness(db_path)
+def delete_mix(connection: sqlite3.Connection, name: str) -> SettingsRefused | None:
+    with storage.write(connection) as write:
+        return settings.delete_mix(write, name)
 
-    made = workflows.save_mix(harness.modules, "duds only", unknown=0, banger=0, dud=100)
-    workflows.save_settings(harness.modules, active_mix="duds only")
+
+def choose(connection: sqlite3.Connection, name: str) -> None:
+    with storage.write(connection) as write:
+        assert isinstance(settings.update(write, active_mix=name), Settings)
+
+
+def listed(connection: sqlite3.Connection) -> tuple[Mix, ...]:
+    return tuple(listing.mix for listing in settings.list_mixes(connection))
+
+
+def test_editing_explore_changes_the_active_mix_the_next_batch_is_drawn_under(
+    memory: sqlite3.Connection,
+) -> None:
+    assert save_mix(memory, "explore", unknown=50, banger=45, dud=5) == EDITED_EXPLORE
+
+    assert settings.active_mix(memory) == EDITED_EXPLORE
+
+
+def test_editing_a_mix_does_not_change_which_one_is_active(memory: sqlite3.Connection) -> None:
+    save_mix(memory, "refine", unknown=10, banger=90, dud=0)
+
+    assert settings.active_mix(memory) == EXPLORE_MIX
+    assert Mix(name="refine", unknown=10, banger=90, dud=0) in listed(memory)
+
+
+def test_a_custom_mix_can_be_made_and_selected(memory: sqlite3.Connection) -> None:
+    made = save_mix(memory, "duds only", unknown=0, banger=0, dud=100)
+    choose(memory, "duds only")
 
     assert made == Mix(name="duds only", unknown=0, banger=0, dud=100)
-    assert settings.active_mix(harness.connect()) == made
+    assert settings.active_mix(memory) == made
 
 
-def test_mixes_and_the_active_one_survive_a_restart(db_path: Path) -> None:
-    """Stored rather than recomputed in Python: an edit, a custom **Mix**, a deleted one and the switch."""
-    first = make_harness(db_path)
-    workflows.save_mix(first.modules, "explore", unknown=50, banger=45, dud=5)
-    workflows.save_mix(first.modules, "all in", unknown=0, banger=100, dud=0)
-    workflows.save_mix(first.modules, "gone", unknown=0, banger=0, dud=100)
-    assert workflows.delete_mix(first.modules, "gone") is None
-    workflows.save_settings(first.modules, active_mix="refine")
+def test_mixes_and_the_active_one_survive_a_restart(tmp_path: Path) -> None:
+    """Stored rather than recomputed in Python: an edit, a custom **Mix**, a deleted one and the switch, read
+    back by a second connection over the same file, migrated again."""
+    path = tmp_path / "wallpapi.db"
+    with closing(storage.connect(path)) as first:
+        storage.migrate(first)
+        save_mix(first, "explore", unknown=50, banger=45, dud=5)
+        save_mix(first, "all in", unknown=0, banger=100, dud=0)
+        save_mix(first, "gone", unknown=0, banger=0, dud=100)
+        assert delete_mix(first, "gone") is None
+        choose(first, "refine")
 
-    restarted = make_harness(db_path)
+    with closing(storage.connect(path)) as restarted:
+        storage.migrate(restarted)
 
-    assert tuple(listed.mix for listed in settings.list_mixes(restarted.connect())) == (
-        Mix(name="all in", unknown=0, banger=100, dud=0),
-        EDITED_EXPLORE,
-        REFINE_MIX,
-    )
-    assert settings.active_mix(restarted.connect()) == REFINE_MIX
+        assert listed(restarted) == (
+            Mix(name="all in", unknown=0, banger=100, dud=0),
+            EDITED_EXPLORE,
+            REFINE_MIX,
+        )
+        assert settings.active_mix(restarted) == REFINE_MIX
 
 
 @pytest.mark.parametrize(
@@ -181,27 +186,25 @@ def test_mixes_and_the_active_one_survive_a_restart(db_path: Path) -> None:
     ],
 )
 def test_a_delete_that_cannot_happen_is_refused_and_removes_nothing(
-    db_path: Path, deleted: str, active: str, reason: SettingsRefused.Reason
+    memory: sqlite3.Connection, deleted: str, active: str, reason: SettingsRefused.Reason
 ) -> None:
-    harness = make_harness(db_path)
-    workflows.save_mix(harness.modules, "duds only", unknown=0, banger=0, dud=100)
-    workflows.save_settings(harness.modules, active_mix=active)
-    before = tuple(listed.mix for listed in settings.list_mixes(harness.connect()))
+    save_mix(memory, "duds only", unknown=0, banger=0, dud=100)
+    choose(memory, active)
+    before = listed(memory)
 
-    refused = workflows.delete_mix(harness.modules, deleted)
+    refused = delete_mix(memory, deleted)
 
     assert isinstance(refused, SettingsRefused)
     assert refused.reason is reason
-    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == before
-    assert settings.active_mix(harness.connect()).name == active
+    assert listed(memory) == before
+    assert settings.active_mix(memory).name == active
 
 
-def test_a_custom_mix_that_is_not_active_can_be_deleted(db_path: Path) -> None:
-    harness = make_harness(db_path)
-    workflows.save_mix(harness.modules, "duds only", unknown=0, banger=0, dud=100)
+def test_a_custom_mix_that_is_not_active_can_be_deleted(memory: sqlite3.Connection) -> None:
+    save_mix(memory, "duds only", unknown=0, banger=0, dud=100)
 
-    assert workflows.delete_mix(harness.modules, "duds only") is None
-    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (EXPLORE_MIX, REFINE_MIX)
+    assert delete_mix(memory, "duds only") is None
+    assert listed(memory) == (EXPLORE_MIX, REFINE_MIX)
 
 
 INVALID_PERCENTAGES = [
@@ -234,17 +237,18 @@ INVALID_PERCENTAGES = [
     ],
 )
 def test_what_is_not_a_mix_is_refused_and_nothing_is_stored(
-    db_path: Path, name: str, shares: tuple[int | str, int | str, int | str], reason: SettingsRefused.Reason
+    memory: sqlite3.Connection,
+    name: str,
+    shares: tuple[int | str, int | str, int | str],
+    reason: SettingsRefused.Reason,
 ) -> None:
     """The table is checked as well as the refusal, because a validator that refused after writing would
     pass on the refusal alone. One rule, `validated_mix`, which also drops a hand-edited row."""
-    harness = make_harness(db_path)
-
-    refused = workflows.save_mix(harness.modules, name, unknown=shares[0], banger=shares[1], dud=shares[2])
+    refused = save_mix(memory, name, unknown=shares[0], banger=shares[1], dud=shares[2])
 
     assert isinstance(refused, SettingsRefused)
     assert refused.reason is reason
-    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (EXPLORE_MIX, REFINE_MIX)
+    assert listed(memory) == (EXPLORE_MIX, REFINE_MIX)
 
 
 @pytest.mark.parametrize(
@@ -257,34 +261,24 @@ def test_what_is_not_a_mix_is_refused_and_nothing_is_stored(
     ],
 )
 def test_a_valid_mix_is_saved(
-    db_path: Path, name: str, shares: tuple[int | str, int | str, int | str], saved: Mix
+    memory: sqlite3.Connection, name: str, shares: tuple[int | str, int | str, int | str], saved: Mix
 ) -> None:
-    harness = make_harness(db_path)
-
-    assert (
-        workflows.save_mix(harness.modules, name, unknown=shares[0], banger=shares[1], dud=shares[2]) == saved
-    )
-    assert saved in tuple(listed.mix for listed in settings.list_mixes(harness.connect()))
+    assert save_mix(memory, name, unknown=shares[0], banger=shares[1], dud=shares[2]) == saved
+    assert saved in listed(memory)
 
 
-def test_a_name_is_trimmed_and_kept_as_it_was_typed(db_path: Path) -> None:
+def test_a_name_is_trimmed_and_kept_as_it_was_typed(memory: sqlite3.Connection) -> None:
     """Case-sensitive, because the user typed two things; only the surrounding whitespace is the form's.
     Saving the same trimmed name again edits rather than duplicates."""
-    harness = make_harness(db_path)
+    save_mix(memory, "  Night  ", unknown=10, banger=80, dud=10)
+    save_mix(memory, "night", unknown=20, banger=70, dud=10)
+    save_mix(memory, "Night", unknown=0, banger=90, dud=10)
 
-    workflows.save_mix(harness.modules, "  Night  ", unknown=10, banger=80, dud=10)
-    workflows.save_mix(harness.modules, "night", unknown=20, banger=70, dud=10)
-    workflows.save_mix(harness.modules, "Night", unknown=0, banger=90, dud=10)
-
-    assert tuple(listed.mix for listed in settings.list_mixes(harness.connect())) == (
+    assert listed(memory) == (
         Mix(name="Night", unknown=0, banger=90, dud=10),
         EXPLORE_MIX,
         Mix(name="night", unknown=20, banger=70, dud=10),
         REFINE_MIX,
     )
-    assert workflows.delete_mix(harness.modules, " night ") is None
-    assert {mix.name for mix in tuple(listed.mix for listed in settings.list_mixes(harness.connect()))} == {
-        "Night",
-        "explore",
-        "refine",
-    }
+    assert delete_mix(memory, " night ") is None
+    assert {mix.name for mix in listed(memory)} == {"Night", "explore", "refine"}
