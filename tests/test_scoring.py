@@ -56,7 +56,7 @@ def test_a_favourite_spreads_a_banger_a_ban_spreads_a_dud_and_the_distant_stay_u
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     loved, hated, (like_the_favourite, like_the_ban, unlike_either) = _decide_two(harness)
     harness.similarity.similarity_by_pair.update(
-        {(like_the_favourite, loved): 0.9, (like_the_ban, hated): 0.9}
+        {(like_the_favourite, loved): 0.95, (like_the_ban, hated): 0.95}
     )
     _submit(harness, **{loved: Verdict.FAVOURITE, hated: Verdict.BAN})
 
@@ -94,7 +94,7 @@ def test_equal_and_opposite_verdicts_cancel_to_exactly_zero_and_so_to_unknown(db
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     loved, hated, rest = _decide_two(harness)
     torn = rest[0]
-    harness.similarity.similarity_by_pair.update({(torn, loved): 0.8, (torn, hated): 0.8})
+    harness.similarity.similarity_by_pair.update({(torn, loved): 0.95, (torn, hated): 0.95})
     _submit(harness, **{loved: Verdict.FAVOURITE, hated: Verdict.BAN})
 
     assert _scores(harness)[torn] == 0.0
@@ -108,7 +108,7 @@ def test_a_ban_still_spreads_to_everything_like_it(db_path: Path) -> None:
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     _, hated, rest = _decide_two(harness)
     like_the_ban = rest[0]
-    harness.similarity.similarity_by_pair[(like_the_ban, hated)] = 0.9
+    harness.similarity.similarity_by_pair[(like_the_ban, hated)] = 0.95
     _submit(harness, **{hated: Verdict.BAN})
 
     assert _scores(harness)[like_the_ban] < -10.0
@@ -133,7 +133,7 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     loved, hated, rest = _decide_two(harness)
     swayed = rest[0]
-    harness.similarity.similarity_by_pair.update({(swayed, loved): 0.9, (swayed, hated): 0.95})
+    harness.similarity.similarity_by_pair.update({(swayed, loved): 0.93, (swayed, hated): 0.97})
     assert _zones(harness)[swayed] is Zone.UNKNOWN
 
     _submit(harness, **{loved: Verdict.FAVOURITE})
@@ -146,7 +146,7 @@ def test_the_next_classification_follows_the_decision_log_with_no_restart(db_pat
 
 def test_a_restart_derives_the_same_classification(db_path: Path) -> None:
     """The other half of never stored: the answer survives when nothing changes."""
-    similarities = {("wp0004", "wp0000"): 0.9}
+    similarities = {("wp0004", "wp0000"): 0.95}
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE), similarities=similarities)
     workflows.save_settings(harness.modules, batch_size=POOL_SIZE)
     _submit(harness, wp0000=Verdict.FAVOURITE)
@@ -178,7 +178,7 @@ def test_raising_the_decay_shrinks_what_a_distant_verdict_is_worth(db_path: Path
     harness = make_harness(db_path, catalogue=catalogue_of(POOL_SIZE))
     loved, _, rest = _decide_two(harness)
     nearby = rest[0]
-    harness.similarity.similarity_by_pair[(nearby, loved)] = 0.9
+    harness.similarity.similarity_by_pair[(nearby, loved)] = 0.95
     _submit(harness, **{loved: Verdict.FAVOURITE})
     gentle = _scores(harness)[nearby]
 

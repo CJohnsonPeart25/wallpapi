@@ -1,9 +1,9 @@
 """Everything configurable, as one table of field descriptors, and the **Mixes** beside it (ADR 0004).
 
 Each setting is one `Field` declared on `Settings`: its key, its default, the parser from posted text to a
-typed value or a refusal, the bounds the form shows, and the words a refusal is said in. `get`, `update`,
-the seeds migrations write and the settings form all iterate that table, so adding a setting is one
-descriptor here plus one input on the settings page.
+typed value or a refusal, the words a refusal is said in, and how the form shows it — its `Section`, label,
+hint, step and bounds. `get`, `update`, the seeds migrations write and the settings form all iterate that
+table, in declaration order, so adding a setting is one descriptor here and no template edit.
 
 Writes take the caller's write handle (a connection already inside `storage.write`) and open no transaction,
 so the caller can do its own work in the same one. Reads take any connection.
@@ -66,11 +66,15 @@ DEFAULT_MIN_FAVOURITES = 10
 SUPERSEDED_SIMILARITY_RADIUS = 0.5
 """The radius ADR 0007 seeded, kept only because migration 9 has to recognise it."""
 
-DEFAULT_SIMILARITY_RADIUS = 0.15
+RETUNED_SIMILARITY_RADIUS = 0.15
+"""The radius ADR 0013 seeded, kept only because migration 11 has to recognise it."""
+
+DEFAULT_SIMILARITY_RADIUS = 0.10
 """How far a decided **Wallpaper**'s influence reaches, as a distance in `[0, 1]`.
 
-Not the accuracy-maximising value, deliberately: 0.2 got the sign right more often but left 1% of the **Pool**
-**Unknown**, and **Unknown** is what **Explore** draws from. See ADR 0013.
+Sized to leave an **Unknown** zone, which is what **Explore** draws from. A fixed radius covers more of the
+space with every decision, so this decays as the **Decision log** grows: 0.15 left none at 692 decided. See
+ADR 0023.
 """
 
 DEFAULT_SIMILARITY_DECAY = 4.0
@@ -156,6 +160,35 @@ type _Reason = SettingsRefused.Reason
 type _Parser[T] = Callable[[str], T | SettingsRefused.Reason]
 
 
+@dataclass(frozen=True, eq=False)
+class Section:
+    """One group of the settings form: an `<article>`, with its heading and its intro when it has them.
+
+    Equal only to itself, so two sections with no words are still two.
+    """
+
+    heading: str | None = None
+    intro: str | None = None
+
+
+# The two settings that came before there were groups, so they have no heading of their own.
+_UNHEADED = Section()
+_FILTERS = Section(
+    heading="Filters",
+    intro="The hard rules a wallpaper must pass before it joins the pool. Changing them drops undecided pool "
+    "wallpapers that no longer pass; anything you have already judged stays, and so does the batch on "
+    "screen. Only safe-for-work wallpapers are ever fetched.",
+)
+_POOL = Section(heading="Pool")
+_SCORING = Section(
+    heading="Scoring",
+    intro="How far a verdict spreads to wallpapers that look like it. Every score is worked out from the "
+    "decision log each time a batch is built, so changing these two takes effect on the next batch and "
+    "nothing has to be rebuilt. Both are starting points rather than tuned numbers.",
+)
+_THUMBNAILS = Section(heading="Thumbnails")
+
+
 class Field[T]:
     """One setting: everything about it, in one place. Declared on `Settings`, where reading it off an
     instance gives the typed value and reading it off the class gives this descriptor.
@@ -176,6 +209,10 @@ class Field[T]:
         choices: Sequence[str] = (),
         on_form: bool = True,
         admit: Callable[[sqlite3.Connection, T], _Reason | None] | None = None,
+        section: Section | None = None,
+        label: str = "",
+        help: str = "",
+        step: str | None = None,
     ) -> None:
         self.default = default
         self.parse = parse
@@ -194,6 +231,13 @@ class Field[T]:
         """Whether the settings form carries it. The active **Mix** is chosen on the **Batch** page."""
         self.admit = admit
         """A check against the database after parsing, for a setting that names a row elsewhere."""
+        self.section = section
+        """The group of the form it shows in; a field off the form has none."""
+        self.label = label
+        self.help = help
+        """The hint under the input, filled in like `message`: read it as `hint`."""
+        self.step = step
+        """The number input's step, as the form writes it. No step is a text input."""
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.key = name
@@ -212,13 +256,30 @@ class Field[T]:
         template = self.message if isinstance(self.message, str) else self.message.get(reason)
         if template is None:
             return f"That value was refused ({reason.value})."
+        return self._filled(template)
+
+    @property
+    def hint(self) -> str:
+        """The help under the input, with this field's own bounds and choices in it."""
+        return self._filled(self.help)
+
+    def _filled(self, template: str) -> str:
         return template.format(minimum=self.minimum, maximum=self.maximum, choices=", ".join(self.choices))
 
 
 def _whole(
-    *, default: int, minimum: int, maximum: int | None = None, message: str | Mapping[_Reason, str]
+    *,
+    default: int,
+    minimum: int,
+    maximum: int | None = None,
+    message: str | Mapping[_Reason, str],
+    section: Section,
+    label: str,
+    help: str,
 ) -> Field[int]:
-    """A whole-number setting held to `[minimum, maximum]`: the bounds the form shows are the rule's."""
+    """A whole-number setting held to `[minimum, maximum]`: the bounds the form shows are the rule's, and
+    its input steps by one.
+    """
 
     def parse(text: str) -> int | _Reason:
         # "1.5" and "1e3" are refused rather than coerced.
@@ -230,10 +291,30 @@ def _whole(
             return SettingsRefused.Reason.OUT_OF_RANGE
         return number
 
-    return Field(default=default, parse=parse, message=message, minimum=minimum, maximum=maximum)
+    return Field(
+        default=default,
+        parse=parse,
+        message=message,
+        minimum=minimum,
+        maximum=maximum,
+        section=section,
+        label=label,
+        help=help,
+        step="1",
+    )
 
 
-def _decimal(*, default: float, minimum: float, maximum: float, message: str) -> Field[float]:
+def _decimal(
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+    message: str,
+    section: Section,
+    label: str,
+    help: str,
+    step: str,
+) -> Field[float]:
     """A finite decimal setting held to `[minimum, maximum]`. NaN parses, and a NaN radius would make
     everything **Unknown**, so it is not a number here.
     """
@@ -249,7 +330,17 @@ def _decimal(*, default: float, minimum: float, maximum: float, message: str) ->
             return SettingsRefused.Reason.OUT_OF_RANGE
         return number
 
-    return Field(default=default, parse=parse, message=message, minimum=minimum, maximum=maximum)
+    return Field(
+        default=default,
+        parse=parse,
+        message=message,
+        minimum=minimum,
+        maximum=maximum,
+        section=section,
+        label=label,
+        help=help,
+        step=step,
+    )
 
 
 def _absolute_path(text: str) -> Path | _Reason:
@@ -304,6 +395,10 @@ class Settings:
             SettingsRefused.Reason.NOT_A_NUMBER: "Batch size must be a whole number between {minimum} and "
             "{maximum}.",
         },
+        section=_UNHEADED,
+        label="Batch size",
+        help="Wallpapers per batch, {minimum} to {maximum}. Applies to the next batch — the one on screen "
+        "keeps the size it was built with.",
     )
     library_path = Field(
         # Under Pictures, where Windows' slideshow settings start, in a subfolder of its own.
@@ -314,24 +409,28 @@ class Settings:
             SettingsRefused.Reason.NOT_ABSOLUTE: "The library folder must be an absolute path, such as "
             "C:\\Users\\you\\Pictures\\wallpapi.",
         },
-    )
-    pool_target_size = _whole(
-        default=DEFAULT_POOL_TARGET_SIZE,
-        minimum=MIN_POOL_TARGET_SIZE,
-        maximum=MAX_POOL_TARGET_SIZE,
-        message="Pool target size must be a whole number between {minimum} and {maximum}.",
+        section=_UNHEADED,
+        label="Library folder",
+        help="An absolute path. Favourites are downloaded here; the folder is created the first time one is "
+        "written.",
     )
     min_width = _whole(
         default=DEFAULT_MIN_WIDTH,
         minimum=0,
         maximum=MAX_FILTER_PIXELS,
         message="Minimum width must be a whole number of pixels from {minimum} to {maximum}.",
+        section=_FILTERS,
+        label="Minimum width",
+        help="Pixels. A minimum, not an exact size — anything larger counts.",
     )
     min_height = _whole(
         default=DEFAULT_MIN_HEIGHT,
         minimum=0,
         maximum=MAX_FILTER_PIXELS,
         message="Minimum height must be a whole number of pixels from {minimum} to {maximum}.",
+        section=_FILTERS,
+        label="Minimum height",
+        help="Pixels. Set either to 0 to stop filtering on that side.",
     )
     allowed_ratios = Field(
         default=DEFAULT_ALLOWED_RATIOS,
@@ -339,12 +438,29 @@ class Settings:
         text=",".join,
         choices=sorted(WALLHAVEN_RATIOS),
         message="Allowed ratios must be a comma-separated list of ratios Wallhaven knows: {choices}.",
+        section=_FILTERS,
+        label="Allowed ratios",
+        help="Comma-separated, from {choices}.",
     )
     # No ceiling: no number of favourites is clearly a typo.
     min_favourites = _whole(
         default=DEFAULT_MIN_FAVOURITES,
         minimum=0,
         message="Minimum favourites must be a whole number, {minimum} or more.",
+        section=_FILTERS,
+        label="Minimum favourites",
+        help="How many Wallhaven favourites a wallpaper needs. Applied here rather than in the search — "
+        "Wallhaven has no parameter for it.",
+    )
+    pool_target_size = _whole(
+        default=DEFAULT_POOL_TARGET_SIZE,
+        minimum=MIN_POOL_TARGET_SIZE,
+        maximum=MAX_POOL_TARGET_SIZE,
+        message="Pool target size must be a whole number between {minimum} and {maximum}.",
+        section=_POOL,
+        label="Pool target size",
+        help="How many filtered wallpapers to keep waiting. The background refill fetches at full speed "
+        "until the pool reaches this, then idles.",
     )
     # Above 1 the radius would do nothing.
     similarity_radius = _decimal(
@@ -352,6 +468,11 @@ class Settings:
         minimum=0,
         maximum=1,
         message="Similarity radius must be a number from 0 to 1.",
+        section=_SCORING,
+        label="Similarity radius",
+        help="From 0 to 1. How different two wallpapers can be and still tell you anything about each "
+        "other — beyond it, a verdict counts for nothing at all.",
+        step="0.01",
     )
     # Negative would invert the rule.
     similarity_decay = _decimal(
@@ -359,12 +480,22 @@ class Settings:
         minimum=0,
         maximum=MAX_SIMILARITY_DECAY,
         message="Similarity decay must be a number from 0 to {maximum}.",
+        section=_SCORING,
+        label="Similarity decay",
+        help="From 0 to {maximum}. How fast a verdict fades with distance. Higher is fussier; 0 counts "
+        "everything inside the radius equally.",
+        step="0.1",
     )
     # Zero is accepted: the cap never evicts an **Explicit Verdict**, so **History** still renders.
     thumbnail_cache_max_mb = _whole(
         default=DEFAULT_THUMBNAIL_CACHE_MAX_MB,
         minimum=0,
         message="The thumbnail cache limit must be a whole number of megabytes, {minimum} or more.",
+        section=_THUMBNAILS,
+        label="Thumbnail cache limit",
+        help="Megabytes. Thumbnails of wallpapers you have judged are never deleted — history needs them "
+        "— so this only limits the ones still waiting in the pool. Anything deleted is fetched again the "
+        "next time it is shown.",
     )
     active_mix = Field(
         default=DEFAULT_ACTIVE_MIX,
@@ -411,6 +542,15 @@ FIELDS: tuple[Field[Any], ...] = tuple(
 
 FORM_FIELDS = tuple(field for field in FIELDS if field.on_form)
 """The settings form's fields, in the same order."""
+
+
+def form_sections() -> tuple[tuple[Section, tuple[Field[Any], ...]], ...]:
+    """The settings form as the page lays it out: each section with its fields, both in declaration order."""
+    grouped: dict[Section, list[Field[Any]]] = {}
+    for field in FORM_FIELDS:
+        grouped.setdefault(field.section or _UNHEADED, []).append(field)
+    return tuple((section, tuple(fields)) for section, fields in grouped.items())
+
 
 _BY_KEY = {field.key: field for field in FIELDS}
 
@@ -561,6 +701,60 @@ def delete_mix(write: sqlite3.Connection, name: str) -> SettingsRefused | None:
         return SettingsRefused(reason=SettingsRefused.Reason.MIX_IN_USE)
     write.execute(_DELETE_MIX, (trimmed,))
     return None
+
+
+MIX_FORM_FIELDS = ("name", "unknown", "banger", "dud")
+"""The keys a **Mix** form posts, the add row and every edit row alike: `save_mix`'s parameters."""
+
+
+@dataclass(frozen=True, slots=True)
+class MixFormRow:
+    """One row of the **Mixes** form: the text each input shows, by `MIX_FORM_FIELDS` key, and whether the row
+    is the active **Mix** and may be deleted. The add row is never either.
+    """
+
+    name: str
+    unknown: str
+    banger: str
+    dud: str
+    active: bool = False
+    deletable: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MixForm:
+    """The **Mixes** section of the settings form: a row per stored **Mix**, then the add row."""
+
+    rows: tuple[MixFormRow, ...]
+    add: MixFormRow
+
+
+def mix_form(connection: sqlite3.Connection, posted: Mapping[str, str] | None = None) -> MixForm:
+    """What the **Mixes** form shows. `posted` is a refused save put back: on the row of the **Mix** it
+    names, matched as `save_mix` would store it, or on the add row if it names none.
+    """
+    typed = {key: (posted or {}).get(key, "") for key in MIX_FORM_FIELDS}
+    typed_name = typed["name"].strip()
+    active = get(connection).active_mix
+    rows: list[MixFormRow] = []
+    for listed in list_mixes(connection):
+        mix = listed.mix
+        stored = {key: str(getattr(mix, key)) for key in MIX_FORM_FIELDS}
+        shown = {**typed, "name": mix.name} if typed_name == mix.name else stored
+        rows.append(_mix_form_row(shown, active=mix.name == active, deletable=listed.deletable))
+    put_back = posted is not None and typed_name not in {row.name for row in rows}
+    return MixForm(rows=tuple(rows), add=_mix_form_row(typed if put_back else dict.fromkeys(typed, "")))
+
+
+def _mix_form_row(text: Mapping[str, str], *, active: bool = False, deletable: bool = False) -> MixFormRow:
+    return MixFormRow(
+        name=text["name"],
+        unknown=text["unknown"],
+        banger=text["banger"],
+        dud=text["dud"],
+        active=active,
+        deletable=deletable,
+    )
 
 
 def _whole_number(value: object) -> int | None:

@@ -109,7 +109,9 @@ minted before its **Embedding** existed was scored by the metadata fallback.
 
 **Masking is left open.** A pair whose **Wallpaper** has no **Embedding** still blends in the baseline's
 similarity rather than counting as 0 (an honest **Unknown**). Masking would change **Scores** across the
-whole **Pool**, and is decided in #55 with this ticket's coverage numbers in hand.
+whole **Pool**, and is decided in #55 with this ticket's coverage numbers in hand. Decided in ADR 0024:
+once the model is open such a pair scores 0.0, and the coverage line above now ends "the rest count as
+Unknown until their thumbnails are embedded."
 
 ## Measurements
 

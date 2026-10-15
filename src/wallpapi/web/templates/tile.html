@@ -3,8 +3,12 @@
   Verdict** controls. Included by grid.html and rendered on its own as the htmx swap for a mark.
 
   Each control posts the **Verdict** the tile should *end up* with, so a replayed click lands on the same
-  state (invariant 6); the marked control posts an empty **Verdict**, which clears it. **Ignore** has no
-  control: it is derived at submit.
+  state (`set_draft` in `batches.py` sets rather than toggles); the marked control posts an empty
+  **Verdict**, which clears it. **Ignore** has no control: it is derived at submit.
+
+  One post per tile at a time: `hx-sync="closest .tile:drop"` drops a click on any of its controls while
+  one is in flight. A sync per button let Ban go out while Like was in flight; Like's response swapped the
+  tile, Ban's landed on the detached one, and the screen showed **Like** while the server held **Ban**.
 
   `data-full-url` is the source the preview loads when it opens. Deliberately not an `<img src>`: a **Batch**
   never hotlinks, not even its thumbnails, and one full-size image is fetched only when asked for
@@ -36,7 +40,7 @@
         hx-vals='{"batch_id": "{{ batch.id }}", "wallpaper_id": "{{ wallpaper.id }}", "verdict": "{{ '' if draft == choice else choice }}"}'
         hx-target="closest .tile"
         hx-swap="outerHTML"
-        hx-sync="this:replace"
+        hx-sync="closest .tile:drop"
         hx-disabled-elt=".bulk-verdict"
       >{{ choice }}</button>
     {% endfor %}

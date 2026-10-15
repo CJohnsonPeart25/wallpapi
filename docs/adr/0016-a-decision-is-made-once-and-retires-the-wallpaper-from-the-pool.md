@@ -96,9 +96,10 @@ invariant 8's first pass evicts its thumbnail at the next submission — in prac
 retired it. **History** re-fetches it on demand. Intended.
 
 **Duds can accumulate.** The default **Mixes** draw 5% **Dud**, so arrivals scored as **Duds** mostly stay
-in the **Pool** until a **Shortfall** shows them. The remedy today is to **Ban** or **Ignore** a page of them
-and submit, which retires them. Changing what the refill fetches is parked in #52, with showing decided
-**Wallpapers** again.
+in the **Pool** until a **Shortfall** shows them. The remedy today is to **Ignore** a page of them and
+submit, which retires them. Not **Ban**: a **Ban** spreads −100 and grows the **Dud** zone it was meant to
+clear (amended by ADR 0023, which found the build-up's cause in the **Similarity radius**). Changing what
+the refill fetches is parked; showing decided **Wallpapers** again stays deferred.
 
 Tests that showed a **Wallpaper** twice to give it a second entry now give it the second entry from
 **History**, which is the only way left to make one.

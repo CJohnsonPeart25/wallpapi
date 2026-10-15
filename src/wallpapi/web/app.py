@@ -1,7 +1,9 @@
 """The web layer: Jinja templates over the modules the composition root built (ADR 0001).
 
 Every route that writes calls one workflow; a route that only reads asks the modules. Nothing here decides
-anything about the data: a refusal arrives from a module and leaves through `REFUSALS`.
+anything about the data, and no setting, **Mix** field or **Verdict** list is spelled here: forms are read by
+the settings module's tables. A **Batch** or **History** refusal arrives from a module and leaves through
+`REFUSALS`; a settings refusal is a 400 on the settings page, in `SettingsRefused.message`'s words (ADR 0004).
 """
 
 from __future__ import annotations
@@ -28,7 +30,15 @@ from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
 from wallpapi.decisions import HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict, Wallpaper
-from wallpapi.settings import FORM_FIELDS, MAX_MIX_NAME_LENGTH, MIX_TOTAL, SettingsRefused, form_values
+from wallpapi.settings import (
+    FORM_FIELDS,
+    MAX_MIX_NAME_LENGTH,
+    MIX_FORM_FIELDS,
+    MIX_TOTAL,
+    SettingsRefused,
+    form_values,
+    mix_form,
+)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -62,11 +72,9 @@ REFUSALS: dict[StrEnum, Refusal] = {
     SubmissionRefused.Reason.NOT_IN_BATCH: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
 }
-"""Every refusal a module can return, as the page answers it. A settings refusal is always a 400 in the
-settings module's own words, which differ by field."""
-
-_FILTERABLE_VERDICTS = (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN, Verdict.IGNORE)
-"""The **History** filter's choices, written out so **Ignore**, the commonest, is last."""
+"""Every refusal the **Batch** and **History** pages answer, as the page answers it. Settings refusals are
+not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds, so they
+stay beside the field (ADR 0004)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +139,11 @@ def _batch_view(request: Request, modules: Modules, result: Batch | BatchUnavail
         "similarity_notice": modules.similarity.notice(modules.thumbnails.obtainable(modules.connect())),
     }
     if isinstance(result, Batch):
-        return templates.TemplateResponse(request, "batch_view.html", {**context, "batch": result})
+        return templates.TemplateResponse(
+            request,
+            "batch_view.html",
+            {**context, "batch": result, "unknown_short": result.unknown_short},
+        )
     # 503 and never a 500: nothing failed, the **Pool** is empty and the refill may fix it.
     return templates.TemplateResponse(
         request,
@@ -155,37 +167,6 @@ def _mix_context(connection: sqlite3.Connection) -> dict[str, object]:
     }
 
 
-def _mix_section(connection: sqlite3.Connection, posted: Mapping[str, str] | None) -> dict[str, object]:
-    """The **Mixes** section of the settings page: a row per **Mix**, plus the add row. `posted` is a refused
-    save put back.
-    """
-    typed = dict(posted or {})
-    typed_name = typed.get("name", "").strip()
-    stored = settings.list_mixes(connection)
-    active = settings.get(connection).active_mix
-    rows: list[dict[str, object]] = []
-    for listed in stored:
-        mix = listed.mix
-        edited = typed if typed_name == mix.name else {}
-        rows.append(
-            {
-                "name": mix.name,
-                "unknown": edited.get("unknown", str(mix.unknown)),
-                "banger": edited.get("banger", str(mix.banger)),
-                "dud": edited.get("dud", str(mix.dud)),
-                "active": mix.name == active,
-                "deletable": listed.deletable,
-            }
-        )
-    added = typed if typed_name not in {listed.mix.name for listed in stored} else {}
-    return {
-        "mix_rows": rows,
-        "new_mix": {field: added.get(field, "") for field in ("name", "unknown", "banger", "dud")},
-        "mix_total": MIX_TOTAL,
-        "max_mix_name_length": MAX_MIX_NAME_LENGTH,
-    }
-
-
 def _settings_page(
     request: Request,
     modules: Modules,
@@ -199,18 +180,22 @@ def _settings_page(
 ) -> HTMLResponse:
     """The settings form, filled with what was typed over what is stored, so a refused save keeps it."""
     connection = modules.connect()
+    mixes = mix_form(connection, posted_mix)
     return templates.TemplateResponse(
         request,
         "settings.html",
         {
-            **form_values(settings.get(connection)),
-            **(posted or {}),
-            **_mix_section(connection, posted_mix),
+            "sections": settings.form_sections(),
+            "values": {**form_values(settings.get(connection)), **(posted or {})},
+            "mix_fields": MIX_FORM_FIELDS,
+            "mix_rows": mixes.rows,
+            "new_mix": mixes.add,
+            "mix_total": MIX_TOTAL,
+            "max_mix_name_length": MAX_MIX_NAME_LENGTH,
             "refused": refused,
             "saved": saved,
             "deleted": deleted,
             "download": download,
-            "fields": {field.key: field for field in FORM_FIELDS},
         },
         status_code=HTTPStatus.OK if refused is None else HTTPStatus.BAD_REQUEST,
     )
@@ -230,6 +215,14 @@ async def _posted_settings(request: Request) -> dict[str, str]:
         for field in FORM_FIELDS
         if isinstance(value := form.get(field.key), str) and value != ""
     }
+
+
+async def _posted_mix(request: Request) -> dict[str, str]:
+    """A **Mix** form as posted, by key, a field not posted as empty: `save_mix` refuses what is missing, and
+    a refusal puts every field back. Read by `MIX_FORM_FIELDS` for the same reason as `_posted_settings`.
+    """
+    form = await request.form()
+    return {key: value if isinstance(value := form.get(key), str) else "" for key in MIX_FORM_FIELDS}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -313,7 +306,7 @@ def history_page(request: Request, modules: Wired, verdict: str = "", page: int 
             "history": listing,
             "rows": _history_rows(connection, listing.entries),
             "verdict": chosen,
-            "verdicts": _FILTERABLE_VERDICTS,
+            "verdicts": decisions.HISTORY_FILTERS,
         },
     )
 
@@ -337,7 +330,7 @@ def history_verdict(
 @router.post("/mix", response_class=HTMLResponse)
 def choose_mix(request: Request, modules: Wired, mix: Annotated[str, Form()]) -> HTMLResponse:
     """Switch the active **Mix**. The live **Batch** is untouched, so its **Draft Batch** survives."""
-    refused = isinstance(workflows.save_settings(modules, active_mix=mix), SettingsRefused)
+    refused = isinstance(workflows.choose_mix(modules, mix), SettingsRefused)
     return templates.TemplateResponse(
         request,
         "mix.html",
@@ -395,18 +388,12 @@ def download_favourites(modules: Wired) -> Response:
 
 @router.post("/settings/mixes")
 def save_mix(
-    request: Request,
-    modules: Wired,
-    name: Annotated[str, Form()] = "",
-    unknown: Annotated[str, Form()] = "",
-    banger: Annotated[str, Form()] = "",
-    dud: Annotated[str, Form()] = "",
+    request: Request, modules: Wired, posted: Annotated[dict[str, str], Depends(_posted_mix)]
 ) -> Response:
     """Create a **Mix** or edit one: one route, as the add row and every edit row post the same fields."""
-    result = workflows.save_mix(modules, name, unknown=unknown, banger=banger, dud=dud)
+    result = workflows.save_mix(modules, **posted)
     if isinstance(result, SettingsRefused):
-        typed = {"name": name, "unknown": unknown, "banger": banger, "dud": dud}
-        return _settings_page(request, modules, posted_mix=typed, refused=result)
+        return _settings_page(request, modules, posted_mix=posted, refused=result)
     return RedirectResponse("/settings?saved=1", status_code=HTTPStatus.SEE_OTHER)
 
 

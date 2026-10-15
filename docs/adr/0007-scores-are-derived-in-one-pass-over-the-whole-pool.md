@@ -6,7 +6,9 @@ Date: 2026-09-27
 
 Accepted. **Partly superseded by ADR 0013**, which names the **Similarity provider** and moves the
 **Similarity radius** default from 0.5 to 0.15. Everything else here — the matrix interface, the **Score**
-formula, the **Zone** rule, `classify_pool` — is unchanged by it.
+formula, the **Zone** rule, `classify_pool` — is unchanged by it. **Amended by ADR 0021**: "**Bans** are
+excluded from the rows" now covers their near-duplicates too, so a repost of a **Banned** image has no
+**Zone** either.
 
 ## Context
 

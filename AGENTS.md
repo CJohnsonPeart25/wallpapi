@@ -96,5 +96,6 @@ Decided, not built. Defer explicitly; do not quietly forget.
 - Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (`thumbnails.py`).
 - Fading old **Verdicts**: a half-life in log sequence, not time; nothing real to tune it against yet.
 - Showing decided **Wallpapers** again: must answer near-duplicates; dormant pre-marking waits for it.
-- **Dud** build-up in the **Pool**: for now, **Ban** or **Ignore** a page of them and submit.
+- **Dud** build-up in the **Pool**: for now, **Ignore** a page of them and submit. Not **Ban**: it spreads
+  −100 and grows the **Dud** zone (ADR 0023).
 - An outlier guard on the varied **Unknown** draw: the learning loop is the guard for now (ADR 0018).

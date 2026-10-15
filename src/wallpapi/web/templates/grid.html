@@ -5,9 +5,11 @@
   whole grid that swaps because a bulk mark changes every tile — the single-tile route still swaps one
   tile, because a single mark changes one.
 
-  Bulk and per-tile controls disable each other for the duration of a request (`hx-disabled-elt`), so only
-  one of the two can ever be in flight. The server side is already atomic; this is what stops a single-tile
-  post that lands after the grid was read leaving the screen showing a mark the server no longer holds.
+  Bulk and per-tile controls disable each other for the duration of a request (`hx-disabled-elt`). htmx
+  counts the requests holding an element disabled and re-enables it only at zero, so the bulk controls stay
+  disabled while any tile post is in flight, and the reverse. Within one tile, `closest .tile:drop` allows
+  one post at a time (tile.html); posts on different tiles touch different rows and cannot conflict. The
+  server side is already atomic; this is what stops the screen showing a mark the server no longer holds.
 #}
 <section id="batch-grid">
   <div class="bulk" role="group">

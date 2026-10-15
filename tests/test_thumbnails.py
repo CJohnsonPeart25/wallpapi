@@ -186,6 +186,7 @@ QUIET = RefillStatus(
     last_error=None,
     last_error_at=None,
     last_strategy=None,
+    by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
 )
 
 

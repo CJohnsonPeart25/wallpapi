@@ -101,11 +101,21 @@ def test_a_mix_nobody_has_heard_of_is_refused(db_path: Path) -> None:
     """Accepted and ignored, it would leave the switcher naming a **Mix** the draw has never heard of."""
     harness = make_harness(db_path)
 
-    refused = workflows.save_settings(harness.modules, active_mix="nope")
+    refused = workflows.choose_mix(harness.modules, "nope")
 
     assert isinstance(refused, SettingsRefused)
     assert refused.reason is SettingsRefused.Reason.ACTIVE_MIX_UNKNOWN
     assert settings.get(harness.connect()).active_mix == "explore"
+
+
+def test_choosing_a_stored_mix_makes_it_the_one_the_next_batch_is_drawn_under(db_path: Path) -> None:
+    harness = make_harness(db_path)
+
+    chosen = workflows.choose_mix(harness.modules, "refine")
+
+    assert isinstance(chosen, settings.Settings)
+    assert chosen.active_mix == "refine"
+    assert settings.active_mix(harness.connect()) == REFINE_MIX
 
 
 # -- making and editing ------------------------------------------------------------------------------

@@ -1,5 +1,6 @@
-"""How alike **Wallpapers** are: thumbnails compared by a CLIP image encoder (ADR 0013), and a
-colours-and-category baseline wherever either side has no embedding yet.
+"""How alike **Wallpapers** are: thumbnails compared by a CLIP image encoder (ADR 0013). Until its model is
+open, a colours-and-category baseline answers every pair where either side has no embedding yet; once it is
+open, such a pair is 0.0 and the **Wallpaper** an honest **Unknown** (ADR 0024).
 
 One matrix, **Pool** x decided, never pairwise (invariant 2): a pairwise call forces a Python loop and tempts
 caching **Scores**. Cosine is mapped by `(1 + cosine) / 2` into `[0, 1]`. `onnxruntime`, `pillow` and the
@@ -132,6 +133,11 @@ MODEL_SHA256 = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299
 
 MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MODEL_FILE}"
 
+NEAR_DUPLICATE_SIMILARITY = 0.985
+"""The mapped similarity at which two **Embeddings** are one image reposted (ADR 0021): measured, not a
+setting. The identical pairs on the real **Pool** sat at 0.99 and the near-empty images at 0.984 and below.
+"""
+
 IMAGE_SIZE = 224
 
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -166,8 +172,8 @@ _FAILED = (
 )
 
 _COVERAGE = (
-    "Image similarity covers {embedded:,} of {pool:,} Pool wallpapers so far — the rest are compared by "
-    "colour and category until their thumbnails are embedded."
+    "Image similarity covers {embedded:,} of {pool:,} Pool wallpapers so far — the rest count as Unknown "
+    "until their thumbnails are embedded."
 )
 
 _UNUSABLE = (
@@ -208,8 +214,9 @@ class EmbeddingStore(Protocol):
 
 
 class Embeddings:
-    """Cosine between stored CLIP embeddings, mapped into `[0, 1]`, with `fallback` for every pair where
-    either side has none; and the upkeep that fetches the model and embeds the **Thumbnail cache**.
+    """Cosine between stored CLIP embeddings, mapped into `[0, 1]`; for every pair where either side has
+    none, `fallback` until the model is open and 0.0 after (ADR 0024); and the upkeep that fetches the model
+    and embeds the **Thumbnail cache**.
     """
 
     def __init__(
@@ -232,14 +239,43 @@ class Embeddings:
         self._lock = threading.Lock()
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
-        """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`."""
-        fallback = self._fallback(pool, decided)
-        if not pool or not decided:
-            return fallback
+        """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`. A pair without two **Embeddings**
+        is the fallback's until the model is open and 0.0 after, beyond every radius (ADR 0024).
+        """
+        # Read once: `_open` sets it on the similarity thread, and a bool needs no lock.
+        if self._opened:
+            unembedded = np.zeros((len(pool), len(decided)), dtype=np.float32)
+        else:
+            unembedded = self._fallback(pool, decided)
+        embedded = self._embedded(pool, decided)
+        if embedded is None:
+            return unembedded
+        mapped, both = embedded
+        blended = np.where(both, mapped, unembedded)
+        return np.clip(blended, 0.0, 1.0).astype(np.float32)
 
+    def near_duplicates(self, pool: Sequence[Wallpaper], banned: Sequence[Wallpaper]) -> NDArray[np.bool_]:
+        """A `len(pool)` x `len(banned)` mask of the pairs that are one image reposted (ADR 0021): both
+        sides embedded and at least `NEAR_DUPLICATE_SIMILARITY`. The fallback never enters it, because
+        flat-colour pairs score 1.0 there.
+        """
+        embedded = self._embedded(pool, banned)
+        if embedded is None:
+            return np.zeros((len(pool), len(banned)), dtype=np.bool_)
+        mapped, both = embedded
+        return both & (mapped >= NEAR_DUPLICATE_SIMILARITY)
+
+    def _embedded(
+        self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]
+    ) -> tuple[NDArray[np.float32], NDArray[np.bool_]] | None:
+        """The mapped cosine of every pair and the mask of pairs where both sides have an **Embedding**, in
+        one lookup; `None` when there is nothing to compare.
+        """
+        if not pool or not decided:
+            return None
         held = self._store.vectors_for([w.id for w in pool] + [w.id for w in decided])
         if not held:
-            return fallback
+            return None
         width = next(iter(held.values())).size
 
         pool_rows, pool_known = _rows([w.id for w in pool], held, width)
@@ -247,10 +283,7 @@ class Embeddings:
         cosine = pool_rows @ decided_rows.T
         # Not clipped at zero: a negative cosine means less in common than unrelated.
         mapped = (1.0 + np.clip(cosine, -1.0, 1.0)) / 2.0
-
-        both = pool_known[:, None] & decided_known[None, :]
-        blended = np.where(both, mapped, fallback)
-        return np.clip(blended, 0.0, 1.0).astype(np.float32)
+        return mapped, pool_known[:, None] & decided_known[None, :]
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
         """Get the model, then embed one batch of thumbnails that have none yet; seconds to the next call.

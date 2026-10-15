@@ -13,7 +13,7 @@ from pathlib import Path
 
 from wallpapi import settings
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -130,6 +130,14 @@ def _steps() -> tuple[tuple[_Statement, ...], ...]:
             (
                 _RETUNE_SETTING,
                 (seeded[_POOL_TARGET_SIZE], _POOL_TARGET_SIZE, str(settings.SUPERSEDED_POOL_TARGET_SIZE)),
+            ),
+            *seed_settings,
+        ),
+        # 11: the **Similarity radius** default moves from 0.15 to 0.10 (ADR 0023), only where untouched.
+        (
+            (
+                _RETUNE_SETTING,
+                (seeded[_SIMILARITY_RADIUS], _SIMILARITY_RADIUS, str(settings.RETUNED_SIMILARITY_RADIUS)),
             ),
             *seed_settings,
         ),
