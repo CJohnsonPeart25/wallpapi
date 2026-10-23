@@ -281,6 +281,21 @@ def test_a_member_is_contained_until_it_is_retired(connection: sqlite3.Connectio
     assert not pool.contains(connection, "never-admitted")
 
 
+def test_clearing_empties_the_pool_and_keeps_every_row_and_entry(connection: sqlite3.Connection) -> None:
+    """A **Pool reset**'s half in `pool`: membership only, so the `wallpapers` rows and the **Decision log**
+    carry over and every **Score** with them."""
+    rig = rig_over(connection, catalogue=catalogue_of(3), steps=1)
+    rig.decide(Verdict.LIKE, "wp0001")
+
+    with storage.write(connection) as write:
+        cleared = pool.clear(write)
+
+    assert cleared == 3
+    assert rig.members() == []
+    assert connection.execute("SELECT COUNT(*) FROM wallpapers").fetchone()[0] == 3
+    assert decisions.resolve(connection, ["wp0001"])["wp0001"].verdict is Verdict.LIKE
+
+
 def test_any_recorded_wallpaper_is_looked_up_member_or_not(connection: sqlite3.Connection) -> None:
     """**History** shows what the **Pool** retired: the `wallpapers` row is the record, not membership."""
     rig_over(connection, catalogue=catalogue_of(3), steps=1)
