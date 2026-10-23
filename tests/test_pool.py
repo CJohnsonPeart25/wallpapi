@@ -4,8 +4,9 @@ real time. Searches are asserted against the fake's record because the client is
 "searched with these parameters" has no other observable.
 
 **Favourites** are appended to the **Decision log** directly and the **Filters** changed through `settings`,
-as their callers do; a **Batch** retiring what it showed is `test_batches.py`'s. The last section uses
-`make_harness` because its subject is a workflow: that the settings save prunes the **Pool** at all.
+as their callers do; a **Batch** retiring what it showed is `test_batches.py`'s. The last two sections use
+`make_harness` because their subjects are workflows: that the settings save prunes the **Pool** at all, and
+the **Pool reset**'s one transaction with its eviction tail.
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import FIXED_NOW, make_harness
+from tests.conftest import FIXED_NOW, judge, live, make_harness, submit_with
 from tests.fakes import FakeClock, FakeSimilarities, FakeWallhavenClient, catalogue_of, wallpaper
 from wallpapi import decisions, pool, settings, storage, workflows
+from wallpapi.batches import SubmissionRefused
 from wallpapi.model import Clearance, Verdict, Wallpaper
 from wallpapi.pool import (
     CALLS_PER_MINUTE,
@@ -1102,3 +1104,42 @@ def test_changing_the_filters_prunes_the_pool_in_the_same_save(db_path: Path) ->
     workflows.save_settings(harness.modules, min_width=3840, min_height=2160)
 
     assert [w.id for w in pool.members(harness.connect())] == ["huge"]
+
+
+# -- the workflow: a Pool reset ------------------------------------------------------------------------
+
+
+def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_evicts_what_it_purged(
+    db_path: Path,
+) -> None:
+    """Both halves in one write, then eviction after the commit: a purged thumbnail goes, a **Like**'s stays.
+    The **Decision log** carries over."""
+    harness = make_harness(db_path, catalogue=catalogue_of(6))
+    workflows.save_settings(harness.modules, batch_size=2)
+    liked = submit_with(harness, {}).wallpapers[0].id
+    judge(harness, **{liked: Verdict.LIKE})
+    batch = live(harness)
+    workflows.set_draft(harness.modules, batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
+    for w in catalogue_of(6):
+        harness.modules.thumbnails.get(harness.connect(), w.id)
+
+    reset = workflows.reset_pool(harness.modules)
+
+    assert (reset.members, reset.batches_discarded, len(reset.eviction.evicted)) == (4, 1, 5)
+    assert pool.members(harness.connect()) == []
+    assert workflows.submit(harness.modules, batch.id) == SubmissionRefused(
+        reason=SubmissionRefused.Reason.UNKNOWN_BATCH
+    )
+    assert {p.stem for p in harness.modules.thumbnails.directory.iterdir()} == {liked}
+    assert decisions.resolve(harness.connect(), [liked])[liked].verdict is Verdict.LIKE
+
+
+def test_what_a_pool_reset_purged_may_be_admitted_again(db_path: Path) -> None:
+    """A purged **Wallpaper** leaves no trace in the **Decision log**, so the refill may bring it back. Two
+    steps: the walk in progress finds its next page empty, and the fresh one starts at page one."""
+    harness = make_harness(db_path, catalogue=catalogue_of(6))
+
+    workflows.reset_pool(harness.modules)
+    harness.fill_pool(2)
+
+    assert pool.members(harness.connect()) == list(catalogue_of(6))
