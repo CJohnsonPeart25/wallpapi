@@ -1,9 +1,10 @@
 """**Batches**: drawing a **Batch** from the **Pool**, its **Draft Batch**, and submitting it into the
 **Decision log**. Nothing else reads or writes `batches`, `batch_wallpapers` or `draft_batch`.
 
-A **Batch** persists until it is submitted, and there is no skip (ADR 0002). Tile posts set a **Draft Batch**
-row and never toggle; absence is an **Ignore**, derived at submit and never drafted. A **Batch** is submitted
-once. Every write takes the caller's write handle, behind one claim check.
+A **Batch** persists until it is submitted, and there is no skip (ADR 0002); only a **Pool reset** discards
+one unsubmitted (ADR 0025). Tile posts set a **Draft Batch** row and never toggle; absence is an **Ignore**,
+derived at submit and never drafted. A **Batch** is submitted once. Every write takes the caller's write
+handle, behind one claim check.
 """
 
 from __future__ import annotations
@@ -334,6 +335,18 @@ def showing(connection: sqlite3.Connection) -> set[str]:
     return {str(row["wallpaper_id"]) for row in connection.execute(_SELECT_SHOWING)}
 
 
+def discard_live(write: sqlite3.Connection) -> int:
+    """Drop every unsubmitted **Batch** with its tiles and **Draft Batch** inside the caller's transaction,
+    and say how many: a **Pool reset**'s half (ADR 0025). All of them, so nothing is left showing.
+
+    An unsubmitted **Batch** has no **Decision log** rows, so nothing is recorded or left dangling. A
+    submitted one is never touched. Children first, for the foreign keys.
+    """
+    write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({_SELECT_UNSUBMITTED})")
+    write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({_SELECT_UNSUBMITTED})")
+    return write.execute(f"DELETE FROM batches WHERE id IN ({_SELECT_UNSUBMITTED})").rowcount
+
+
 def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefused:
     """The unsubmitted **Batch** `batch_id`, or why it cannot be drafted against or submitted."""
     row = write.execute(
@@ -396,3 +409,6 @@ JOIN batches AS b ON b.id = bw.batch_id
 WHERE b.submitted_at IS NULL
 """
 """Every tile of every unsubmitted **Batch**."""
+
+_SELECT_UNSUBMITTED = "SELECT id FROM batches WHERE submitted_at IS NULL"
+"""What `discard_live` drops: the live **Batch**, plus any a database from before ADR 0002 still holds."""
