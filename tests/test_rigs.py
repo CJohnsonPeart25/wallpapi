@@ -2,8 +2,8 @@
 
 Invariant 14 and ADR 0019. `make_harness` composes every module, so a rule test on it passes through modules
 it is not about, and can go green for a reason that is not its own. It is for a workflow's transaction or
-its post-commit tail, for the web tests and for the background threads; each file allowed it says why in its
-docstring. Read from the source with `ast`, as `test_threads.py` guards against `time.sleep`.
+its post-commit tail, for the web and command tests and for the background threads; each file allowed it
+says why in its docstring. Read from the source with `ast`, as `test_threads.py` guards against `time.sleep`.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ TESTS = Path(__file__).resolve().parent
 ON_THE_HARNESS = frozenset(
     {
         "test_library.py",
+        "test_main.py",
         "test_pool.py",
         "test_threads.py",
         "test_thumbnails.py",
@@ -25,7 +26,8 @@ ON_THE_HARNESS = frozenset(
         "test_web_routes.py",
     }
 )
-"""The files allowed `make_harness`: the web and thread tests whole, and the workflow sections of the rest."""
+"""The files allowed `make_harness`: the web, command and thread tests whole, and the workflow sections of the
+rest."""
 
 HARNESS_NAMES = frozenset({"make_harness", "Harness"})
 HARNESS_FIXTURES = frozenset({"harness", "web"})
