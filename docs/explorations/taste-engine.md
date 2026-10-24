@@ -98,6 +98,8 @@ above the engine.
     for it; live ranking leans on the fixed-size Distillation rather than every past Judgement, which is the
     route past Invariant 2's Pool x decided matrix when that grows too big. Any change to Invariant 2
     needs an ADR and a measurement.
+18. **The engine finds, it never generates.** No AI image generation, ever: new Items come from Item
+    sources. More speculative ideas were raised and parked by the user; the spec leaves them out.
 
 ## Seams
 
@@ -132,18 +134,6 @@ Distillation has one implementation, so it is a module, not a seam, until a seco
   never leave the machine, Distillation included? Decide before Local lands.
 - **A Distillation can be inverted** into approximate images of what you like. Settled 13 says it is not
   anonymous; the platform question is what sharing one means.
-
-## Open: the loft (out-there, worth a look, nothing depends on them yet)
-
-- **Generate the bangers in between**: condition an image generator on a blended Distillation instead of
-  searching for neighbours.
-- **The engine chooses the question**: active learning picks the pair or set whose answer would teach the
-  most, and the Instrument shows that.
-- **Taste in words**: caption each prototype with the text encoder ("neon, rain, solitude"), so a
-  Distillation explains itself and can be edited by hand.
-- **Taste compatibility**: the distance between two Distillations, and what you share with someone.
-- **Anti-taste**: a negative Distillation as a Lens that subtracts.
-- **Context Lenses**: weather, calendar, time of day choosing today's Lens for the wallpaper rotation.
 
 ## Seats for the specification
 
