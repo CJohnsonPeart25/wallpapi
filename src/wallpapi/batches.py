@@ -1,10 +1,10 @@
 """**Batches**: drawing a **Batch** from the **Pool**, its **Draft Batch**, and submitting it into the
 **Decision log**. Nothing else reads or writes `batches`, `batch_wallpapers` or `draft_batch`.
 
-A **Batch** persists until it is submitted, and there is no skip (ADR 0002); only a **Pool reset** discards
-one unsubmitted (ADR 0025). Tile posts set a **Draft Batch** row and never toggle; absence is an **Ignore**,
-derived at submit and never drafted. A **Batch** is submitted once. Every write takes the caller's write
-handle, behind one claim check.
+A **Batch** persists until it is submitted (ADR 0002), skipped (ADR 0026) or discarded by a **Pool reset**
+(ADR 0025); only submitting records anything. Tile posts set a **Draft Batch** row and never toggle; absence
+is an **Ignore**, derived at submit and never drafted. A **Batch** is submitted once. Every write takes the
+caller's write handle, behind one claim check.
 """
 
 from __future__ import annotations

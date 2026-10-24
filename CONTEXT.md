@@ -76,8 +76,12 @@ _Avoid_: skip, pass, no-op
 The strongest negative verdict. The wallpaper is never shown again, and neither is a near-duplicate of it (the same image reposted under another ID). Its weight spreads to similar wallpapers.
 _Avoid_: block, hide, reject, dislike
 
+**Skip**:
+Passing over the batch on screen without deciding anything: it and its draft batch are thrown away, a new batch is drawn, and nothing reaches the decision log. Not a verdict and not an ignore: the skipped wallpapers stay in the pool, teach nothing, and may be drawn again.
+_Avoid_: reroll, reset, pass, dismiss
+
 **Draft Batch**:
-The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit. It is not part of the decision log.
+The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit or skip. It is not part of the decision log.
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:
