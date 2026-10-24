@@ -77,7 +77,7 @@ The strongest negative verdict. The wallpaper is never shown again, and neither 
 _Avoid_: block, hide, reject, dislike
 
 **Skip**:
-Passing over the batch on screen without deciding anything: it and its draft batch are thrown away, a new batch is drawn, and nothing reaches the decision log. Not a verdict and not an ignore: the skipped wallpapers stay in the pool, teach nothing, and may be drawn again.
+Passing over the batch on screen without deciding anything: it and its draft batch are thrown away, a new batch is drawn, and nothing reaches the decision log. Not a verdict and not an ignore: the skipped wallpapers stay in the pool, teach nothing, and may be drawn again — the best bangers straight away, since a skip changes no score.
 _Avoid_: reroll, reset, pass, dismiss
 
 **Draft Batch**:

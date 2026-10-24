@@ -39,6 +39,10 @@ nothing but the marks on the skipped **Batch**.
 - **Ignore** and **Skip** are now different answers. "None of these" is an **Ignore**, and the model learns
   from it. "Not now" is a **Skip**, and the model learns nothing.
 - Marks are lost on a skip. That is the price of one click.
-- Because nothing retires, a small **Pool** can redraw the same tiles. The draw is random over the whole
-  **Pool**, so on a **Pool** of hundreds this is rare.
+- **A skip rerolls the Unknown and Dud slots, not the Bangers.** **Bangers** are drawn best **Score** first
+  (`allocation._draw_order`), and a skip changes no **Score**, so the top **Bangers** come straight back
+  until they are decided. On a **Banger**-heavy **Mix** such as **Refine**, most of the next **Batch** is
+  the last one. The maintainer chose this over taking the skipped tiles out of the **Pool**, and over a
+  stored marker that keeps them out of the next draw: a **Skip** stays a reroll of the random part and
+  touches nothing else.
 - The shell refetches on the same `batch-submitted` event after a skip as after a submission.
