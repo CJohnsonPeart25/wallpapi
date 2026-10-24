@@ -139,9 +139,9 @@ class Batches:
         so leaving it alone records it again (ADR 0015). Dormant while nothing decided is in the **Pool** (ADR
         0016).
         """
-        live = _load_live_batch(connection)
-        if live is not None:
-            return live
+        waiting = live(connection)
+        if waiting is not None:
+            return waiting
 
         classified = self.classify(connection)
         if not classified:
@@ -156,7 +156,7 @@ class Batches:
 
         with storage.write(connection) as write:
             # Re-read under the write lock (ADR 0002): two tabs opened at once must not each mint a **Batch**.
-            contended = _load_live_batch(write)
+            contended = live(write)
             if contended is not None:
                 return contended
             write.execute(
@@ -380,8 +380,10 @@ def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefuse
     return _batch_from(write, row)
 
 
-def _load_live_batch(connection: sqlite3.Connection) -> Batch | None:
-    """The most recent unsubmitted **Batch**, rebuilt from storage, or `None`."""
+def live(connection: sqlite3.Connection) -> Batch | None:
+    """The most recent unsubmitted **Batch**, rebuilt from storage, or `None`. Never mints one, unlike
+    `Batches.next`: what a page that only counts reads.
+    """
     row = connection.execute(
         "SELECT id, created_at, size FROM batches WHERE submitted_at IS NULL ORDER BY rowid DESC LIMIT 1"
     ).fetchone()
