@@ -433,7 +433,7 @@ class BatchesRig:
 
     def empty_the_pool(self) -> None:
         with storage.write(self.connection) as write:
-            pool.retire(write, [w.id for w in pool.members(write)])
+            pool.clear(write)
 
 
 @contextmanager
