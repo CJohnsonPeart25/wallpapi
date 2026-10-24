@@ -1,0 +1,375 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Branch prototype/comparative-instrument, never merged.
+  Question (wallpapi-wa5.3): which comparative Instrument is built first, and how does it look and behave?
+  Four variants on one page, switched by ?variant= and the bar at the bottom (or the arrow keys):
+  A pick 1 of n, B drag to order, C endless wall, D winner stays.
+  Real data: 240 random Items from your Pool (a read-only copy of wallpapi.db, 2026-10-24); thumbnails load
+  from th.wallhaven.cc. Nothing is saved: every "recorded" Judgement lives in memory and is shown on the right
+  with a draft of the evidence it might reduce to (the reduction itself is the Instrument seam ticket's).
+  Open the file in a browser from the repo, so the vendored Pico resolves.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PROTOTYPE comparative Instrument</title>
+    <script>
+      try { var theme = localStorage.getItem("wallpapi-theme"); } catch (e) {}
+      if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+    </script>
+    <link rel="stylesheet" href="../../src/wallpapi/web/static/pico.indigo.min.css" />
+    <style>
+      nav { position: sticky; top: 0; z-index: 5; background: var(--pico-background-color);
+            border-bottom: 1px solid var(--pico-muted-border-color); }
+      .layout { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; gap: 1.5rem; align-items: start; }
+      @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+      .panel { position: sticky; top: 4.5rem; max-height: calc(100vh - 6rem); overflow: auto; font-size: .8rem; }
+      .panel pre { font-size: .7rem; white-space: pre-wrap; padding: .5rem; margin: 0 0 .75rem; }
+      .stats { display: grid; grid-template-columns: 1fr 1fr; gap: .25rem .75rem; margin-bottom: .75rem; }
+      .stats b { font-variant-numeric: tabular-nums; }
+      .hint { color: var(--pico-muted-color); font-size: .85rem; margin: 0 0 1rem; }
+      img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: .4rem; }
+      .tile { position: relative; cursor: pointer; aspect-ratio: 16 / 9; border-radius: .5rem; outline-offset: 3px;
+              transition: transform .08s; }
+      .tile:hover { transform: scale(1.01); outline: 2px solid var(--pico-primary); }
+      .key { position: absolute; left: .4rem; top: .4rem; background: #000a; color: #fff; border-radius: .3rem;
+             padding: 0 .45rem; font-size: .8rem; font-weight: 600; }
+      /* A */
+      .pick { display: grid; gap: 1rem; }
+      .pick.n2 { grid-template-columns: repeat(2, 1fr); }
+      .pick.n3 { grid-template-columns: repeat(3, 1fr); }
+      .pick.n4 { grid-template-columns: repeat(2, 1fr); }
+      .pick.n6 { grid-template-columns: repeat(3, 1fr); }
+      /* B */
+      .order { display: grid; grid-template-columns: repeat(5, 1fr); gap: .75rem; }
+      .order .tile { cursor: grab; }
+      .order .tile.dragging { opacity: .35; }
+      .order .tile.over { outline: 3px dashed var(--pico-primary); }
+      .rank { position: absolute; right: .4rem; top: .4rem; background: var(--pico-primary-background);
+              color: var(--pico-primary-inverse); border-radius: 999px; width: 1.6rem; height: 1.6rem;
+              display: grid; place-items: center; font-weight: 700; font-size: .85rem; }
+      /* C */
+      .wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: .4rem; }
+      .wall .tile:hover { transform: none; }
+      .wall .tile.plucked { outline: 4px solid var(--pico-primary); }
+      .wall .tile.plucked::after { content: "★"; position: absolute; right: .35rem; top: .1rem; color: #fff;
+                                   text-shadow: 0 0 4px #000; font-size: 1.2rem; }
+      .pagebreak { grid-column: 1 / -1; font-size: .7rem; color: var(--pico-muted-color);
+                   border-top: 1px dashed var(--pico-muted-border-color); padding-top: .2rem; }
+      /* D */
+      .duel { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+      .champ { position: absolute; left: .4rem; bottom: .4rem; background: #000b; color: #ffd75e;
+               border-radius: .3rem; padding: .1rem .5rem; font-weight: 600; font-size: .85rem; }
+      /* the switcher: not part of any design */
+      #switcher { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); z-index: 10;
+                  display: flex; gap: .75rem; align-items: center; background: #111; color: #fff;
+                  padding: .4rem .9rem; border-radius: 999px; box-shadow: 0 4px 18px #0007; font: 600 .9rem system-ui; }
+      #switcher button { all: unset; cursor: pointer; padding: 0 .4rem; font-size: 1.1rem; }
+      #switcher .tag { background: #e33; border-radius: .3rem; padding: 0 .35rem; font-size: .65rem; }
+    </style>
+  </head>
+  <body>
+    <nav class="container-fluid">
+      <ul>
+        <li><a href="#">Batches</a></li>
+        <li><a href="#" aria-current="page">Compare</a></li>
+        <li><a href="#">History</a></li>
+        <li><a href="#">Settings</a></li>
+      </ul>
+      <ul id="actions"></ul>
+    </nav>
+    <main class="container-fluid">
+      <div class="layout">
+        <section id="stage"></section>
+        <aside class="panel">
+          <div class="stats">
+            <span>Judgements</span><b id="s-j">0</b>
+            <span>Relative pairs</span><b id="s-p">0</b>
+            <span>Absolute facts</span><b id="s-a">0</b>
+            <span>Minutes</span><b id="s-m">0.0</b>
+            <span>Pairs a minute</span><b id="s-ppm">–</b>
+            <span>Secs a Judgement</span><b id="s-spj">–</b>
+          </div>
+          <strong>Last Judgement recorded</strong>
+          <pre id="last">nothing yet</pre>
+          <strong>Draft evidence (not the reduction)</strong>
+          <pre id="evidence">nothing yet</pre>
+        </aside>
+      </div>
+    </main>
+    <div id="switcher">
+      <span class="tag">PROTOTYPE</span>
+      <button id="prev" aria-label="Previous variant">←</button>
+      <span id="vlabel"></span>
+      <button id="next" aria-label="Next variant">→</button>
+    </div>
+
+    <script>
+      const POOL = [{"id":"4vjdqp","th":"https://th.wallhaven.cc/small/4v/4vjdqp.jpg","ratio":"1.78","cat":"general"},{"id":"76mqqv","th":"https://th.wallhaven.cc/small/76/76mqqv.jpg","ratio":"1.78","cat":"people"},{"id":"0jo8xp","th":"https://th.wallhaven.cc/small/0j/0jo8xp.jpg","ratio":"1.78","cat":"general"},{"id":"kwekz7","th":"https://th.wallhaven.cc/small/kw/kwekz7.jpg","ratio":"1.78","cat":"general"},{"id":"95d6o1","th":"https://th.wallhaven.cc/small/95/95d6o1.jpg","ratio":"1.78","cat":"general"},{"id":"d6vqzg","th":"https://th.wallhaven.cc/small/d6/d6vqzg.jpg","ratio":"1.78","cat":"general"},{"id":"42d5my","th":"https://th.wallhaven.cc/small/42/42d5my.jpg","ratio":"1.78","cat":"anime"},{"id":"42jmjg","th":"https://th.wallhaven.cc/small/42/42jmjg.jpg","ratio":"1.78","cat":"anime"},{"id":"4v8k5p","th":"https://th.wallhaven.cc/small/4v/4v8k5p.jpg","ratio":"1.78","cat":"general"},{"id":"4yxvjd","th":"https://th.wallhaven.cc/small/4y/4yxvjd.jpg","ratio":"1.78","cat":"general"},{"id":"r2yw17","th":"https://th.wallhaven.cc/small/r2/r2yw17.jpg","ratio":"1.78","cat":"general"},{"id":"0je78q","th":"https://th.wallhaven.cc/small/0j/0je78q.jpg","ratio":"1.78","cat":"general"},{"id":"4vel73","th":"https://th.wallhaven.cc/small/4v/4vel73.jpg","ratio":"1.78","cat":"general"},{"id":"6dm1pq","th":"https://th.wallhaven.cc/small/6d/6dm1pq.jpg","ratio":"1.78","cat":"general"},{"id":"5dkgk5","th":"https://th.wallhaven.cc/small/5d/5dkgk5.jpg","ratio":"1.78","cat":"people"},{"id":"95exrk","th":"https://th.wallhaven.cc/small/95/95exrk.jpg","ratio":"1.78","cat":"general"},{"id":"eyojdw","th":"https://th.wallhaven.cc/small/ey/eyojdw.jpg","ratio":"1.78","cat":"anime"},{"id":"9dp28d","th":"https://th.wallhaven.cc/small/9d/9dp28d.jpg","ratio":"1.78","cat":"general"},{"id":"yxw8vk","th":"https://th.wallhaven.cc/small/yx/yxw8vk.jpg","ratio":"1.78","cat":"general"},{"id":"4gvrkd","th":"https://th.wallhaven.cc/small/4g/4gvrkd.jpg","ratio":"1.78","cat":"general"},{"id":"ne298l","th":"https://th.wallhaven.cc/small/ne/ne298l.jpg","ratio":"1.78","cat":"general"},{"id":"rd8wjq","th":"https://th.wallhaven.cc/small/rd/rd8wjq.jpg","ratio":"1.78","cat":"general"},{"id":"76j7q9","th":"https://th.wallhaven.cc/small/76/76j7q9.jpg","ratio":"1.78","cat":"general"},{"id":"qz7e37","th":"https://th.wallhaven.cc/small/qz/qz7e37.jpg","ratio":"1.78","cat":"general"},{"id":"kwzk7d","th":"https://th.wallhaven.cc/small/kw/kwzk7d.jpg","ratio":"1.78","cat":"general"},{"id":"j5kj8p","th":"https://th.wallhaven.cc/small/j5/j5kj8p.jpg","ratio":"1.78","cat":"general"},{"id":"qd2prr","th":"https://th.wallhaven.cc/small/qd/qd2prr.jpg","ratio":"1.78","cat":"general"},{"id":"4g7jml","th":"https://th.wallhaven.cc/small/4g/4g7jml.jpg","ratio":"1.78","cat":"general"},{"id":"47o1po","th":"https://th.wallhaven.cc/small/47/47o1po.jpg","ratio":"1.78","cat":"general"},{"id":"95qz6d","th":"https://th.wallhaven.cc/small/95/95qz6d.jpg","ratio":"1.78","cat":"anime"},{"id":"nm76o8","th":"https://th.wallhaven.cc/small/nm/nm76o8.jpg","ratio":"1.78","cat":"general"},{"id":"3l7x7v","th":"https://th.wallhaven.cc/small/3l/3l7x7v.jpg","ratio":"1.78","cat":"anime"},{"id":"0qy6q7","th":"https://th.wallhaven.cc/small/0q/0qy6q7.jpg","ratio":"1.78","cat":"general"},{"id":"479kw3","th":"https://th.wallhaven.cc/small/47/479kw3.jpg","ratio":"1.78","cat":"people"},{"id":"l838lp","th":"https://th.wallhaven.cc/small/l8/l838lp.jpg","ratio":"1.78","cat":"general"},{"id":"nexvyo","th":"https://th.wallhaven.cc/small/ne/nexvyo.jpg","ratio":"1.78","cat":"people"},{"id":"01mjj3","th":"https://th.wallhaven.cc/small/01/01mjj3.jpg","ratio":"1.78","cat":"general"},{"id":"4gkkqq","th":"https://th.wallhaven.cc/small/4g/4gkkqq.jpg","ratio":"1.78","cat":"general"},{"id":"x19k2v","th":"https://th.wallhaven.cc/small/x1/x19k2v.jpg","ratio":"1.78","cat":"general"},{"id":"nzd5lo","th":"https://th.wallhaven.cc/small/nz/nzd5lo.jpg","ratio":"1.78","cat":"general"},{"id":"0w5dyr","th":"https://th.wallhaven.cc/small/0w/0w5dyr.jpg","ratio":"1.78","cat":"general"},{"id":"4l8qqy","th":"https://th.wallhaven.cc/small/4l/4l8qqy.jpg","ratio":"1.78","cat":"general"},{"id":"yq8dod","th":"https://th.wallhaven.cc/small/yq/yq8dod.jpg","ratio":"1.78","cat":"general"},{"id":"gj26kq","th":"https://th.wallhaven.cc/small/gj/gj26kq.jpg","ratio":"1.78","cat":"general"},{"id":"jx2qxw","th":"https://th.wallhaven.cc/small/jx/jx2qxw.jpg","ratio":"1.78","cat":"general"},{"id":"nk881q","th":"https://th.wallhaven.cc/small/nk/nk881q.jpg","ratio":"1.78","cat":"general"},{"id":"9dpxew","th":"https://th.wallhaven.cc/small/9d/9dpxew.jpg","ratio":"1.78","cat":"general"},{"id":"49rr3k","th":"https://th.wallhaven.cc/small/49/49rr3k.jpg","ratio":"1.78","cat":"general"},{"id":"4xw5v0","th":"https://th.wallhaven.cc/small/4x/4xw5v0.jpg","ratio":"1.78","cat":"general"},{"id":"g8v7ql","th":"https://th.wallhaven.cc/small/g8/g8v7ql.jpg","ratio":"1.78","cat":"general"},{"id":"lqwgv2","th":"https://th.wallhaven.cc/small/lq/lqwgv2.jpg","ratio":"1.78","cat":"anime"},{"id":"0wzqxp","th":"https://th.wallhaven.cc/small/0w/0wzqxp.jpg","ratio":"1.78","cat":"general"},{"id":"6oez9x","th":"https://th.wallhaven.cc/small/6o/6oez9x.jpg","ratio":"1.78","cat":"general"},{"id":"gjje9l","th":"https://th.wallhaven.cc/small/gj/gjje9l.jpg","ratio":"1.78","cat":"general"},{"id":"nk9d81","th":"https://th.wallhaven.cc/small/nk/nk9d81.jpg","ratio":"1.78","cat":"general"},{"id":"z87oyw","th":"https://th.wallhaven.cc/small/z8/z87oyw.jpg","ratio":"1.78","cat":"general"},{"id":"vg57j8","th":"https://th.wallhaven.cc/small/vg/vg57j8.jpg","ratio":"1.78","cat":"general"},{"id":"lqj5mr","th":"https://th.wallhaven.cc/small/lq/lqj5mr.jpg","ratio":"1.78","cat":"general"},{"id":"k7871q","th":"https://th.wallhaven.cc/small/k7/k7871q.jpg","ratio":"1.78","cat":"general"},{"id":"rrk55j","th":"https://th.wallhaven.cc/small/rr/rrk55j.jpg","ratio":"1.78","cat":"general"},{"id":"1qd9x3","th":"https://th.wallhaven.cc/small/1q/1qd9x3.jpg","ratio":"1.78","cat":"general"},{"id":"l8owy2","th":"https://th.wallhaven.cc/small/l8/l8owy2.jpg","ratio":"1.78","cat":"people"},{"id":"ex63rk","th":"https://th.wallhaven.cc/small/ex/ex63rk.jpg","ratio":"1.78","cat":"general"},{"id":"4loevy","th":"https://th.wallhaven.cc/small/4l/4loevy.jpg","ratio":"1.78","cat":"general"},{"id":"m3m2zm","th":"https://th.wallhaven.cc/small/m3/m3m2zm.jpg","ratio":"1.78","cat":"general"},{"id":"4v7lk8","th":"https://th.wallhaven.cc/small/4v/4v7lk8.jpg","ratio":"1.78","cat":"general"},{"id":"8x31pk","th":"https://th.wallhaven.cc/small/8x/8x31pk.jpg","ratio":"1.78","cat":"general"},{"id":"eyvyyl","th":"https://th.wallhaven.cc/small/ey/eyvyyl.jpg","ratio":"1.78","cat":"general"},{"id":"42699y","th":"https://th.wallhaven.cc/small/42/42699y.jpg","ratio":"1.78","cat":"general"},{"id":"nk2kw6","th":"https://th.wallhaven.cc/small/nk/nk2kw6.jpg","ratio":"1.78","cat":"anime"},{"id":"vg2k6p","th":"https://th.wallhaven.cc/small/vg/vg2k6p.jpg","ratio":"1.78","cat":"general"},{"id":"pko11j","th":"https://th.wallhaven.cc/small/pk/pko11j.jpg","ratio":"1.78","cat":"general"},{"id":"d5r52l","th":"https://th.wallhaven.cc/small/d5/d5r52l.jpg","ratio":"1.78","cat":"anime"},{"id":"4vpj6m","th":"https://th.wallhaven.cc/small/4v/4vpj6m.jpg","ratio":"1.78","cat":"general"},{"id":"nk9q3q","th":"https://th.wallhaven.cc/small/nk/nk9q3q.jpg","ratio":"1.78","cat":"general"},{"id":"3kov56","th":"https://th.wallhaven.cc/small/3k/3kov56.jpg","ratio":"1.78","cat":"anime"},{"id":"j8m86p","th":"https://th.wallhaven.cc/small/j8/j8m86p.jpg","ratio":"1.78","cat":"anime"},{"id":"6kgze7","th":"https://th.wallhaven.cc/small/6k/6kgze7.jpg","ratio":"1.78","cat":"general"},{"id":"yjgj8g","th":"https://th.wallhaven.cc/small/yj/yjgj8g.jpg","ratio":"1.78","cat":"anime"},{"id":"4yzzll","th":"https://th.wallhaven.cc/small/4y/4yzzll.jpg","ratio":"1.78","cat":"anime"},{"id":"3zv6o9","th":"https://th.wallhaven.cc/small/3z/3zv6o9.jpg","ratio":"1.78","cat":"general"},{"id":"3ky6xd","th":"https://th.wallhaven.cc/small/3k/3ky6xd.jpg","ratio":"1.78","cat":"general"},{"id":"0j66jq","th":"https://th.wallhaven.cc/small/0j/0j66jq.jpg","ratio":"1.78","cat":"anime"},{"id":"wqq3q6","th":"https://th.wallhaven.cc/small/wq/wqq3q6.jpg","ratio":"1.78","cat":"general"},{"id":"76plgy","th":"https://th.wallhaven.cc/small/76/76plgy.jpg","ratio":"1.78","cat":"general"},{"id":"737y6y","th":"https://th.wallhaven.cc/small/73/737y6y.jpg","ratio":"1.78","cat":"general"},{"id":"73rzx3","th":"https://th.wallhaven.cc/small/73/73rzx3.jpg","ratio":"1.78","cat":"general"},{"id":"v95mr3","th":"https://th.wallhaven.cc/small/v9/v95mr3.jpg","ratio":"1.78","cat":"general"},{"id":"v9rjz8","th":"https://th.wallhaven.cc/small/v9/v9rjz8.jpg","ratio":"1.78","cat":"people"},{"id":"0pzer3","th":"https://th.wallhaven.cc/small/0p/0pzer3.jpg","ratio":"1.78","cat":"people"},{"id":"og5e2p","th":"https://th.wallhaven.cc/small/og/og5e2p.jpg","ratio":"1.78","cat":"general"},{"id":"4l1dgp","th":"https://th.wallhaven.cc/small/4l/4l1dgp.jpg","ratio":"1.78","cat":"general"},{"id":"6kojxq","th":"https://th.wallhaven.cc/small/6k/6kojxq.jpg","ratio":"1.78","cat":"general"},{"id":"47okov","th":"https://th.wallhaven.cc/small/47/47okov.jpg","ratio":"1.78","cat":"anime"},{"id":"42yv89","th":"https://th.wallhaven.cc/small/42/42yv89.jpg","ratio":"1.78","cat":"general"},{"id":"nm8p10","th":"https://th.wallhaven.cc/small/nm/nm8p10.jpg","ratio":"1.78","cat":"general"},{"id":"019gew","th":"https://th.wallhaven.cc/small/01/019gew.jpg","ratio":"1.78","cat":"general"},{"id":"gjr5ed","th":"https://th.wallhaven.cc/small/gj/gjr5ed.jpg","ratio":"1.78","cat":"people"},{"id":"1je8ev","th":"https://th.wallhaven.cc/small/1j/1je8ev.jpg","ratio":"1.78","cat":"anime"},{"id":"eym81w","th":"https://th.wallhaven.cc/small/ey/eym81w.jpg","ratio":"1.78","cat":"anime"},{"id":"7pyyj9","th":"https://th.wallhaven.cc/small/7p/7pyyj9.jpg","ratio":"1.78","cat":"general"},{"id":"47y6le","th":"https://th.wallhaven.cc/small/47/47y6le.jpg","ratio":"1.78","cat":"general"},{"id":"odqx19","th":"https://th.wallhaven.cc/small/od/odqx19.jpg","ratio":"1.78","cat":"anime"},{"id":"j59ed5","th":"https://th.wallhaven.cc/small/j5/j59ed5.jpg","ratio":"1.78","cat":"anime"},{"id":"ymxkyg","th":"https://th.wallhaven.cc/small/ym/ymxkyg.jpg","ratio":"1.78","cat":"general"},{"id":"x18mwz","th":"https://th.wallhaven.cc/small/x1/x18mwz.jpg","ratio":"1.78","cat":"general"},{"id":"3l3pk9","th":"https://th.wallhaven.cc/small/3l/3l3pk9.jpg","ratio":"1.78","cat":"anime"},{"id":"0j66jp","th":"https://th.wallhaven.cc/small/0j/0j66jp.jpg","ratio":"1.78","cat":"anime"},{"id":"j52lm5","th":"https://th.wallhaven.cc/small/j5/j52lm5.jpg","ratio":"1.78","cat":"general"},{"id":"952188","th":"https://th.wallhaven.cc/small/95/952188.jpg","ratio":"1.78","cat":"anime"},{"id":"47e63o","th":"https://th.wallhaven.cc/small/47/47e63o.jpg","ratio":"1.78","cat":"general"},{"id":"l38goy","th":"https://th.wallhaven.cc/small/l3/l38goy.jpg","ratio":"1.78","cat":"general"},{"id":"qdxoy5","th":"https://th.wallhaven.cc/small/qd/qdxoy5.jpg","ratio":"1.78","cat":"anime"},{"id":"436ee3","th":"https://th.wallhaven.cc/small/43/436ee3.jpg","ratio":"1.78","cat":"people"},{"id":"6qk8l7","th":"https://th.wallhaven.cc/small/6q/6qk8l7.jpg","ratio":"1.78","cat":"general"},{"id":"0q8ddd","th":"https://th.wallhaven.cc/small/0q/0q8ddd.jpg","ratio":"1.78","cat":"general"},{"id":"6q178q","th":"https://th.wallhaven.cc/small/6q/6q178q.jpg","ratio":"1.78","cat":"general"},{"id":"4lxey4","th":"https://th.wallhaven.cc/small/4l/4lxey4.jpg","ratio":"1.78","cat":"general"},{"id":"5dz8m1","th":"https://th.wallhaven.cc/small/5d/5dz8m1.jpg","ratio":"1.78","cat":"general"},{"id":"yj8xgx","th":"https://th.wallhaven.cc/small/yj/yj8xgx.jpg","ratio":"1.78","cat":"general"},{"id":"x1l5ld","th":"https://th.wallhaven.cc/small/x1/x1l5ld.jpg","ratio":"1.78","cat":"general"},{"id":"lqz7dq","th":"https://th.wallhaven.cc/small/lq/lqz7dq.jpg","ratio":"1.78","cat":"general"},{"id":"4dmdqo","th":"https://th.wallhaven.cc/small/4d/4dmdqo.jpg","ratio":"1.78","cat":"general"},{"id":"x6z5qz","th":"https://th.wallhaven.cc/small/x6/x6z5qz.jpg","ratio":"1.78","cat":"general"},{"id":"j5wjvm","th":"https://th.wallhaven.cc/small/j5/j5wjvm.jpg","ratio":"1.78","cat":"general"},{"id":"wyqx9q","th":"https://th.wallhaven.cc/small/wy/wyqx9q.jpg","ratio":"1.78","cat":"people"},{"id":"d53gd3","th":"https://th.wallhaven.cc/small/d5/d53gd3.jpg","ratio":"1.78","cat":"anime"},{"id":"761ome","th":"https://th.wallhaven.cc/small/76/761ome.jpg","ratio":"1.78","cat":"anime"},{"id":"we231q","th":"https://th.wallhaven.cc/small/we/we231q.jpg","ratio":"1.78","cat":"general"},{"id":"d5q76m","th":"https://th.wallhaven.cc/small/d5/d5q76m.jpg","ratio":"1.78","cat":"people"},{"id":"j8q6mq","th":"https://th.wallhaven.cc/small/j8/j8q6mq.jpg","ratio":"1.78","cat":"general"},{"id":"r282xm","th":"https://th.wallhaven.cc/small/r2/r282xm.jpg","ratio":"1.78","cat":"general"},{"id":"eyqw6k","th":"https://th.wallhaven.cc/small/ey/eyqw6k.jpg","ratio":"1.78","cat":"general"},{"id":"p29g23","th":"https://th.wallhaven.cc/small/p2/p29g23.jpg","ratio":"1.78","cat":"general"},{"id":"4vg8v3","th":"https://th.wallhaven.cc/small/4v/4vg8v3.jpg","ratio":"1.78","cat":"general"},{"id":"pom9x3","th":"https://th.wallhaven.cc/small/po/pom9x3.jpg","ratio":"1.78","cat":"anime"},{"id":"2y7ldg","th":"https://th.wallhaven.cc/small/2y/2y7ldg.jpg","ratio":"1.78","cat":"general"},{"id":"mpdqd1","th":"https://th.wallhaven.cc/small/mp/mpdqd1.jpg","ratio":"1.78","cat":"general"},{"id":"01eqog","th":"https://th.wallhaven.cc/small/01/01eqog.jpg","ratio":"1.78","cat":"general"},{"id":"dg75vj","th":"https://th.wallhaven.cc/small/dg/dg75vj.jpg","ratio":"1.78","cat":"anime"},{"id":"nkd99m","th":"https://th.wallhaven.cc/small/nk/nkd99m.jpg","ratio":"1.78","cat":"general"},{"id":"5wjpq3","th":"https://th.wallhaven.cc/small/5w/5wjpq3.jpg","ratio":"1.78","cat":"general"},{"id":"nmoj7m","th":"https://th.wallhaven.cc/small/nm/nmoj7m.jpg","ratio":"1.78","cat":"general"},{"id":"4l2p3p","th":"https://th.wallhaven.cc/small/4l/4l2p3p.jpg","ratio":"1.78","cat":"general"},{"id":"g8y9e7","th":"https://th.wallhaven.cc/small/g8/g8y9e7.jpg","ratio":"1.78","cat":"anime"},{"id":"dgpmg3","th":"https://th.wallhaven.cc/small/dg/dgpmg3.jpg","ratio":"1.78","cat":"general"},{"id":"8xe1dk","th":"https://th.wallhaven.cc/small/8x/8xe1dk.jpg","ratio":"1.78","cat":"general"},{"id":"4xyvqv","th":"https://th.wallhaven.cc/small/4x/4xyvqv.jpg","ratio":"1.78","cat":"general"},{"id":"6oogzl","th":"https://th.wallhaven.cc/small/6o/6oogzl.jpg","ratio":"1.78","cat":"anime"},{"id":"yjdje7","th":"https://th.wallhaven.cc/small/yj/yjdje7.jpg","ratio":"1.78","cat":"general"},{"id":"7pl8m3","th":"https://th.wallhaven.cc/small/7p/7pl8m3.jpg","ratio":"1.78","cat":"general"},{"id":"r2z7oj","th":"https://th.wallhaven.cc/small/r2/r2z7oj.jpg","ratio":"1.78","cat":"general"},{"id":"ey5pxl","th":"https://th.wallhaven.cc/small/ey/ey5pxl.jpg","ratio":"1.78","cat":"general"},{"id":"wq2dqq","th":"https://th.wallhaven.cc/small/wq/wq2dqq.jpg","ratio":"1.78","cat":"anime"},{"id":"01k7jv","th":"https://th.wallhaven.cc/small/01/01k7jv.jpg","ratio":"1.78","cat":"anime"},{"id":"4yp3l4","th":"https://th.wallhaven.cc/small/4y/4yp3l4.jpg","ratio":"1.78","cat":"general"},{"id":"42vkom","th":"https://th.wallhaven.cc/small/42/42vkom.jpg","ratio":"1.78","cat":"people"},{"id":"zxr7oj","th":"https://th.wallhaven.cc/small/zx/zxr7oj.jpg","ratio":"1.78","cat":"general"},{"id":"4dd9vj","th":"https://th.wallhaven.cc/small/4d/4dd9vj.jpg","ratio":"1.78","cat":"general"},{"id":"7pg5pe","th":"https://th.wallhaven.cc/small/7p/7pg5pe.jpg","ratio":"1.78","cat":"general"},{"id":"zmj5dg","th":"https://th.wallhaven.cc/small/zm/zmj5dg.jpg","ratio":"1.78","cat":"people"},{"id":"j5xlkm","th":"https://th.wallhaven.cc/small/j5/j5xlkm.jpg","ratio":"1.78","cat":"anime"},{"id":"2e13vy","th":"https://th.wallhaven.cc/small/2e/2e13vy.jpg","ratio":"1.78","cat":"anime"},{"id":"0px21m","th":"https://th.wallhaven.cc/small/0p/0px21m.jpg","ratio":"1.78","cat":"anime"},{"id":"r25k3q","th":"https://th.wallhaven.cc/small/r2/r25k3q.jpg","ratio":"1.78","cat":"people"},{"id":"j8xdqw","th":"https://th.wallhaven.cc/small/j8/j8xdqw.jpg","ratio":"1.78","cat":"general"},{"id":"212yyg","th":"https://th.wallhaven.cc/small/21/212yyg.jpg","ratio":"1.78","cat":"general"},{"id":"2ewdvx","th":"https://th.wallhaven.cc/small/2e/2ewdvx.jpg","ratio":"1.78","cat":"general"},{"id":"4vjmm4","th":"https://th.wallhaven.cc/small/4v/4vjmm4.jpg","ratio":"1.78","cat":"general"},{"id":"lyzdvy","th":"https://th.wallhaven.cc/small/ly/lyzdvy.jpg","ratio":"1.78","cat":"anime"},{"id":"x178yl","th":"https://th.wallhaven.cc/small/x1/x178yl.jpg","ratio":"1.78","cat":"general"},{"id":"1py2o3","th":"https://th.wallhaven.cc/small/1p/1py2o3.jpg","ratio":"1.78","cat":"general"},{"id":"q63vdr","th":"https://th.wallhaven.cc/small/q6/q63vdr.jpg","ratio":"1.78","cat":"anime"},{"id":"6kkrqw","th":"https://th.wallhaven.cc/small/6k/6kkrqw.jpg","ratio":"1.78","cat":"general"},{"id":"j5vyzp","th":"https://th.wallhaven.cc/small/j5/j5vyzp.jpg","ratio":"1.78","cat":"general"},{"id":"4oy39n","th":"https://th.wallhaven.cc/small/4o/4oy39n.jpg","ratio":"1.78","cat":"general"},{"id":"nex92l","th":"https://th.wallhaven.cc/small/ne/nex92l.jpg","ratio":"1.78","cat":"general"},{"id":"969qww","th":"https://th.wallhaven.cc/small/96/969qww.jpg","ratio":"1.78","cat":"general"},{"id":"wqdx2x","th":"https://th.wallhaven.cc/small/wq/wqdx2x.jpg","ratio":"1.78","cat":"general"},{"id":"nmp1kk","th":"https://th.wallhaven.cc/small/nm/nmp1kk.jpg","ratio":"1.78","cat":"general"},{"id":"qzj37d","th":"https://th.wallhaven.cc/small/qz/qzj37d.jpg","ratio":"1.78","cat":"general"},{"id":"rd295j","th":"https://th.wallhaven.cc/small/rd/rd295j.jpg","ratio":"1.78","cat":"general"},{"id":"39e3pd","th":"https://th.wallhaven.cc/small/39/39e3pd.jpg","ratio":"1.78","cat":"general"},{"id":"xl7zpo","th":"https://th.wallhaven.cc/small/xl/xl7zpo.jpg","ratio":"1.78","cat":"general"},{"id":"xlmoml","th":"https://th.wallhaven.cc/small/xl/xlmoml.jpg","ratio":"1.78","cat":"anime"},{"id":"4ogqk7","th":"https://th.wallhaven.cc/small/4o/4ogqk7.jpg","ratio":"1.78","cat":"general"},{"id":"ym7yyd","th":"https://th.wallhaven.cc/small/ym/ym7yyd.jpg","ratio":"1.78","cat":"general"},{"id":"2eojm9","th":"https://th.wallhaven.cc/small/2e/2eojm9.jpg","ratio":"1.78","cat":"general"},{"id":"j8erqw","th":"https://th.wallhaven.cc/small/j8/j8erqw.jpg","ratio":"1.78","cat":"general"},{"id":"5gdww9","th":"https://th.wallhaven.cc/small/5g/5gdww9.jpg","ratio":"1.78","cat":"general"},{"id":"1pez93","th":"https://th.wallhaven.cc/small/1p/1pez93.jpg","ratio":"1.78","cat":"anime"},{"id":"4382l3","th":"https://th.wallhaven.cc/small/43/4382l3.jpg","ratio":"1.78","cat":"general"},{"id":"gw7z33","th":"https://th.wallhaven.cc/small/gw/gw7z33.jpg","ratio":"1.78","cat":"general"},{"id":"ly2l7l","th":"https://th.wallhaven.cc/small/ly/ly2l7l.jpg","ratio":"1.78","cat":"general"},{"id":"exjdgk","th":"https://th.wallhaven.cc/small/ex/exjdgk.jpg","ratio":"1.78","cat":"general"},{"id":"2eqlem","th":"https://th.wallhaven.cc/small/2e/2eqlem.jpg","ratio":"1.78","cat":"anime"},{"id":"5gxqv8","th":"https://th.wallhaven.cc/small/5g/5gxqv8.jpg","ratio":"1.78","cat":"general"},{"id":"x8vkmd","th":"https://th.wallhaven.cc/small/x8/x8vkmd.jpg","ratio":"1.78","cat":"anime"},{"id":"d5o8mo","th":"https://th.wallhaven.cc/small/d5/d5o8mo.jpg","ratio":"1.78","cat":"anime"},{"id":"k98oq6","th":"https://th.wallhaven.cc/small/k9/k98oq6.jpg","ratio":"1.78","cat":"anime"},{"id":"x89oqo","th":"https://th.wallhaven.cc/small/x8/x89oqo.jpg","ratio":"1.78","cat":"general"},{"id":"xl3q1l","th":"https://th.wallhaven.cc/small/xl/xl3q1l.jpg","ratio":"1.78","cat":"general"},{"id":"mp17o9","th":"https://th.wallhaven.cc/small/mp/mp17o9.jpg","ratio":"1.78","cat":"general"},{"id":"r7rgg1","th":"https://th.wallhaven.cc/small/r7/r7rgg1.jpg","ratio":"1.78","cat":"anime"},{"id":"017k91","th":"https://th.wallhaven.cc/small/01/017k91.jpg","ratio":"1.78","cat":"general"},{"id":"47qlmy","th":"https://th.wallhaven.cc/small/47/47qlmy.jpg","ratio":"1.78","cat":"people"},{"id":"zy9mlv","th":"https://th.wallhaven.cc/small/zy/zy9mlv.jpg","ratio":"1.78","cat":"general"},{"id":"ox3gqm","th":"https://th.wallhaven.cc/small/ox/ox3gqm.jpg","ratio":"1.78","cat":"general"},{"id":"eojz2r","th":"https://th.wallhaven.cc/small/eo/eojz2r.jpg","ratio":"1.78","cat":"general"},{"id":"nemqqo","th":"https://th.wallhaven.cc/small/ne/nemqqo.jpg","ratio":"1.78","cat":"anime"},{"id":"4g33kl","th":"https://th.wallhaven.cc/small/4g/4g33kl.jpg","ratio":"1.78","cat":"anime"},{"id":"ex5q1k","th":"https://th.wallhaven.cc/small/ex/ex5q1k.jpg","ratio":"1.78","cat":"general"},{"id":"lyjkxr","th":"https://th.wallhaven.cc/small/ly/lyjkxr.jpg","ratio":"1.78","cat":"anime"},{"id":"rq2eew","th":"https://th.wallhaven.cc/small/rq/rq2eew.jpg","ratio":"1.78","cat":"general"},{"id":"497rgd","th":"https://th.wallhaven.cc/small/49/497rgd.jpg","ratio":"1.78","cat":"general"},{"id":"gjwgk7","th":"https://th.wallhaven.cc/small/gj/gjwgk7.jpg","ratio":"1.78","cat":"general"},{"id":"zmvyyw","th":"https://th.wallhaven.cc/small/zm/zmvyyw.jpg","ratio":"1.78","cat":"general"},{"id":"8x6ewk","th":"https://th.wallhaven.cc/small/8x/8x6ewk.jpg","ratio":"1.78","cat":"general"},{"id":"4yoydk","th":"https://th.wallhaven.cc/small/4y/4yoydk.jpg","ratio":"1.78","cat":"general"},{"id":"wqemd7","th":"https://th.wallhaven.cc/small/wq/wqemd7.jpg","ratio":"1.78","cat":"general"},{"id":"y8r52k","th":"https://th.wallhaven.cc/small/y8/y8r52k.jpg","ratio":"1.78","cat":"general"},{"id":"4y2xrd","th":"https://th.wallhaven.cc/small/4y/4y2xrd.jpg","ratio":"1.78","cat":"general"},{"id":"9mqyvk","th":"https://th.wallhaven.cc/small/9m/9mqyvk.jpg","ratio":"1.78","cat":"anime"},{"id":"nzz9mo","th":"https://th.wallhaven.cc/small/nz/nzz9mo.jpg","ratio":"1.78","cat":"general"},{"id":"x1gl9d","th":"https://th.wallhaven.cc/small/x1/x1gl9d.jpg","ratio":"1.78","cat":"anime"},{"id":"zm5q2g","th":"https://th.wallhaven.cc/small/zm/zm5q2g.jpg","ratio":"1.78","cat":"general"},{"id":"q2wker","th":"https://th.wallhaven.cc/small/q2/q2wker.jpg","ratio":"1.78","cat":"general"},{"id":"pk1o9e","th":"https://th.wallhaven.cc/small/pk/pk1o9e.jpg","ratio":"1.78","cat":"general"},{"id":"r2963m","th":"https://th.wallhaven.cc/small/r2/r2963m.jpg","ratio":"1.78","cat":"general"},{"id":"lmz3op","th":"https://th.wallhaven.cc/small/lm/lmz3op.jpg","ratio":"1.78","cat":"people"},{"id":"pk9zx9","th":"https://th.wallhaven.cc/small/pk/pk9zx9.jpg","ratio":"1.78","cat":"people"},{"id":"4399g6","th":"https://th.wallhaven.cc/small/43/4399g6.jpg","ratio":"1.78","cat":"general"},{"id":"eo555o","th":"https://th.wallhaven.cc/small/eo/eo555o.jpg","ratio":"1.78","cat":"anime"},{"id":"g7rx8q","th":"https://th.wallhaven.cc/small/g7/g7rx8q.jpg","ratio":"1.78","cat":"anime"},{"id":"213edy","th":"https://th.wallhaven.cc/small/21/213edy.jpg","ratio":"1.78","cat":"general"},{"id":"y8mdld","th":"https://th.wallhaven.cc/small/y8/y8mdld.jpg","ratio":"1.78","cat":"anime"},{"id":"eo3pww","th":"https://th.wallhaven.cc/small/eo/eo3pww.jpg","ratio":"1.78","cat":"general"},{"id":"436lq3","th":"https://th.wallhaven.cc/small/43/436lq3.jpg","ratio":"1.78","cat":"anime"},{"id":"eylo1r","th":"https://th.wallhaven.cc/small/ey/eylo1r.jpg","ratio":"1.78","cat":"general"},{"id":"8xvj6o","th":"https://th.wallhaven.cc/small/8x/8xvj6o.jpg","ratio":"1.78","cat":"anime"}];
+      const VARIANTS = { A: "Pick 1 of n", B: "Drag to order", C: "Endless wall", D: "Winner stays" };
+      const KEYS = Object.keys(VARIANTS);
+      const params = new URLSearchParams(location.search);
+      const variant = KEYS.includes(params.get("variant")) ? params.get("variant") : "A";
+      const stage = document.getElementById("stage");
+      const actions = document.getElementById("actions");
+
+      // A shuffled deck over the Pool, endless: the prototype never runs dry.
+      let deck = [];
+      function draw(n) {
+        const out = [];
+        while (out.length < n) {
+          if (!deck.length) deck = [...POOL].sort(() => Math.random() - 0.5);
+          out.push(deck.pop());
+        }
+        return out;
+      }
+      const lg = (item) => item.th.replace("/small/", "/lg/");
+      const short = (id) => id;
+
+      // The Judgement shape from "What a Judgement records" (wallpapi-wa5.2), in memory only.
+      const log = [];
+      let pairs = 0, absolutes = 0;
+      const startedAt = Date.now();
+      function record(instrument, shown, firstShown, items, judgementLevel, evidence, extra = {}) {
+        const j = {
+          install: "prototype", seq: log.length + 1,
+          instrument: { name: instrument, version: 1 }, screen: "compare",
+          first_shown: new Date(firstShown).toISOString().slice(11, 19),
+          submitted: new Date().toISOString().slice(11, 19),
+          seconds: +((Date.now() - firstShown) / 1000).toFixed(1),
+          shown: shown.map((i) => i.id),
+          provenance: Object.fromEntries(shown.map((i, n) => [i.id, { zone: "unknown", mix: "Explore", slot: n }])),
+          response: { items, judgement: judgementLevel },
+          context: { theme: document.documentElement.getAttribute("data-theme") || "system", ...extra },
+        };
+        log.push(j);
+        pairs += evidence.filter((e) => e.includes(">")).length;
+        absolutes += evidence.filter((e) => !e.includes(">")).length;
+        document.getElementById("last").textContent = JSON.stringify(j, null, 1);
+        document.getElementById("evidence").textContent = evidence.length ? evidence.join("\n") : "(none)";
+        stats();
+      }
+      function stats() {
+        const mins = (Date.now() - startedAt) / 60000;
+        document.getElementById("s-j").textContent = log.length;
+        document.getElementById("s-p").textContent = pairs;
+        document.getElementById("s-a").textContent = absolutes;
+        document.getElementById("s-m").textContent = mins.toFixed(1);
+        document.getElementById("s-ppm").textContent = mins > 0.05 ? (pairs / mins).toFixed(0) : "–";
+        const secs = log.length ? log.reduce((s, j) => s + j.seconds, 0) / log.length : 0;
+        document.getElementById("s-spj").textContent = log.length ? secs.toFixed(1) : "–";
+      }
+      setInterval(stats, 5000);
+
+      function tile(item, { big = false, keyLabel = null } = {}) {
+        const el = document.createElement("div");
+        el.className = "tile";
+        el.dataset.id = item.id;
+        el.innerHTML = `<img src="${big ? lg(item) : item.th}" alt="${item.id}" loading="lazy" draggable="false" />`
+          + (keyLabel ? `<span class="key">${keyLabel}</span>` : "");
+        return el;
+      }
+      function action(html) {
+        const li = document.createElement("li");
+        li.innerHTML = html;
+        actions.appendChild(li);
+        return li.firstElementChild;
+      }
+
+      // A: pick 1 of n. Click the best (or press its number); "None of these" is a Judgement-level Response.
+      function variantA() {
+        let n = +(params.get("n") || 4);
+        const sel = action(`<select aria-label="n">${[2, 3, 4, 6].map((k) =>
+          `<option ${k === n ? "selected" : ""}>${k}</option>`).join("")}</select>`);
+        sel.style.marginBottom = 0;
+        const none = action(`<button class="secondary outline">None of these (0)</button>`);
+        stage.innerHTML = `<p class="hint">Click the one you like most, or press its number. The next set
+          appears at once. "None of these" says the whole set misses.</p><div class="pick"></div>`;
+        const grid = stage.querySelector(".pick");
+        let shown, firstShown;
+        function deal() {
+          grid.className = `pick n${n}`;
+          shown = draw(n);
+          firstShown = Date.now();
+          grid.replaceChildren(...shown.map((it, k) => {
+            const el = tile(it, { big: true, keyLabel: k + 1 });
+            el.onclick = () => pick(k);
+            return el;
+          }));
+        }
+        function pick(k) {
+          const w = shown[k];
+          const items = Object.fromEntries(shown.map((it, i) => [it.id, i === k ? { picked: true } : {}]));
+          record("pick-1-of-n", shown, firstShown, items, { n },
+            shown.filter((_, i) => i !== k).map((l) => `${short(w.id)} > ${short(l.id)}`));
+          deal();
+        }
+        none.onclick = () => {
+          record("pick-1-of-n", shown, firstShown, {}, { n, none: true },
+            ["(none of these: weak − on all? the reduction decides)"]);
+          deal();
+        };
+        sel.onchange = () => { n = +sel.value; deal(); };
+        addEventListener("keydown", (e) => {
+          if (e.key === "0") none.click();
+          const k = +e.key - 1;
+          if (k >= 0 && k < n) pick(k);
+        });
+        deal();
+      }
+
+      // B: drag to order five. Leftmost is best. Submit records the whole order.
+      function variantB() {
+        const submit = action(`<button>Submit order</button>`);
+        stage.innerHTML = `<p class="hint">Drag the tiles into order, best on the left, then Submit.
+          Five Items give ten pairs.</p><div class="order"></div>`;
+        const row = stage.querySelector(".order");
+        let shown, firstShown, dragged;
+        function ranks() {
+          [...row.children].forEach((el, i) => { el.querySelector(".rank").textContent = i + 1; });
+        }
+        function deal() {
+          shown = draw(5);
+          firstShown = Date.now();
+          row.replaceChildren(...shown.map((it) => {
+            const el = tile(it, { big: true });
+            el.insertAdjacentHTML("beforeend", `<span class="rank"></span>`);
+            el.draggable = true;
+            el.ondragstart = () => { dragged = el; el.classList.add("dragging"); };
+            el.ondragend = () => { el.classList.remove("dragging"); ranks(); };
+            el.ondragover = (e) => { e.preventDefault(); el.classList.add("over"); };
+            el.ondragleave = () => el.classList.remove("over");
+            el.ondrop = (e) => {
+              e.preventDefault();
+              el.classList.remove("over");
+              if (!dragged || dragged === el) return;
+              const all = [...row.children];
+              row.insertBefore(dragged, all.indexOf(dragged) < all.indexOf(el) ? el.nextSibling : el);
+              ranks();
+            };
+            return el;
+          }));
+          ranks();
+        }
+        submit.onclick = () => {
+          const order = [...row.children].map((el) => el.dataset.id);
+          const moved = order.some((id, i) => id !== shown[i].id);
+          const ev = [];
+          for (let i = 0; i < order.length; i++)
+            for (let j = i + 1; j < order.length; j++) ev.push(`${short(order[i])} > ${short(order[j])}  (gap ${j - i})`);
+          record("drag-to-order", shown, firstShown, Object.fromEntries(order.map((id, i) => [id, { rank: i + 1 }])),
+            { untouched: !moved }, moved ? ev : ["(order untouched: the presence rule says nothing was said)"]);
+          deal();
+        };
+        deal();
+      }
+
+      // C: endless wall. Click to pluck. A page of 24 closes as one Judgement once its last row has scrolled
+      // above the screen; a page with no pluck is recorded but says nothing (the presence rule).
+      function variantC() {
+        stage.innerHTML = `<p class="hint">Scroll. Click anything that catches your eye (click again to undo).
+          Every 24 tiles is one Judgement, closed once you scroll past it.</p><div class="wall"></div>`;
+        const wall = stage.querySelector(".wall");
+        const pages = [];
+        function addPage() {
+          const items = draw(24);
+          const page = { no: pages.length + 1, items, firstShown: Date.now(), plucked: new Set(), seen: new Set(),
+                         closed: false, last: null };
+          pages.push(page);
+          const br = document.createElement("div");
+          br.className = "pagebreak";
+          br.textContent = `page ${page.no}`;
+          wall.appendChild(br);
+          items.forEach((it) => {
+            const el = tile(it);
+            el.onclick = () => {
+              if (page.closed) return;
+              el.classList.toggle("plucked");
+              page.plucked.has(it.id) ? page.plucked.delete(it.id) : page.plucked.add(it.id);
+            };
+            seenObserver.observe(el);
+            el._page = page;
+            wall.appendChild(el);
+            page.last = el;
+          });
+        }
+        function close(page) {
+          page.closed = true;
+          const passed = page.items.filter((it) => !page.plucked.has(it.id));
+          const acted = page.plucked.size > 0;
+          const ev = acted ? [
+            ...[...page.plucked].map((id) => `${short(id)} +weak`),
+            ...[...page.plucked].flatMap((id) => passed.filter((p) => page.seen.has(p.id))
+              .map((p) => `${short(id)} > ${short(p.id)}  (weak)`)),
+          ] : ["(no pluck on this page: presence rule, nothing said)"];
+          record("endless-wall", page.items, page.firstShown,
+            Object.fromEntries(page.items.map((it) => [it.id,
+              { plucked: page.plucked.has(it.id), seen: page.seen.has(it.id) }])),
+            { page: page.no }, ev);
+        }
+        const seenObserver = new IntersectionObserver((entries) => {
+          entries.forEach((e) => { if (e.isIntersecting) e.target._page.seen.add(e.target.dataset.id); });
+        }, { threshold: 0.6 });
+        addEventListener("scroll", () => {
+          pages.forEach((p) => { if (!p.closed && p.last.getBoundingClientRect().bottom < 0) close(p); });
+          if (innerHeight + scrollY > document.body.scrollHeight - 800) addPage();
+        });
+        addPage(); addPage();
+      }
+
+      // D: winner stays. Two big; click the better; the loser is replaced, the winner keeps its streak.
+      function variantD() {
+        const both = action(`<button class="secondary outline">Neither (0)</button>`);
+        stage.innerHTML = `<p class="hint">Click the better of the two, or press 1 or 2. The winner stays and a
+          new challenger replaces the loser.</p><div class="duel"></div>`;
+        const duel = stage.querySelector(".duel");
+        let pair = draw(2), streak = [0, 0], firstShown = Date.now();
+        function render() {
+          duel.replaceChildren(...pair.map((it, k) => {
+            const el = tile(it, { big: true, keyLabel: k + 1 });
+            if (streak[k] > 0) el.insertAdjacentHTML("beforeend", `<span class="champ">♛ ${streak[k]}</span>`);
+            el.onclick = () => win(k);
+            return el;
+          }));
+          firstShown = Date.now();
+        }
+        function win(k) {
+          const w = pair[k], l = pair[1 - k];
+          record("winner-stays", pair, firstShown, { [w.id]: { picked: true }, [l.id]: {} },
+            { streak: streak[k] + 1 }, [`${short(w.id)} > ${short(l.id)}`]);
+          streak[k] += 1; streak[1 - k] = 0;
+          pair[1 - k] = draw(1)[0];
+          render();
+        }
+        both.onclick = () => {
+          record("winner-stays", pair, firstShown, {}, { neither: true }, ["(neither: weak − on both? the reduction decides)"]);
+          pair = draw(2); streak = [0, 0]; render();
+        };
+        addEventListener("keydown", (e) => {
+          if (e.key === "1") win(0);
+          if (e.key === "2") win(1);
+          if (e.key === "0") both.click();
+        });
+        render();
+      }
+
+      ({ A: variantA, B: variantB, C: variantC, D: variantD })[variant]();
+
+      // The switcher.
+      document.getElementById("vlabel").textContent = `${variant} (${VARIANTS[variant]})`;
+      function go(step) {
+        const next = KEYS[(KEYS.indexOf(variant) + step + KEYS.length) % KEYS.length];
+        params.set("variant", next);
+        location.search = params.toString();
+      }
+      document.getElementById("prev").onclick = () => go(-1);
+      document.getElementById("next").onclick = () => go(1);
+      addEventListener("keydown", (e) => {
+        if (e.target.closest("input, textarea, select, [contenteditable]")) return;
+        if (e.key === "ArrowLeft") go(-1);
+        if (e.key === "ArrowRight") go(1);
+      });
+    </script>
+  </body>
+</html>
