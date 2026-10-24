@@ -572,10 +572,17 @@ def test_a_batch_that_is_never_submitted_records_nothing(
 
 # -- the claim
 
+
+def skip(rig: BatchesRig, batch_id: str) -> SubmissionRefused | None:
+    with storage.write(rig.connection) as write:
+        return batches.skip(write, batch_id)
+
+
 OPERATIONS: dict[str, Callable[[BatchesRig, str], object]] = {
     "mark": lambda rig, batch_id: rig.set_draft(batch_id, "wp0000", Verdict.FAVOURITE),
     "mark all": lambda rig, batch_id: rig.set_all_drafts(batch_id, Verdict.FAVOURITE),
     "submit": lambda rig, batch_id: rig.submit(batch_id),
+    "skip": skip,
 }
 
 
@@ -585,7 +592,7 @@ def test_an_unknown_or_already_submitted_batch_is_refused_and_records_nothing(
     rig: BatchesRig, operation: str, already_submitted: bool
 ) -> None:
     """Two tabs is a real case: one submits, and a click in the stale one must be told why nothing happened.
-    One refusal type for all three, so the page keeps one error branch."""
+    One refusal type for all four, so the page keeps one error branch."""
     batch_id = "no-such-batch"
     if already_submitted:
         batch_id = rig.next().id
@@ -730,6 +737,25 @@ def test_showing_is_the_live_batch_until_it_is_submitted(rig: BatchesRig) -> Non
     rig.submit(batch.id)
 
     assert batches.showing(rig.connection) == set()
+
+
+# -- skipping (ADR 0026)
+
+
+def test_skipping_drops_the_batch_and_its_draft_records_nothing_and_leaves_the_pool(rig: BatchesRig) -> None:
+    """A **Skip** says "not now" rather than giving a **Verdict**: nothing is retired, so its tiles may be
+    drawn again, and the next **Batch** is a new one."""
+    batch = rig.next()
+    rig.set_draft(batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
+    members = pool.members(rig.connection)
+
+    assert skip(rig, batch.id) is None
+
+    assert rig.logged() == []
+    assert rig.drafted_rows() == 0
+    assert batches.showing(rig.connection) == set()
+    assert pool.members(rig.connection) == members
+    assert rig.next().id != batch.id
 
 
 # -- discarding, a Pool reset's half (ADR 0025)

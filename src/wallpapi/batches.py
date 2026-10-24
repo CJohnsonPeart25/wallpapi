@@ -340,11 +340,32 @@ def discard_live(write: sqlite3.Connection) -> int:
     and say how many: a **Pool reset**'s half (ADR 0025). All of them, so nothing is left showing.
 
     An unsubmitted **Batch** has no **Decision log** rows, so nothing is recorded or left dangling. A
-    submitted one is never touched. Children first, for the foreign keys.
+    submitted one is never touched.
     """
-    write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({_SELECT_UNSUBMITTED})")
-    write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({_SELECT_UNSUBMITTED})")
-    return write.execute(f"DELETE FROM batches WHERE id IN ({_SELECT_UNSUBMITTED})").rowcount
+    return _drop(write, _SELECT_UNSUBMITTED)
+
+
+def skip(write: sqlite3.Connection, batch_id: str) -> SubmissionRefused | None:
+    """Drop the live **Batch** `batch_id` with its tiles and **Draft Batch** inside the caller's
+    transaction, or say why not: a **Skip** (ADR 0026).
+
+    Nothing is recorded and nothing leaves the **Pool**, so its tiles may be drawn again. Behind the same
+    claim as a submission, so a stale tab cannot skip what another has submitted.
+    """
+    claimed = _claim(write, batch_id)
+    if isinstance(claimed, SubmissionRefused):
+        return claimed
+    _drop(write, "?", (batch_id,))
+    return None
+
+
+def _drop(write: sqlite3.Connection, batch_ids: str, parameters: Sequence[str] = ()) -> int:
+    """Delete the **Batches** the SQL `batch_ids` selects, and say how many. Children first, for the foreign
+    keys.
+    """
+    write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({batch_ids})", parameters)
+    write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({batch_ids})", parameters)
+    return write.execute(f"DELETE FROM batches WHERE id IN ({batch_ids})", parameters).rowcount
 
 
 def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefused:
