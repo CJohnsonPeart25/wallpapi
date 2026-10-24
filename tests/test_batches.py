@@ -739,6 +739,22 @@ def test_showing_is_the_live_batch_until_it_is_submitted(rig: BatchesRig) -> Non
     assert batches.showing(rig.connection) == set()
 
 
+def test_the_live_batch_is_read_without_minting_one(rig: BatchesRig) -> None:
+    """What the settings page counts marks on: reading it must not draw a **Batch** nobody asked for."""
+    assert batches.live(rig.connection) is None
+    assert rig.minted == []
+
+    batch = rig.next()
+    rig.set_draft(batch.id, batch.wallpapers[0].id, Verdict.LIKE)
+
+    assert batches.live(rig.connection) == rig.next()
+    assert rig.minted == [batch.id]
+
+    rig.submit(batch.id)
+
+    assert batches.live(rig.connection) is None
+
+
 # -- skipping (ADR 0026)
 
 

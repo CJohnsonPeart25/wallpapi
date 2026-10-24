@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import Lifespan
 
-from wallpapi import decisions, pool, settings, workflows
+from wallpapi import batches, decisions, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
 from wallpapi.decisions import HistoryEntry, HistoryRefused, ResolvedVerdict
@@ -169,6 +169,11 @@ def _mix_context(connection: sqlite3.Connection) -> dict[str, object]:
     }
 
 
+def _pool_reset_context(connection: sqlite3.Connection) -> dict[str, object]:
+    """What the **Pool reset** section counts: the **Pool**, and the live **Batch** without minting one."""
+    return {"pool_size": pool.size(connection), "live": batches.live(connection)}
+
+
 def _settings_page(
     request: Request,
     modules: Modules,
@@ -198,6 +203,7 @@ def _settings_page(
             "saved": saved,
             "deleted": deleted,
             "download": download,
+            **_pool_reset_context(connection),
         },
         status_code=HTTPStatus.OK if refused is None else HTTPStatus.BAD_REQUEST,
     )
@@ -397,6 +403,15 @@ def download_favourites(modules: Wired) -> Response:
         f"/settings?downloaded=1&written={len(pulled.written)}"
         f"&skipped={len(pulled.skipped)}&failed={len(pulled.failed)}",
         status_code=HTTPStatus.SEE_OTHER,
+    )
+
+
+@router.post("/settings/pool/reset", response_class=HTMLResponse)
+def reset_pool(request: Request, modules: Wired) -> HTMLResponse:
+    """Reset the **Pool** (ADR 0025) and swap the section back in place, saying what went."""
+    reset = workflows.reset_pool(modules)
+    return templates.TemplateResponse(
+        request, "pool_reset.html", {"reset": reset, **_pool_reset_context(modules.connect())}
     )
 
 

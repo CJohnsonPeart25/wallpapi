@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set page = "settings" %}
 {#
-  The settings page: the settings form, the **Favourites** download and the **Mixes**.
+  The settings page: the settings form, the **Favourites** download, the **Pool reset** and the **Mixes**.
 
   The settings form is the settings module's field table, rendered: an <article> per `Section`, with its
   heading and intro when it has them, and `settings_field.html` for each of its fields, all in the order
@@ -10,7 +10,8 @@
 
   A plain form post, not htmx — saving settings changes the whole page's meaning, so there is no fragment
   worth swapping. Unlike submitting a **Batch**, a successful save redirects, because saving the same
-  settings twice is the same settings and a refresh should not be an error.
+  settings twice is the same settings and a refresh should not be an error. The **Pool reset** section is
+  the one exception, an htmx form that answers in place; `pool_reset.html` says why.
 
   The fields are rendered from whatever the form last carried rather than from storage, so a refused save
   comes back with what the user typed still in it.
@@ -77,6 +78,8 @@
       <button type="submit" class="outline secondary" data-download-favourites>Download all favourites</button>
     </form>
   </article>
+
+  {% include "pool_reset.html" %}
 
   {#
     Mixes: outside the settings form, because every row posts four fields under the same names.

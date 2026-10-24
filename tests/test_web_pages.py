@@ -269,3 +269,24 @@ def test_the_settings_page_shows_what_is_stored_and_offers_what_can_be_done(
     assert 'data-mix-delete="explore"' not in page
     assert 'data-mix-delete="refine"' not in page
     assert 'data-mix-active="explore"' in page
+
+
+def test_the_settings_page_counts_what_a_pool_reset_would_throw_away(web: Web) -> None:
+    """The **Pool** and the live **Batch**'s **Draft Batch**, in words and in the confirm. Counting draws no
+    **Batch**: the first look finds none on screen."""
+    harness, client = web
+    before = " ".join(client.get("/settings").text.split())
+    batch = live(harness)
+    for tile in batch.wallpapers[:2]:
+        workflows.set_draft(harness.modules, batch.id, tile.id, Verdict.LIKE)
+
+    after = " ".join(client.get("/settings").text.split())
+
+    assert "The pool holds 24 wallpapers." in before
+    assert "No batch is on screen." in before
+    assert "The batch on screen has 2 marks, which a reset throws away." in after
+    assert 'hx-post="/settings/pool/reset"' in after
+    assert (
+        'hx-confirm="Reset the pool? 24 wallpapers leave it, and the batch on screen goes with its 2 marks.'
+        " Nothing is recorded." in after
+    )
