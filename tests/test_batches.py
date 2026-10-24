@@ -573,16 +573,11 @@ def test_a_batch_that_is_never_submitted_records_nothing(
 # -- the claim
 
 
-def skip(rig: BatchesRig, batch_id: str) -> SubmissionRefused | None:
-    with storage.write(rig.connection) as write:
-        return batches.skip(write, batch_id)
-
-
 OPERATIONS: dict[str, Callable[[BatchesRig, str], object]] = {
     "mark": lambda rig, batch_id: rig.set_draft(batch_id, "wp0000", Verdict.FAVOURITE),
     "mark all": lambda rig, batch_id: rig.set_all_drafts(batch_id, Verdict.FAVOURITE),
     "submit": lambda rig, batch_id: rig.submit(batch_id),
-    "skip": skip,
+    "skip": lambda rig, batch_id: rig.skip(batch_id),
 }
 
 
@@ -765,7 +760,7 @@ def test_skipping_drops_the_batch_and_its_draft_records_nothing_and_leaves_the_p
     rig.set_draft(batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
     members = pool.members(rig.connection)
 
-    assert skip(rig, batch.id) is None
+    assert rig.skip(batch.id) is None
 
     assert rig.logged() == []
     assert rig.drafted_rows() == 0
@@ -775,11 +770,6 @@ def test_skipping_drops_the_batch_and_its_draft_records_nothing_and_leaves_the_p
 
 
 # -- discarding, a Pool reset's half (ADR 0025)
-
-
-def discard(rig: BatchesRig) -> int:
-    with storage.write(rig.connection) as write:
-        return batches.discard_live(write)
 
 
 def test_discarding_drops_the_live_batch_and_its_draft_and_leaves_submitted_ones(rig: BatchesRig) -> None:
@@ -792,7 +782,7 @@ def test_discarding_drops_the_live_batch_and_its_draft_and_leaves_submitted_ones
     rig.set_draft(live.id, live.wallpapers[0].id, Verdict.FAVOURITE)
     logged, members = rig.logged(), pool.members(rig.connection)
 
-    assert discard(rig) == 1
+    assert rig.discard() == 1
 
     assert batches.showing(rig.connection) == set()
     assert rig.drafted_rows() == 0
@@ -808,7 +798,7 @@ def test_discarding_with_no_live_batch_discards_nothing(rig: BatchesRig) -> None
     rig.submit(batch.id)
     logged = rig.logged()
 
-    assert discard(rig) == 0
+    assert rig.discard() == 0
 
     assert rig.logged() == logged
     assert rig.submit(batch.id) == SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)

@@ -3,7 +3,8 @@
 A test of one module's rule builds that module over an in-memory database with a fake only for its external
 collaborator (invariant 14, ADR 0019), as `library_rig` and `batches_rig` do. `make_harness` composes every
 module the way the routes do, and is for tests whose subject is a workflow (a transaction across modules, or
-what follows its commit), for the web tests and for the background threads; `test_rigs.py` holds that list.
+what follows its commit), for the web and command tests and for the background threads; `test_rigs.py` holds
+that list.
 The only reach past the modules here is the raw connection the migration tests need, because nothing the
 modules offer can produce an older database's rows or a Clearance any more.
 """
@@ -425,6 +426,15 @@ class BatchesRig:
         with storage.write(self.connection) as write:
             return self.batches.submit(write, batch_id)
 
+    def skip(self, batch_id: str) -> SubmissionRefused | None:
+        with storage.write(self.connection) as write:
+            return batches.skip(write, batch_id)
+
+    def discard(self) -> int:
+        """Drop every unsubmitted **Batch**, as a **Pool reset** does."""
+        with storage.write(self.connection) as write:
+            return batches.discard_live(write)
+
     def logged(self, batch_id: str | None = None) -> list[DecisionEntry]:
         return decisions.entries(self.connection, batch_id=batch_id)
 
@@ -433,7 +443,7 @@ class BatchesRig:
 
     def empty_the_pool(self) -> None:
         with storage.write(self.connection) as write:
-            pool.retire(write, [w.id for w in pool.members(write)])
+            pool.clear(write)
 
 
 @contextmanager
