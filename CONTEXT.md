@@ -81,7 +81,7 @@ Passing over the batch on screen without deciding anything: it and its draft bat
 _Avoid_: reroll, reset, pass, dismiss
 
 **Draft Batch**:
-The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit or skip. It is not part of the decision log.
+The verdicts marked against a batch that hasn't been submitted yet. Held against the batch, replaced outright rather than toggled, and discarded on submit, skip or pool reset. It is not part of the decision log.
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:

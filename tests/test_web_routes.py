@@ -195,6 +195,7 @@ def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None
 
 
 def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(web: Web) -> None:
+    """A skipped **Batch** is gone, so a second tab's skip is told so, and refetches to catch up."""
     _, client = web
     shown = batch_id_of(client.get("/batch").text)
     client.post("/skip", data={"batch_id": shown})

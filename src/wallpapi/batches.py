@@ -80,8 +80,8 @@ class BatchUnavailable:
 
 @dataclass(frozen=True)
 class SubmissionRefused:
-    """The draft or submission did not happen, and this is why. Never a silent no-op — two tabs is a real
-    case.
+    """The draft, submission or **Skip** did not happen, and this is why. Never a silent no-op — two tabs is a
+    real case.
     """
 
     class Reason(StrEnum):
@@ -359,17 +359,17 @@ def skip(write: sqlite3.Connection, batch_id: str) -> SubmissionRefused | None:
     return None
 
 
-def _drop(write: sqlite3.Connection, batch_ids: str, parameters: Sequence[str] = ()) -> int:
-    """Delete the **Batches** the SQL `batch_ids` selects, and say how many. Children first, for the foreign
-    keys.
+def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] = ()) -> int:
+    """Delete the **Batches** whose ids the SQL `selection` gives (a subquery, or `?` for one), and say how
+    many. Children first, for the foreign keys.
     """
-    write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({batch_ids})", parameters)
-    write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({batch_ids})", parameters)
-    return write.execute(f"DELETE FROM batches WHERE id IN ({batch_ids})", parameters).rowcount
+    write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({selection})", parameters)
+    write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({selection})", parameters)
+    return write.execute(f"DELETE FROM batches WHERE id IN ({selection})", parameters).rowcount
 
 
 def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefused:
-    """The unsubmitted **Batch** `batch_id`, or why it cannot be drafted against or submitted."""
+    """The unsubmitted **Batch** `batch_id`, or why it cannot be drafted against, submitted or skipped."""
     row = write.execute(
         "SELECT id, created_at, size, submitted_at FROM batches WHERE id = ?", (batch_id,)
     ).fetchone()
