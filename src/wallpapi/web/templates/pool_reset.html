@@ -1,0 +1,44 @@
+{#
+  The settings page's **Pool reset** section, and what `/settings/pool/reset` swaps back over it (ADR 0025).
+
+  htmx rather than the page's plain form posts: a reset changes nothing else on the page, so the section
+  answers in place, and an htmx post is not one a refresh offers to repeat. It counts what the reset would
+  throw away, the **Pool** and the marks on the **Batch** on screen, and the confirm says the same numbers,
+  so nobody presses it blind. Counting draws no **Batch**.
+#}
+{% set marks = live.drafts | length if live else 0 %}
+<article id="pool-reset">
+  <h2>Reset the pool</h2>
+  {% if reset %}
+    {% set evicted = reset.eviction.evicted | length %}
+    <p>
+      Removed {{ reset.members }} pool member{{ "" if reset.members == 1 else "s" }}
+      {%- if reset.batches_discarded %}, discarded the batch on screen{% endif %}
+      and evicted {{ evicted }} thumbnail{{ "" if evicted == 1 else "s" }}.
+    </p>
+  {% endif %}
+  <p><small>
+    Starts the pool again from nothing: every wallpaper waiting in it leaves, and the batch on screen goes
+    too. Your decisions, scores and library are untouched, and the refill restocks the pool to its target
+    size.
+  </small></p>
+  <p>
+    The pool holds {{ pool_size }} wallpaper{{ "" if pool_size == 1 else "s" }}.
+    {% if live %}
+      The batch on screen has {{ marks }} mark{{ "" if marks == 1 else "s" }}, which a reset throws away.
+    {% else %}
+      No batch is on screen.
+    {% endif %}
+  </p>
+  <form
+    hx-post="/settings/pool/reset"
+    hx-target="#pool-reset"
+    hx-swap="outerHTML"
+    hx-disabled-elt="find button"
+    hx-confirm="Reset the pool? {{ pool_size }} wallpaper{{ '' if pool_size == 1 else 's' }} leave it
+      {%- if live %}, and the batch on screen goes with its {{ marks }} mark{{ '' if marks == 1 else 's' }}
+      {%- endif %}. Nothing is recorded."
+  >
+    <button type="submit" class="outline secondary" data-pool-reset>Reset the pool</button>
+  </form>
+</article>

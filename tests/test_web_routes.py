@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import Harness, batch_id_of, favourite, judge, live, make_harness, serving
 from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
-from wallpapi import decisions, settings, workflows
+from wallpapi import batches, decisions, pool, settings, workflows
 from wallpapi.batches import SubmissionRefused
 from wallpapi.decisions import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.model import Mix, Verdict
@@ -638,6 +638,23 @@ def test_downloading_the_favourites_redirects_and_says_what_happened(db_path: Pa
     assert redirected.headers["location"].startswith("/settings?")
     for said in ("1 downloaded", "0 already there", "1 failed"):
         assert said in page
+
+
+def test_resetting_the_pool_answers_with_the_section_and_what_it_removed(web: Web) -> None:
+    """In place, not a redirect: the section swaps itself, now counting an empty **Pool**. What the reset
+    does to the modules is `test_pool.py`'s; this is that the route reached it."""
+    harness, client = web
+    live(harness)
+
+    response = client.post("/settings/pool/reset", follow_redirects=False)
+
+    said = " ".join(response.text.split())
+    assert response.status_code == HTTPStatus.OK
+    assert "Removed 24 pool members, discarded the batch on screen and evicted 0 thumbnails." in said
+    assert "The pool holds 0 wallpapers." in said
+    assert "<html" not in response.text
+    assert pool.members(harness.connect()) == []
+    assert batches.live(harness.connect()) is None
 
 
 # -- Mixes on the settings page ----------------------------------------------------------------------
