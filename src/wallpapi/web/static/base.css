@@ -109,9 +109,9 @@ ul.batch > li.placeholder {
   background: var(--pico-card-sectioning-background-color);
 }
 
-/* Nothing to submit or mix for until a batch has loaded, and nothing at all while the pool is empty.
+/* Nothing to submit, skip or mix for until a batch has loaded, and nothing at all while the pool is empty.
    Hidden rather than removed, so the nav does not shift when one arrives. */
-body:not(:has(#batch-id)) :is([data-submit], #mix-switcher) {
+body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
   visibility: hidden;
 }
 

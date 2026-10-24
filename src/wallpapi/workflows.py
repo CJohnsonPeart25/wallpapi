@@ -57,6 +57,14 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
     return submitted
 
 
+def skip(modules: Modules, batch_id: str) -> SubmissionRefused | None:
+    """Drop the live **Batch** unrecorded, or say why not (ADR 0026). No tail: nothing left the **Pool**,
+    so there is nothing to reconcile or evict.
+    """
+    with storage.write(modules.connect()) as write:
+        return batches.skip(write, batch_id)
+
+
 def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:
     """Change a **Wallpaper**'s **Verdict** from **History**, then reconcile the **Library**. An **Ignore** is
     how **History** withdraws a **Verdict**. Returns the line **History** now shows.

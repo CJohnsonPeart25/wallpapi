@@ -64,7 +64,9 @@ REFUSALS: dict[StrEnum, Refusal] = {
         banner=True,
     ),
     SubmissionRefused.Reason.UNKNOWN_BATCH: Refusal(
-        HTTPStatus.NOT_FOUND, "That batch is not one this instance knows about.", banner=True
+        HTTPStatus.NOT_FOUND,
+        "That batch is no longer live here: it was skipped or reset, or this instance never drew it.",
+        banner=True,
     ),
     SubmissionRefused.Reason.IGNORE_DRAFTED: Refusal(
         HTTPStatus.BAD_REQUEST, "an ignore is derived, not drafted"
@@ -252,6 +254,18 @@ def submit(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -
         response = templates.TemplateResponse(
             request, "banner.html", {"recorded": result.recorded, "ignored": result.ignored}
         )
+    response.headers["HX-Trigger"] = "batch-submitted"
+    return response
+
+
+@router.post("/skip", response_class=HTMLResponse)
+def skip(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -> HTMLResponse:
+    """Skip the **Batch** (ADR 0026) and answer as `/submit` does: the banner, and the same refetch."""
+    refused = workflows.skip(modules, batch_id)
+    if refused is not None:
+        response = _refuse(request, refused.reason)
+    else:
+        response = templates.TemplateResponse(request, "banner.html", {"skipped": True})
     response.headers["HX-Trigger"] = "batch-submitted"
     return response
 

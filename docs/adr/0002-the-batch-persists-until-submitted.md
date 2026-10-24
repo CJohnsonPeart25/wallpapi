@@ -5,7 +5,9 @@ Date: 2026-09-24
 ## Status
 
 Accepted. Amended by ADR 0025: a **Pool reset** is a second way out of an unsubmitted **Batch**, discarding
-it unrecorded along with the **Pool** it was drawn from. There is still no skip.
+it unrecorded along with the **Pool** it was drawn from. "There is no skip", and the rejected alternative "A
+skip that discards the Batch without recording anything", are superseded by ADR 0026: a **Skip** discards the
+live **Batch** unrecorded and draws another. The rest stands: a refresh never rerolls.
 
 ## Context
 
