@@ -3,7 +3,8 @@
 A test of one module's rule builds that module over an in-memory database with a fake only for its external
 collaborator (invariant 14, ADR 0019), as `library_rig` and `batches_rig` do. `make_harness` composes every
 module the way the routes do, and is for tests whose subject is a workflow (a transaction across modules, or
-what follows its commit), for the web tests and for the background threads; `test_rigs.py` holds that list.
+what follows its commit), for the web and command tests and for the background threads; `test_rigs.py` holds
+that list.
 The only reach past the modules here is the raw connection the migration tests need, because nothing the
 modules offer can produce an older database's rows or a Clearance any more.
 """
