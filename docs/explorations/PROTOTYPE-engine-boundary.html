@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PROTOTYPE — where Score ends and Zone begins (wallpapi-wa5.1, Q4)</title>
+<style>
+  :root { --accent: #4f46e5; --ink: #1f2330; --muted: #6b7280; --line: #e5e7eb; --bg: #fafafa;
+          --banger: #16a34a; --unknown: #9ca3af; --dud: #dc2626; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 system-ui, sans-serif; color: var(--ink); background: var(--bg); margin: 0; }
+  main { max-width: 1240px; margin: 0 auto; padding: 24px 28px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .banner { background: #fff7ed; border: 1px solid #fed7aa; padding: 6px 12px; border-radius: 6px;
+            font-size: 13px; display: inline-block; margin-bottom: 12px; }
+  .intro { color: var(--muted); max-width: 900px; }
+  .grid { display: grid; grid-template-columns: 440px 1fr; gap: 24px; align-items: start; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+  .label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+           min-width: 120px; }
+  button { font: inherit; font-size: 14px; padding: 5px 11px; border: 1px solid var(--line); border-radius: 6px;
+           background: #fff; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.step.done { opacity: .45; }
+  button.step.next { border-color: var(--accent); box-shadow: 0 0 0 2px #c7d2fe; }
+  svg text { font-family: system-ui, sans-serif; }
+  dl { display: grid; grid-template-columns: 190px 1fr; gap: 3px 12px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  .changed { background: #eef2ff; border-radius: 3px; padding: 0 3px; }
+  .zone { display: inline-block; padding: 0 7px; border-radius: 9px; color: #fff; font-size: 12px; }
+  .z-Banger { background: var(--banger); } .z-Unknown { background: var(--unknown); }
+  .z-Dud { background: var(--dud); } .z-none { background: #111; }
+  .zone .changed { background: rgba(255,255,255,.35); color: #fff; font-weight: 700; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 10px; flex-wrap: wrap; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; }
+  .tabs button.on { color: var(--accent); border-bottom-color: var(--accent); background: none; }
+  .seam { font-family: ui-monospace, monospace; font-size: 13px; background: #f5f5ff; border: 1px solid #e0e7ff;
+          padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; }
+  .note { color: var(--muted); font-size: 13px; }
+  table { border-collapse: collapse; font-size: 14px; }
+  td, th { padding: 2px 10px 2px 0; text-align: left; }
+</style>
+</head>
+<body>
+<main>
+<div class="banner">PROTOTYPE — throwaway. Answers one question for wallpapi-wa5.1; no code here goes to main.</div>
+<h1>Where does Score end and Zone begin?</h1>
+<p class="intro">
+  The engine (<b>taste</b>) ranks Items; wallpapi turns that into <b>Zones</b> (Banger, Unknown, Dud) and fills a
+  <b>Batch</b> by its <b>Mix</b>. The question: <i>what exactly crosses the seam?</i> Three structures:
+  <b>A</b> the engine hands back a Score only (today's shape: Unknown means "Score is exactly zero");
+  <b>B</b> a Score plus how much evidence lies near the Item (its <i>support</i>) and a veto flag, and wallpapi
+  draws the Zone lines itself; <b>C</b> the engine hands back its own three-way reading and wallpapi maps it 1:1.
+  Place Judgements on the map, switch structure and scoring method, and watch the Zones and the Batch move.
+  Toy space: the map is a 2D picture of the embedding space; nearness on it is similarity.
+</p>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <svg id="map" width="408" height="408" viewBox="0 0 408 408" style="cursor:crosshair"></svg>
+      <div class="note">Click the map to record a Judgement of the chosen kind. Click a candidate dot to see what
+        crossed the seam for it. ★ Favourite · ● Like · ✕ Ban · ▪ Ignore. Ringed dots are in the Batch.</div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="row"><span class="label">Click records</span>
+        <span id="verdicts"></span></div>
+      <div class="row"><span class="label">Structure</span><span id="structures"></span></div>
+      <div class="row"><span class="label">Engine scores by</span><span id="methods"></span></div>
+      <div class="row"><span class="label" id="floorLabel">Support floor</span>
+        <input id="floor" type="range" min="0" max="3" step="0.1" style="width:160px">
+        <span id="floorValue"></span></div>
+      <div class="row"><span class="label">Log</span>
+        <button data-act="sample">Load the sample log</button>
+        <button data-act="clear">Clear the log</button>
+        <button data-act="radius">Show radius rings</button></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <div class="tabs" id="tabs"></div>
+      <div id="scenario"></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h2 style="margin-top:0">Current state</h2>
+      <dl id="state"></dl>
+      <h2>What crossed the seam (selected candidate)</h2>
+      <div class="seam" id="seam">Click a candidate dot.</div>
+      <h2>A second app reading the same engine: top 5 by Score</h2>
+      <div id="second" class="note"></div>
+    </div>
+  </div>
+</div>
+
+<h2>UML: packages and the seam, for the chosen structure</h2>
+<div class="card"><svg id="uml" width="1180" height="600" viewBox="0 0 1180 600"></svg>
+  <div class="note">Dashed arrows with open heads: «use» (wallpapi depends on taste, never the reverse).
+    Dashed with hollow triangle: realises a protocol. The accent arrow is the seam this question is about, labelled
+    with what crosses it.</div></div>
+</main>
+
+<script>
+// ---- the portable module: pure, no DOM. Everything a structure decides is in here. ----
+const Model = (() => {
+  const VALUES = { Favourite: 100, Like: 50, Ban: -100, Ignore: -10 };   // decisions.py today
+  const RADIUS = 0.10, DECAY = 4.0, NEAR_DUPLICATE = 0.985;             // settings defaults, ADR 0021
+  const SUPPORT_SHARPNESS = 12;
+
+  // Toy Space: similarity falls off with distance on the map; mapped into [0, 1] like the real one.
+  const similarity = (a, b) => Math.max(0, 1 - 0.5 * Math.hypot(a.x - b.x, a.y - b.y));
+
+  function seeded(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32); }
+
+  function candidates() {
+    const r = seeded(7), out = [];
+    for (let i = 0; i < 44; i++) out.push({ id: `c${String(i).padStart(2, "0")}`, x: 0.04 + r() * 0.92, y: 0.04 + r() * 0.92 });
+    out.push({ id: "repost", x: 0.712, y: 0.505 });   // a repost of the sample log's first Ban
+    return out;
+  }
+
+  const SAMPLE = [
+    ["Favourite", .16, .18], ["Favourite", .22, .14], ["Like", .12, .26], ["Like", .27, .23], ["Like", .2, .3],
+    ["Like", .78, .8], ["Favourite", .84, .74], ["Ban", .71, .5], ["Ban", .76, .42], ["Ignore", .5, .15],
+    ["Ignore", .45, .62], ["Ignore", .3, .78], ["Ignore", .62, .3], ["Ignore", .58, .88],
+  ].map(([verdict, x, y]) => ({ verdict, x, y }));
+
+  // Today's maths (scoring.py): masked exponential over every Judgement. Support = the unsigned weights.
+  function everyJudgement(c, log) {
+    let score = 0, support = 0;
+    for (const j of log) {
+      const d = 1 - similarity(c, j);
+      if (d > RADIUS) continue;
+      const w = Math.exp(-DECAY * d);
+      score += w * VALUES[j.verdict]; support += w;
+    }
+    return { score, support };
+  }
+
+  // A toy Distillation: k-means of the liked and disliked Judgements, each prototype weighted by its members.
+  function kmeans(points, k) {
+    if (points.length <= k) return points.map(p => [p]);
+    let centres = [points[0]];
+    while (centres.length < k) {   // farthest-first seeding, deterministic
+      centres.push(points.reduce((best, p) =>
+        Math.min(...centres.map(c => Math.hypot(p.x - c.x, p.y - c.y))) >
+        Math.min(...centres.map(c => Math.hypot(best.x - c.x, best.y - c.y))) ? p : best));
+    }
+    let groups = [];
+    for (let it = 0; it < 6; it++) {
+      groups = centres.map(() => []);
+      for (const p of points) {
+        let bi = 0;
+        centres.forEach((c, i) => { if (Math.hypot(p.x - c.x, p.y - c.y) < Math.hypot(p.x - centres[bi].x, p.y - centres[bi].y)) bi = i; });
+        groups[bi].push(p);
+      }
+      groups = groups.filter(g => g.length);
+      centres = groups.map(g => ({ x: g.reduce((s, p) => s + p.x, 0) / g.length, y: g.reduce((s, p) => s + p.y, 0) / g.length }));
+    }
+    return groups;
+  }
+
+  function distil(log) {
+    const liked = log.filter(j => VALUES[j.verdict] > 0), disliked = log.filter(j => VALUES[j.verdict] < 0);
+    const prototypes = [];
+    for (const [side, k] of [[liked, 2], [disliked, 3]]) {
+      for (const g of kmeans(side, k)) {
+        prototypes.push({
+          x: g.reduce((s, p) => s + p.x, 0) / g.length, y: g.reduce((s, p) => s + p.y, 0) / g.length,
+          weight: Math.round(g.reduce((s, p) => s + VALUES[p.verdict], 0) / g.length), members: g.length,
+        });
+      }
+    }
+    return prototypes;
+  }
+
+  // Ranking from a Distillation: a smooth kernel, no radius, so every Item gets a non-zero Score.
+  function fromPrototypes(c, prototypes) {
+    let score = 0, support = 0;
+    for (const p of prototypes) {
+      const d = 1 - similarity(c, p);
+      score += p.weight * Math.exp(-DECAY * d) / 10;
+      support += p.members * Math.exp(-SUPPORT_SHARPNESS * d);
+    }
+    return { score, support };
+  }
+
+  const vetoed = (c, log) => log.some(j => j.verdict === "Ban" && similarity(c, j) >= NEAR_DUPLICATE);
+
+  // What the engine hands back, per structure. `floor` is wallpapi's in B and the engine's own in C.
+  function engineRank(structure, method, cands, log, floor) {
+    const prototypes = method === "prototypes" ? distil(log) : null;
+    return cands.map(c => {
+      const { score, support } = prototypes ? fromPrototypes(c, prototypes) : everyJudgement(c, log);
+      if (structure === "A") return { item: c.id, score };
+      if (structure === "B") return { item: c.id, score, support, vetoed: vetoed(c, log) };
+      const reading = vetoed(c, log) ? "vetoed" : support < floor ? "unexplored" : score > 0 ? "liked" : "disliked";
+      return { item: c.id, score, reading };
+    });
+  }
+
+  // What wallpapi does with it: a Zone, or no Zone (left out of the draw).
+  function appZone(structure, result, cand, log, floor) {
+    if (structure === "A") {
+      // A: the app asks the engine a second question itself (today's Embeddings.near_duplicates).
+      if (vetoed(cand, log)) return { zone: null, why: "wallpapi asked near_duplicates(): a repost of a Ban" };
+      if (result.score === 0) return { zone: "Unknown", why: "Score is exactly 0" };
+      return { zone: result.score > 0 ? "Banger" : "Dud", why: "sign of the Score" };
+    }
+    if (structure === "B") {
+      if (result.vetoed) return { zone: null, why: "engine flagged vetoed" };
+      if (result.support < floor) return { zone: "Unknown", why: `support ${result.support.toFixed(2)} < wallpapi's floor ${floor}` };
+      return { zone: result.score > 0 ? "Banger" : "Dud", why: "enough support; sign of the Score" };
+    }
+    const map = { liked: "Banger", unexplored: "Unknown", disliked: "Dud", vetoed: null };
+    return { zone: map[result.reading], why: `engine's reading "${result.reading}", mapped 1:1` };
+  }
+
+  // allocation.py in miniature: slots by Mix, Bangers best first, shortfall to Unknown, Banger, Dud.
+  const MIX = { Banger: 50, Unknown: 30, Dud: 20 }, SIZE = 10, ORDER = ["Unknown", "Banger", "Dud"];
+  function drawBatch(scored) {
+    const slots = {}; let given = 0;
+    for (const z of ORDER) { slots[z] = Math.floor(SIZE * MIX[z] / 100); given += slots[z]; }
+    for (const z of ORDER) if (given < SIZE) { slots[z]++; given++; }
+    const byZone = Object.fromEntries(ORDER.map(z => [z, scored.filter(s => s.zone === z)]));
+    byZone.Banger.sort((a, b) => b.score - a.score);
+    const taken = Object.fromEntries(ORDER.map(z => [z, 0])), chosen = [];
+    const take = (z, n) => { const got = byZone[z].slice(taken[z], taken[z] + n); taken[z] += got.length; chosen.push(...got); return got.length; };
+    let shortfall = ORDER.reduce((s, z) => s + slots[z] - take(z, slots[z]), 0);
+    const short = shortfall;
+    for (const z of ORDER) { if (shortfall <= 0) break; shortfall -= take(z, shortfall); }
+    return { slots, chosen, shortfall: short };
+  }
+
+  function evaluate(state) {
+    const cands = candidates();
+    const results = engineRank(state.structure, state.method, cands, state.log, state.floor);
+    const scored = cands.map((c, i) => ({ ...c, score: results[i].score, result: results[i],
+                                          ...appZone(state.structure, results[i], c, state.log, state.floor) }));
+    const counts = { Banger: 0, Unknown: 0, Dud: 0, none: 0 };
+    for (const s of scored) counts[s.zone ?? "none"]++;
+    return { scored, counts, batch: drawBatch(scored), prototypes: state.method === "prototypes" ? distil(state.log) : [] };
+  }
+
+  const initial = () => ({ structure: "A", method: "every", floor: 1, verdict: "Like", log: [], selected: null, rings: false });
+
+  function reduce(state, action) {
+    switch (action.type) {
+      case "sample": return { ...state, log: SAMPLE.map(j => ({ ...j })) };
+      case "clear": return { ...state, log: [] };
+      case "judge": return { ...state, log: [...state.log, { verdict: state.verdict, x: action.x, y: action.y }] };
+      case "verdict": return { ...state, verdict: action.verdict };
+      case "structure": return { ...state, structure: action.structure };
+      case "method": return { ...state, method: action.method };
+      case "floor": return { ...state, floor: action.floor };
+      case "select": return { ...state, selected: action.id };
+      case "rings": return { ...state, rings: !state.rings };
+      case "reset": return initial();
+    }
+    return state;
+  }
+
+  return { reduce, evaluate, initial, VALUES, RADIUS };
+})();
+
+// ---- the throwaway page ----
+const STRUCTURES = { A: "A · Score only", B: "B · Score + support", C: "C · engine's reading" };
+const METHODS = { every: "every Judgement (today)", prototypes: "a Distillation (prototypes)" };
+const ZONE_COLOUR = { Banger: "#16a34a", Unknown: "#9ca3af", Dud: "#dc2626" };
+let state = Model.initial(), previous = null, step = 0;
+
+const SCENARIOS = [
+  { title: "1 · Today", text: "Today's shape. The engine returns a bare Score; wallpapi reads its sign, and an Item with no Judgement within the radius scores exactly 0 and is Unknown. Watch: Unknowns are the dots far from every Judgement, and the Batch gets its 3 Unknown slots.",
+    steps: [["Load the sample log", { type: "sample" }], ["Structure A", { type: "structure", structure: "A" }], ["Show the radius rings", { type: "rings" }]] },
+  { title: "2 · Prototypes arrive", text: "Same log, but ranking now reads a Distillation with a smooth kernel (one likely outcome of the Ranking ticket). Under A, Unknown was an accident of the radius: every Item now has a non-zero Score, the Unknown Zone empties and its slots fall to shortfall. Watch the Unknown count and the Batch.",
+    steps: [["Load the sample log", { type: "sample" }], ["Structure A", { type: "structure", structure: "A" }], ["Switch to a Distillation", { type: "method", method: "prototypes" }]] },
+  { title: "3 · Support keeps Unknown honest", text: "Structure B: the engine also says how much evidence lies near each Item. wallpapi draws the Unknown line with its own floor, so Unknown means 'not enough known here' under either scoring method. Move the floor slider afterwards: that knob is wallpapi's.",
+    steps: [["Load the sample log", { type: "sample" }], ["Structure B", { type: "structure", structure: "B" }], ["Switch to a Distillation", { type: "method", method: "prototypes" }], ["Raise the floor to 1.5", { type: "floor", floor: 1.5 }]] },
+  { title: "4 · The engine decides", text: "Structure C: the engine returns liked / unexplored / disliked / vetoed and holds the floor itself. The Zones match B's, but the three-way split is now an engine concept: a book app on the same engine inherits wallpapi's thirds whether it wants them or not, and tuning the floor is an engine change. The second-app panel only ever needs the Score.",
+    steps: [["Load the sample log", { type: "sample" }], ["Structure C", { type: "structure", structure: "C" }], ["Switch to a Distillation", { type: "method", method: "prototypes" }]] },
+  { title: "5 · A repost of a Ban", text: "The candidate labelled 'repost' sits on top of the first Ban (ADR 0021: a near-duplicate of a Ban has no Zone). Under A wallpapi has to ask the engine a second question (near_duplicates). Under B and C the veto arrives with the ranking. Select it after each step and read the seam panel.",
+    steps: [["Load the sample log", { type: "sample" }], ["Structure A", { type: "structure", structure: "A" }], ["Select the repost", { type: "select", id: "repost" }], ["Structure B", { type: "structure", structure: "B" }], ["Structure C", { type: "structure", structure: "C" }]] },
+];
+let tab = 0;
+
+function dispatch(action) { previous = state; state = Model.reduce(state, action); render(); }
+
+function buttons(el, entries, isOn, onClick) {
+  el.innerHTML = "";
+  for (const [key, label] of entries) {
+    const b = document.createElement("button"); b.textContent = label; if (isOn(key)) b.className = "on";
+    b.onclick = () => onClick(key); el.appendChild(b);
+  }
+}
+
+function glyph(j) {
+  const X = 8 + j.x * 392, Y = 8 + j.y * 392;
+  if (j.verdict === "Favourite") return `<text x="${X}" y="${Y + 6}" text-anchor="middle" font-size="18" fill="#4f46e5">★</text>`;
+  if (j.verdict === "Like") return `<circle cx="${X}" cy="${Y}" r="5" fill="#4f46e5"/>`;
+  if (j.verdict === "Ban") return `<text x="${X}" y="${Y + 6}" text-anchor="middle" font-size="17" font-weight="700" fill="#111">✕</text>`;
+  return `<rect x="${X - 3}" y="${Y - 3}" width="6" height="6" fill="#6b7280"/>`;
+}
+
+function render() {
+  const out = Model.evaluate(state), before = previous ? Model.evaluate(previous) : out;
+  const inBatch = new Set(out.batch.chosen.map(s => s.id));
+
+  // map
+  let svg = `<rect x="0" y="0" width="408" height="408" fill="#fbfbfe" stroke="#e5e7eb"/>`;
+  if (state.rings && state.method === "every")
+    for (const j of state.log) svg += `<circle cx="${8 + j.x * 392}" cy="${8 + j.y * 392}" r="${Model.RADIUS / 0.5 * 392}" fill="#4f46e5" fill-opacity=".04" stroke="#c7d2fe"/>`;
+  for (const p of out.prototypes)
+    svg += `<circle cx="${8 + p.x * 392}" cy="${8 + p.y * 392}" r="16" fill="none" stroke="${p.weight > 0 ? "#4f46e5" : "#111"}" stroke-dasharray="3 3"/><text x="${8 + p.x * 392 + 18}" y="${8 + p.y * 392 - 12}" font-size="10" fill="#6b7280">prototype ${p.weight > 0 ? "+" : ""}${p.weight}</text>`;
+  for (const s of out.scored) {
+    const X = 8 + s.x * 392, Y = 8 + s.y * 392;
+    svg += `<circle data-id="${s.id}" cx="${X}" cy="${Y}" r="6" fill="${s.zone ? ZONE_COLOUR[s.zone] : "#fff"}" stroke="${s.zone ? "none" : "#111"}" stroke-dasharray="${s.zone ? "" : "2 2"}" style="cursor:pointer"/>`;
+    if (inBatch.has(s.id)) svg += `<circle cx="${X}" cy="${Y}" r="10" fill="none" stroke="#4f46e5" stroke-width="2"/>`;
+    if (s.id === state.selected) svg += `<circle cx="${X}" cy="${Y}" r="13" fill="none" stroke="#f59e0b" stroke-width="2"/>`;
+    if (s.id === "repost") svg += `<text x="${X + 10}" y="${Y + 16}" font-size="10" fill="#6b7280">repost</text>`;
+  }
+  for (const j of state.log) svg += glyph(j);
+  document.getElementById("map").innerHTML = svg;
+
+  // controls
+  buttons(document.getElementById("verdicts"), Object.keys(Model.VALUES).map(v => [v, `${v} (${Model.VALUES[v]})`]), k => k === state.verdict, k => dispatch({ type: "verdict", verdict: k }));
+  buttons(document.getElementById("structures"), Object.entries(STRUCTURES), k => k === state.structure, k => dispatch({ type: "structure", structure: k }));
+  buttons(document.getElementById("methods"), Object.entries(METHODS), k => k === state.method, k => dispatch({ type: "method", method: k }));
+  const floor = document.getElementById("floor"); floor.value = state.floor; floor.disabled = state.structure === "A";
+  document.getElementById("floorValue").textContent = state.structure === "A" ? "(A has no floor)" : state.floor;
+  document.getElementById("floorLabel").textContent = state.structure === "C" ? "Engine's floor" : "wallpapi's floor";
+
+  // state
+  const mark = (now, was) => now !== was ? `<span class="changed">${now}</span>` : now;
+  const c = out.counts, b = before.counts;
+  document.getElementById("state").innerHTML = `
+    <dt>Structure</dt><dd>${mark(STRUCTURES[state.structure], STRUCTURES[previous?.structure ?? state.structure])}</dd>
+    <dt>Engine scores by</dt><dd>${mark(METHODS[state.method], METHODS[previous?.method ?? state.method])}</dd>
+    <dt>Judgements in the log</dt><dd>${mark(state.log.length, previous?.log.length ?? state.log.length)}</dd>
+    <dt>Zones</dt><dd><span class="zone z-Banger">Banger ${mark(c.Banger, b.Banger)}</span>
+      <span class="zone z-Unknown">Unknown ${mark(c.Unknown, b.Unknown)}</span>
+      <span class="zone z-Dud">Dud ${mark(c.Dud, b.Dud)}</span>
+      <span class="zone z-none">no Zone ${mark(c.none, b.none)}</span></dd>
+    <dt>Mix asks (of 10)</dt><dd>Banger ${out.batch.slots.Banger} · Unknown ${out.batch.slots.Unknown} · Dud ${out.batch.slots.Dud}</dd>
+    <dt>Shortfall refilled</dt><dd>${mark(out.batch.shortfall, before.batch.shortfall)}</dd>
+    <dt>Batch</dt><dd>${out.batch.chosen.map(s => `<span class="zone z-${s.zone}">${s.id}</span>`).join(" ") || "—"}</dd>`;
+
+  // seam
+  const sel = out.scored.find(s => s.id === state.selected);
+  document.getElementById("seam").textContent = sel
+    ? `taste.ranking.rank(...) returned:\n  ${JSON.stringify(sel.result, (k, v) => typeof v === "number" ? +v.toFixed(3) : v)}\n\nwallpapi made it:\n  Zone ${sel.zone ?? "— none (left out of the draw)"}\n  because ${sel.why}`
+    : "Click a candidate dot.";
+
+  // second app
+  const top = [...out.scored].filter(s => !(s.result.vetoed || s.result.reading === "vetoed")).sort((x, y) => y.score - x.score).slice(0, 5);
+  document.getElementById("second").innerHTML = state.log.length
+    ? `<table>${top.map(s => `<tr><td>${s.id}</td><td>${s.score.toFixed(2)}</td></tr>`).join("")}</table>` + `<div>Needs only the Score under every structure; under C it also receives a reading it never asked for.</div>`
+    : "Record some Judgements first.";
+
+  renderTabs(); renderUml();
+}
+
+function renderTabs() {
+  const tabs = document.getElementById("tabs"); tabs.innerHTML = "";
+  SCENARIOS.forEach((s, i) => {
+    const b = document.createElement("button"); b.textContent = s.title; if (i === tab) b.className = "on";
+    b.onclick = () => { tab = i; step = 0; previous = null; state = Model.initial(); render(); }; tabs.appendChild(b);
+  });
+  const sc = SCENARIOS[tab], el = document.getElementById("scenario");
+  el.innerHTML = `<p>${sc.text}</p><div class="row" id="steps"></div>`;
+  sc.steps.forEach(([label, action], i) => {
+    const b = document.createElement("button"); b.textContent = `${i + 1}. ${label}`;
+    b.className = "step" + (i < step ? " done" : i === step ? " next" : "");
+    b.onclick = () => { step = i + 1; dispatch(action); }; document.getElementById("steps").appendChild(b);
+  });
+}
+
+// ---- UML: hand-drawn SVG, redrawn per structure ----
+const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function box(x, y, w, stereo, name, ops, opts = {}) {
+  const h = 22 + (stereo ? 12 : 0) + ops.length * 15 + (ops.length ? 8 : 0);
+  let s = `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${opts.fill ?? "#fff"}" stroke="${opts.stroke ?? "#9ca3af"}" stroke-width="${opts.strokeWidth ?? 1}"/>`;
+  let ty = y + 14;
+  if (stereo) { s += `<text x="${x + w / 2}" y="${ty}" text-anchor="middle" font-size="10" fill="#6b7280">«${esc(stereo)}»</text>`; ty += 12; }
+  s += `<text x="${x + w / 2}" y="${ty + 2}" text-anchor="middle" font-size="12.5" font-weight="600">${esc(name)}</text>`;
+  if (ops.length) {
+    s += `<line x1="${x}" y1="${ty + 8}" x2="${x + w}" y2="${ty + 8}" stroke="#d1d5db"/>`;
+    ops.forEach((o, i) => { s += `<text x="${x + 6}" y="${ty + 22 + i * 15}" font-size="11" font-family="ui-monospace, monospace">${esc(o)}</text>`; });
+  }
+  return { svg: s, x, y, w, h, r: x + w, b: y + h };
+}
+function pkg(x, y, w, h, name, note) {
+  return `<rect x="${x}" y="${y - 18}" width="${name.length * 9 + 24}" height="18" fill="#f3f4f6" stroke="#9ca3af"/>
+    <text x="${x + 8}" y="${y - 5}" font-size="12.5" font-weight="700">${esc(name)}</text>
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#fcfcfd" stroke="#9ca3af"/>
+    <text x="${x + 10}" y="${y + h - 10}" font-size="11" fill="#6b7280">${esc(note)}</text>`;
+}
+// An arrow along a polyline: kind "use" (dashed, open head), "realise" (dashed, hollow triangle), "plain".
+function route(points, kind, opts = {}) {
+  const colour = opts.colour ?? "#6b7280", dash = kind === "plain" ? "" : "5 4";
+  const marker = kind === "realise" ? "url(#tri)" : opts.colour ? "url(#openAccent)" : "url(#open)";
+  return `<polyline points="${points.map(p => p.join(",")).join(" ")}" fill="none" stroke="${colour}" stroke-width="${opts.width ?? 1.2}" stroke-dasharray="${dash}" marker-end="${marker}"/>`;
+}
+function label(x, y, text, opts = {}) {
+  return `<text x="${x}" y="${y}" text-anchor="${opts.anchor ?? "start"}" font-size="${opts.size ?? 10.5}" fill="${opts.colour ?? "#6b7280"}" font-weight="${opts.weight ?? 400}">${esc(text)}</text>`;
+}
+
+function renderUml() {
+  const S = state.structure, ACC = "#4f46e5";
+  const ret = { A: "list[Scored(item, score)]", B: "list[Ranked(item, score, support, vetoed)]", C: "list[Reading(item, score, reading: liked | unexplored | disliked | vetoed)]" }[S];
+  let s = `<defs>
+    <marker id="open" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10" fill="none" stroke="#6b7280"/></marker>
+    <marker id="openAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10" fill="none" stroke="${ACC}" stroke-width="1.5"/></marker>
+    <marker id="tri" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#fff" stroke="#6b7280"/></marker></defs>`;
+  s += pkg(20, 40, 520, 500, "wallpapi", "the app: FastAPI, Jinja, htmx · knows Wallhaven, the Library, Mix, Zone, Batch");
+  s += pkg(640, 40, 520, 500, "taste", "the engine: numpy, onnxruntime, pillow · knows Items, Judgements, Spaces");
+
+  // wallpapi: column 1 the Item sources and the fallback Space, column 2 the app's own stores, column 3 the draw
+  const web = box(40, 60, 150, "", "web", ["routes, templates"]);
+  const wf = box(210, 60, 150, "", "workflows", ["every write txn"]);
+  const comp = box(380, 60, 150, "", "compose", ["the whole graph"]);
+  const src = box(40, 150, 160, "protocol", "ItemSource", ["items(), image(item)"]);
+  const wh = box(40, 250, 160, "", "Wallhaven", ["search(), thumbnail()"]);
+  const local = box(40, 330, 160, "later", "Local", ["photos folder"], { stroke: "#d1d5db" });
+  const meta = box(40, 420, 160, "", "MetadataSpace", ["colour + category", "fallback"]);
+  const poolB = box(220, 150, 130, "", "pool + refill", ["admit, retire"]);
+  const lib = box(220, 230, 130, "", "library", ["Favourite files"]);
+  const hist = box(220, 310, 130, "", "history", ["the History page"]);
+  const settingsB = box(220, 390, 130, "", "settings", ["radius, decay", S === "C" ? "(no floor here)" : "support floor"]);
+  const batches = box(370, 150, 165, "", "batches", ["mint(), submit()"], { stroke: ACC, strokeWidth: 1.6 });
+  const zoneOps = { A: ["zone_of(score)", "sign; exactly 0 → Unknown"], B: ["zone_of(ranked, floor)", "support < floor → Unknown"], C: ["READING_TO_ZONE", "a 1:1 lookup"] }[S];
+  const zones = box(370, 230, 165, "", "zones", zoneOps, { stroke: ACC, strokeWidth: 1.6, fill: "#eef2ff" });
+  const alloc = box(370, 320, 165, "", "allocation", ["Mix → slots", "draw(), shortfall"]);
+  const thumbs = box(370, 420, 165, "", "thumbnails", ["the cache dir"]);
+  for (const b of [web, wf, comp, src, wh, local, meta, poolB, lib, hist, settingsB, batches, zones, alloc, thumbs]) s += b.svg;
+
+  // taste
+  const ev = box(660, 60, 200, "module", "evidence", ["append(conn, judgement)", "resolve(conn, items)"]);
+  const instr = box(880, 60, 260, "protocol", "Instrument", ["name, version", "reduce(judgement) → evidence"]);
+  const vg = box(880, 160, 260, "", "VerdictGrid", ["Favourite 100 · Like 50", "Ban −100 · Ignore −10"]);
+  const space = box(660, 170, 200, "protocol", "Space", ["embed(images) → vectors", "stamp"]);
+  const clip = box(660, 270, 200, "", "ClipSpace", ["onnx image tower", "+ EmbeddingCache"]);
+  const dist = box(880, 260, 260, "module", "distillation", ["distil(evidence, space)", "→ Distillation (prototypes)"]);
+  const lens = box(880, 350, 260, "protocol", "Lens", ["steer(distillation) → distillation"]);
+  const rankOps = { A: ["rank(conn, items, lens)", "→ Score per Item"], B: ["rank(conn, items, lens)", "→ Score, support, vetoed"], C: ["rank(conn, items, lens, floor)", "→ Score + reading"] }[S];
+  const rank = box(660, 370, 200, "module", "ranking", rankOps, { stroke: ACC, strokeWidth: 1.6, fill: "#eef2ff" });
+  const nd = box(880, 440, 260, "", "near_duplicates", [S === "A" ? "a second question wallpapi asks" : "folded into rank()"], { stroke: S === "A" ? ACC : "#d1d5db" });
+  for (const b of [ev, instr, vg, space, clip, dist, lens, rank, nd]) s += b.svg;
+
+  // realisations
+  s += route([[120, wh.y], [120, src.b]], "realise");
+  s += route([[120, local.y], [120, wh.b]], "realise");
+  s += route([[1010, vg.y], [1010, instr.b]], "realise");
+  s += route([[760, clip.y], [760, space.b]], "realise");
+  s += route([[meta.x + 40, meta.b], [meta.x + 40, 512], [612, 512], [612, space.y + 30], [space.x, space.y + 30]], "realise");
+  s += label(250, 508, "MetadataSpace realises taste.Space");
+  // inside wallpapi
+  s += route([[batches.x + 80, batches.b], [zones.x + 80, zones.y]], "plain");
+  s += route([[zones.x + 80, zones.b], [alloc.x + 80, alloc.y]], "plain");
+  s += route([[poolB.x, poolB.y + 20], [src.r, src.y + 20]], "plain");
+  // the seam
+  s += route([[batches.r, batches.y + 20], [590, batches.y + 20], [590, rank.y + 20], [rank.x, rank.y + 20]], "use", { colour: ACC, width: 2 });
+  s += label(546, batches.y + 14, "«use» rank()", { colour: ACC, weight: 600, size: 11 });
+  if (S === "A") s += route([[zones.r, zones.b - 10], [576, zones.b - 10], [576, 470], [nd.x, 470]], "use", { colour: ACC, width: 1.6 });
+  // other uses across the package line
+  s += route([[wf.x + 75, wf.y], [wf.x + 75, 30], [600, 30], [600, ev.y + 30], [ev.x, ev.y + 30]], "use");
+  s += label(548, ev.y + 24, "«use» append()");
+  s += route([[thumbs.r, thumbs.y + 20], [626, thumbs.y + 20], [626, clip.y + 30], [clip.x, clip.y + 30]], "use");
+  s += label(546, thumbs.y + 14, "«use» embed()");
+  s += route([[dist.x, dist.y + 30], [870, dist.y + 30], [870, ev.y + 40], [ev.r, ev.y + 40]], "plain");
+  s += route([[rank.r, rank.y + 30], [dist.x, dist.y + 60]], "plain");
+  // the note on what crosses the seam
+  s += `<rect x="20" y="556" width="1140" height="30" fill="#eef2ff" stroke="${ACC}"/>`;
+  s += label(32, 576, `Seam (structure ${S}): wallpapi.batches → taste.ranking.rank() returns ${ret}`, { colour: ACC, weight: 600, size: 12 });
+  document.getElementById("uml").innerHTML = s;
+}
+
+document.getElementById("map").addEventListener("click", e => {
+  const id = e.target.getAttribute && e.target.getAttribute("data-id");
+  if (id) return dispatch({ type: "select", id });
+  const r = e.currentTarget.getBoundingClientRect();
+  dispatch({ type: "judge", x: Math.min(1, Math.max(0, (e.clientX - r.left - 8) / 392)), y: Math.min(1, Math.max(0, (e.clientY - r.top - 8) / 392)) });
+});
+document.getElementById("floor").addEventListener("input", e => dispatch({ type: "floor", floor: +e.target.value }));
+document.querySelectorAll("[data-act]").forEach(b => b.onclick = () => dispatch({ type: b.dataset.act === "radius" ? "rings" : b.dataset.act }));
+render();
+</script>
+</body>
+</html>
