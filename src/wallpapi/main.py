@@ -69,7 +69,7 @@ def build_app() -> FastAPI:
     return create_app(build_modules(), refill=True)
 
 
-def serve() -> None:
+def run_server() -> None:
     port = int(os.environ.get("WALLPAPI_PORT", DEFAULT_PORT))
     uvicorn.run(build_app(), host=HOST, port=port)
 
@@ -78,7 +78,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     build: Callable[[], Modules] = build_modules,
-    serve: Callable[[], None] = serve,
+    serve: Callable[[], None] = run_server,
 ) -> None:
     """Serve, or run the command named. A command builds the modules without the background loops, so it is
     safe beside a running server: every write takes `BEGIN IMMEDIATE`.

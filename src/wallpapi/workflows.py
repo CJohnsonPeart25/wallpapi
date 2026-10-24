@@ -1,4 +1,4 @@
-"""Every write the page makes, as one transaction over the modules and what follows its commit.
+"""Every write the page or a command makes, as one transaction over the modules and what follows its commit.
 
 A workflow opens the write, hands the handle to each module it calls, and runs what must stay outside the
 transaction after it commits: reconciling the **Library**, then evicting thumbnails. Both report their
