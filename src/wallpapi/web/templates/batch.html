@@ -4,14 +4,16 @@
   The **Batch** page: a shell that fetches its **Batch** rather than drawing one.
 
   `#batch` loads `/batch` as soon as the page is up, and again on `batch-submitted`, which `/submit` fires
-  when it has recorded one. So there is one route that draws a **Batch**, one that records it, and neither
-  knows about the other; a refresh is a plain GET of this shell and never offers to repost a form. Until
-  the first fetch lands, `#batch` holds one empty tile per **Batch** slot, so the grid is laid out at its
-  real size and the thumbnails arrive into it rather than pushing the page about.
+  when it has recorded one and `/skip` when it has dropped one (ADR 0026). So there is one route that draws
+  a **Batch**, one that records it, one that skips it, and none knows about the others; a refresh is a
+  plain GET of this shell and never offers to repost a form. Until the first fetch lands, `#batch` holds
+  one empty tile per **Batch** slot, so the grid is laid out at its real size and the thumbnails arrive
+  into it rather than pushing the page about.
 
-  Submit and the **Mix** are in the nav's right-hand list rather than anywhere near the grid. Submit
+  Submit, Skip and the **Mix** are in the nav's right-hand list rather than anywhere near the grid. Submit
   because a button below a grid of thumbnails is a button you reach for a tile and hit by mistake — and
-  submitting a **Batch** is the one action on this page that cannot be taken back. The **Mix** because it
+  submitting a **Batch** is the one action on this page that cannot be taken back. Skip beside it, styled
+  secondary, because it throws the marks away. The **Mix** because it
   is about the **Batch** after this one, and must not read as a control that rearranges the tiles
   underneath it.
 
@@ -23,6 +25,19 @@
 {% block actions %}
   <li>
     {% include "mix.html" %}
+  </li>
+  <li>
+    {# Records nothing and asks nothing: the tiles stay in the Pool, and the refetch is the same as a
+       submission's (ADR 0026). #}
+    <form
+      data-skip
+      hx-post="/skip"
+      hx-include="#batch-id"
+      hx-target="#batch-banner"
+      hx-disabled-elt="find button"
+    >
+      <button type="submit" class="secondary">Skip</button>
+    </form>
   </li>
   <li>
     {# Posts the Batch ID the last fetch left in #batch-id, which is why the form holds no input of its

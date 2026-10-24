@@ -67,6 +67,7 @@ def test_the_shell_mints_nothing_and_fetches_the_batch_on_load_and_after_a_submi
 
     assert 'hx-get="/batch"' in shell
     assert 'hx-trigger="load, batch-submitted from:body"' in shell
+    assert 'hx-post="/skip"' in shell
     assert 'data-wallpaper-id="' not in shell
 
 
@@ -83,6 +84,7 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
         client.post("/draft/all", data={"batch_id": batch_id, "verdict": "ban"}),
         client.post("/mix", data={"mix": "refine"}),
         client.post("/submit", data={"batch_id": batch_id}),
+        client.post("/skip", data={"batch_id": batch_id_of(client.get("/batch").text)}),
     ]
 
     for swap in swaps:
@@ -177,6 +179,33 @@ def test_posting_the_same_batch_twice_is_refused_and_still_refetches(web: Web) -
     assert len(decisions.entries(harness.connect())) == 8
 
 
+def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None:
+    """ADR 0026: the same refetch as a submission, and a new **Batch** behind it, but nothing in the log."""
+    harness, client = web
+    shown = batch_id_of(client.get("/batch").text)
+
+    response = client.post("/skip", data={"batch_id": shown})
+    following = client.get("/batch").text
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.headers["HX-Trigger"] == "batch-submitted"
+    assert "Skipped — nothing was recorded." in response.text
+    assert batch_id_of(following) != shown
+    assert decisions.entries(harness.connect()) == []
+
+
+def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(web: Web) -> None:
+    _, client = web
+    shown = batch_id_of(client.get("/batch").text)
+    client.post("/skip", data={"batch_id": shown})
+
+    again = client.post("/skip", data={"batch_id": shown})
+
+    assert again.status_code == HTTPStatus.NOT_FOUND
+    assert "That batch is no longer live here" in again.text
+    assert again.headers["HX-Trigger"] == "batch-submitted"
+
+
 HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus, str]] = [
     # Ignore is derived on submit and never stored as a mark: a stored one would be a second shape of
     # nothing for Verdict resolution to tell apart from an absent row.
@@ -259,7 +288,9 @@ def test_a_stale_tab_is_told_in_words_which_batch_it_is_on(web: Web) -> None:
     assert again.status_code == HTTPStatus.CONFLICT
     assert "That batch has already been submitted" in again.text
     assert unknown.status_code == HTTPStatus.NOT_FOUND
-    assert "That batch is not one this instance knows about." in unknown.text
+    assert "That batch is no longer live here: it was skipped or reset, or this instance never drew it." in (
+        unknown.text
+    )
 
 
 def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
