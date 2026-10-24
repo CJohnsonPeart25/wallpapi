@@ -732,6 +732,46 @@ def test_showing_is_the_live_batch_until_it_is_submitted(rig: BatchesRig) -> Non
     assert batches.showing(rig.connection) == set()
 
 
+# -- discarding, a Pool reset's half (ADR 0025)
+
+
+def discard(rig: BatchesRig) -> int:
+    with storage.write(rig.connection) as write:
+        return batches.discard_live(write)
+
+
+def test_discarding_drops_the_live_batch_and_its_draft_and_leaves_submitted_ones(rig: BatchesRig) -> None:
+    """The second way out of a **Batch**, besides submitting it: nothing is recorded, a stale tab is told the
+    **Batch** is gone, and the next one is minted fresh. A submitted **Batch** is never retracted."""
+    submitted = rig.next()
+    rig.set_draft(submitted.id, submitted.wallpapers[0].id, Verdict.LIKE)
+    rig.submit(submitted.id)
+    live = rig.next()
+    rig.set_draft(live.id, live.wallpapers[0].id, Verdict.FAVOURITE)
+    logged, members = rig.logged(), pool.members(rig.connection)
+
+    assert discard(rig) == 1
+
+    assert batches.showing(rig.connection) == set()
+    assert rig.drafted_rows() == 0
+    assert rig.logged() == logged
+    assert pool.members(rig.connection) == members
+    assert rig.submit(live.id) == SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
+    assert rig.submit(submitted.id) == SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
+    assert rig.next().id not in {submitted.id, live.id}
+
+
+def test_discarding_with_no_live_batch_discards_nothing(rig: BatchesRig) -> None:
+    batch = rig.next()
+    rig.submit(batch.id)
+    logged = rig.logged()
+
+    assert discard(rig) == 0
+
+    assert rig.logged() == logged
+    assert rig.submit(batch.id) == SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
+
+
 # -- History edits and the Batch (ADR 0015)
 
 SUBJECT = "wp0000"

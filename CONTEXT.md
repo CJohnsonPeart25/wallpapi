@@ -31,8 +31,12 @@ A search for the wallpapers Wallhaven considers similar to one favourite or like
 _Avoid_: similar search, related, recommendations, more like this
 
 **Pool target size**:
-How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. Every submitted batch takes the pool below it again, so the pool is a stream rather than a backlog, and 500 by default is enough to draw from while keeping every whole-pool calculation cheap. Lowering it never trims the pool: one above target drains as batches are submitted. A setting.
+How many wallpapers the refill keeps waiting in the pool. Below it the refill spends its whole budget; at or above it the refill idles. Every submitted batch takes the pool below it again, so the pool is a stream rather than a backlog, and 500 by default is enough to draw from while keeping every whole-pool calculation cheap. Lowering it never trims the pool: one above target drains as batches are submitted, and a pool reset is how to start again at the lower size. A setting.
 _Avoid_: quota, capacity, limit, threshold
+
+**Pool reset**:
+Emptying the pool and discarding the batch on screen together, so the refill restocks from nothing to the pool target size. Nothing is decided by it: the decision log, and so every score and the library, carries over, and a wallpaper it purged may be fetched into the pool again. A submitted batch is never touched. Lower the pool target size first to restock smaller.
+_Avoid_: purge, wipe, flush, restart
 
 **API budget**:
 How many Wallhaven API calls a minute the refill may make: 35 by default, never more than Wallhaven's own 45. Wallhaven counts its 45 per IP address, across everything on the machine, so the budget leaves the rest for other callers. The refill also holds back for a minute when Wallhaven's own count of calls remaining says other traffic has used that rest. Thumbnail and full-resolution fetches are not API calls and do not spend it. A setting.

@@ -1,4 +1,4 @@
-"""Every write the page makes, as one transaction over the modules and what follows its commit.
+"""Every write the page or a command makes, as one transaction over the modules and what follows its commit.
 
 A workflow opens the write, hands the handle to each module it calls, and runs what must stay outside the
 transaction after it commits: reconciling the **Library**, then evicting thumbnails. Both report their
@@ -14,6 +14,8 @@ page after its network call, `EmbeddingCache` in its own file, and the **Library
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from wallpapi import batches, decisions, pool, settings, storage, thumbnails
 from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
@@ -21,6 +23,7 @@ from wallpapi.decisions import HistoryEntry, HistoryRefused
 from wallpapi.library import FavouriteDownload
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
+from wallpapi.thumbnails import ThumbnailEviction
 
 
 def set_draft(
@@ -95,6 +98,29 @@ def delete_mix(modules: Modules, name: str) -> SettingsRefused | None:
     """Remove a **Mix**, or say why it stays."""
     with storage.write(modules.connect()) as write:
         return settings.delete_mix(write, name)
+
+
+@dataclass(frozen=True, slots=True)
+class PoolReset:
+    """What a **Pool reset** removed: the **Pool** members, the unsubmitted **Batches** and the thumbnails."""
+
+    members: int
+    batches_discarded: int
+    eviction: ThumbnailEviction
+
+
+def reset_pool(modules: Modules) -> PoolReset:
+    """Empty the **Pool** and discard the live **Batch** in one transaction, then evict thumbnails (ADR 0025).
+
+    The refill restocks to the **Pool target size** on its next look. Nothing is reconciled: no **Verdict**
+    changes. Eviction comes after the commit, when what was purged is no longer awaited.
+    """
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        members = pool.clear(write)
+        discarded = batches.discard_live(write)
+    eviction = modules.thumbnails.evict(connection, thumbnails.cap_bytes(settings.get(connection)))
+    return PoolReset(members=members, batches_discarded=discarded, eviction=eviction)
 
 
 def download_favourites(modules: Modules) -> FavouriteDownload:

@@ -4,7 +4,8 @@ Date: 2026-09-24
 
 ## Status
 
-Accepted
+Accepted. Amended by ADR 0025: a **Pool reset** is a second way out of an unsubmitted **Batch**, discarding
+it unrecorded along with the **Pool** it was drawn from. There is still no skip.
 
 ## Context
 

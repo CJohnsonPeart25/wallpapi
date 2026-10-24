@@ -1,16 +1,20 @@
 """The entry point: `uv run python -m wallpapi`, wiring the real dependencies together. Bound to `127.0.0.1`
-and single-worker (`--workers N` is N writers and N refill threads).
+and single-worker (`--workers N` is N writers and N refill threads). `uv run python -m wallpapi reset-pool`
+runs a **Pool reset** instead of serving (ADR 0025).
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import secrets
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
 
+from wallpapi import workflows
 from wallpapi.clock import SystemClock
 from wallpapi.compose import Modules, compose
 from wallpapi.library import DownloadingLibraryWriter
@@ -65,9 +69,34 @@ def build_app() -> FastAPI:
     return create_app(build_modules(), refill=True)
 
 
-def main() -> None:
+def run_server() -> None:
     port = int(os.environ.get("WALLPAPI_PORT", DEFAULT_PORT))
     uvicorn.run(build_app(), host=HOST, port=port)
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    build: Callable[[], Modules] = build_modules,
+    serve: Callable[[], None] = run_server,
+) -> None:
+    """Serve, or run the command named. A command builds the modules without the background loops, so it is
+    safe beside a running server: every write takes `BEGIN IMMEDIATE`.
+    """
+    parser = argparse.ArgumentParser(prog="wallpapi", description="Serve wallpapi, or run one command.")
+    commands = parser.add_subparsers(dest="command", metavar="command")
+    commands.add_parser(
+        "reset-pool",
+        help="Empty the Pool and discard the live Batch; the refill restocks to the Pool target size.",
+    )
+    arguments = parser.parse_args(argv)
+    if arguments.command is None:
+        serve()
+        return
+    reset = workflows.reset_pool(build())
+    print(f"Pool members removed: {reset.members}")
+    print(f"Live Batch discarded: {'yes' if reset.batches_discarded else 'no'}")
+    print(f"Thumbnails evicted: {len(reset.eviction.evicted)}")
 
 
 if __name__ == "__main__":
