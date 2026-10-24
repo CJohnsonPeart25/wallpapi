@@ -139,9 +139,9 @@ class Batches:
         so leaving it alone records it again (ADR 0015). Dormant while nothing decided is in the **Pool** (ADR
         0016).
         """
-        waiting = live(connection)
-        if waiting is not None:
-            return waiting
+        existing = live(connection)
+        if existing is not None:
+            return existing
 
         classified = self.classify(connection)
         if not classified:
@@ -382,7 +382,7 @@ def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefuse
 
 def live(connection: sqlite3.Connection) -> Batch | None:
     """The most recent unsubmitted **Batch**, rebuilt from storage, or `None`. Never mints one, unlike
-    `Batches.next`: what a page that only counts reads.
+    `Batches.next`.
     """
     row = connection.execute(
         "SELECT id, created_at, size FROM batches WHERE submitted_at IS NULL ORDER BY rowid DESC LIMIT 1"

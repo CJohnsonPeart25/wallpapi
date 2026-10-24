@@ -3,10 +3,11 @@
 
   htmx rather than the page's plain form posts: a reset changes nothing else on the page, so the section
   answers in place, and an htmx post is not one a refresh offers to repeat. It counts what the reset would
-  throw away, the **Pool** and the marks on the **Batch** on screen, and the confirm says the same numbers,
+  throw away, the **Pool** and the live **Batch**'s **Draft Batch**, and the confirm says the same numbers,
   so nobody presses it blind. Counting draws no **Batch**.
 #}
 {% set marks = live.drafts | length if live else 0 %}
+{% set leaving = 'wallpaper leaves' if pool_size == 1 else 'wallpapers leave' %}
 <article id="pool-reset">
   <h2>Reset the pool</h2>
   {% if reset %}
@@ -35,7 +36,7 @@
     hx-target="#pool-reset"
     hx-swap="outerHTML"
     hx-disabled-elt="find button"
-    hx-confirm="Reset the pool? {{ pool_size }} wallpaper{{ '' if pool_size == 1 else 's' }} leave it
+    hx-confirm="Reset the pool? {{ pool_size }} {{ leaving }} it
       {%- if live %}, and the batch on screen goes with its {{ marks }} mark{{ '' if marks == 1 else 's' }}
       {%- endif %}. Nothing is recorded."
   >

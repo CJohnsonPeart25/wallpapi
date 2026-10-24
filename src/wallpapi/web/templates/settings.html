@@ -10,7 +10,8 @@
 
   A plain form post, not htmx — saving settings changes the whole page's meaning, so there is no fragment
   worth swapping. Unlike submitting a **Batch**, a successful save redirects, because saving the same
-  settings twice is the same settings and a refresh should not be an error.
+  settings twice is the same settings and a refresh should not be an error. The **Pool reset** section is
+  the one exception, an htmx form that answers in place; `pool_reset.html` says why.
 
   The fields are rendered from whatever the form last carried rather than from storage, so a refused save
   comes back with what the user typed still in it.

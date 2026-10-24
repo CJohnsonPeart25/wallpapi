@@ -272,7 +272,7 @@ def test_the_settings_page_shows_what_is_stored_and_offers_what_can_be_done(
 
 
 def test_the_settings_page_counts_what_a_pool_reset_would_throw_away(web: Web) -> None:
-    """The **Pool** and the marks on the **Batch** on screen, in words and in the confirm. Counting draws no
+    """The **Pool** and the live **Batch**'s **Draft Batch**, in words and in the confirm. Counting draws no
     **Batch**: the first look finds none on screen."""
     harness, client = web
     before = " ".join(client.get("/settings").text.split())
