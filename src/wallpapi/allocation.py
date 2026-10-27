@@ -31,15 +31,25 @@ class ScoredWallpaper:
     zone: Zone
 
 
+@dataclass(frozen=True, slots=True)
+class Drawn(ScoredWallpaper):
+    """One tile of a drawn screen: its **Wallpaper**, **Score** and the **Zone** it was drawn from, and
+    `slot`, the **Zone** its **Slot** was meant for. The two differ only after a **Shortfall**."""
+
+    slot: Zone
+
+
 def draw(
     mix: Mix,
     classified: Sequence[ScoredWallpaper],
     size: int,
     random: SeededRandom,
     vectors: NDArray[np.float32] | None = None,
-) -> list[ScoredWallpaper]:
+) -> list[Drawn]:
     """Which of the classified **Pool** a **Batch** of `size` shows: slots by `mix`, each **Zone** in its draw
-    order, and any **Shortfall** refilled in `ZONE_ORDER`. Each tile keeps the **Zone** it was drawn from.
+    order, and any **Shortfall** refilled in `ZONE_ORDER`. Each tile keeps the **Zone** it was drawn from,
+    and beside it the **Zone** of the **Slot** it filled: a **Shortfall**'s slots, in `ZONE_ORDER`, go to
+    the tiles that made it up, in the order they were taken.
 
     `vectors` are the **Embeddings** row for row with `classified`, for the varied **Unknown** draw (ADR
     0018); `None` leaves the **Unknowns** in their seeded order. Shuffled at the end, so a tile's **Zone**
@@ -50,21 +60,27 @@ def draw(
     slots = allocate(mix, size, random)
     orders = {zone: _draw_order(zone, classified, vectors, slots[zone], random) for zone in ZONE_ORDER}
     taken = dict.fromkeys(ZONE_ORDER, 0)
-    chosen: list[ScoredWallpaper] = []
+    chosen: list[Drawn] = []
 
-    def take(zone: Zone, count: int) -> int:
-        """Up to `count` more from `zone`, in its draw order. Returns how many there were."""
-        available = orders[zone][taken[zone] : taken[zone] + count]
+    def take(zone: Zone, slot_zones: Sequence[Zone]) -> int:
+        """Up to one more from `zone` per slot in `slot_zones`, in its draw order, each into the next of
+        those slots. Returns how many there were."""
+        available = orders[zone][taken[zone] : taken[zone] + len(slot_zones)]
         taken[zone] += len(available)
-        chosen.extend(available)
+        chosen.extend(
+            Drawn(wallpaper=s.wallpaper, score=s.score, zone=s.zone, slot=slot)
+            for s, slot in zip(available, slot_zones, strict=False)
+        )
         return len(available)
 
-    shortfall = sum(slots[zone] - take(zone, slots[zone]) for zone in ZONE_ORDER)
+    unfilled: list[Zone] = []
+    for zone in ZONE_ORDER:
+        unfilled += [zone] * (slots[zone] - take(zone, [zone] * slots[zone]))
     # One pass is enough: after it every **Zone** is exhausted or the **Shortfall** is met.
     for zone in ZONE_ORDER:
-        if shortfall <= 0:
+        if not unfilled:
             break
-        shortfall -= take(zone, shortfall)
+        unfilled = unfilled[take(zone, unfilled) :]
     return random.sample(chosen, len(chosen))
 
 

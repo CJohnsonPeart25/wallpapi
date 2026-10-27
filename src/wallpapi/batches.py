@@ -52,8 +52,10 @@ class Batch:
     """The **Wallpapers** shown at once, with the identity the submission quotes back.
 
     `drafts` holds only marked **Wallpapers**: absence is an unmarked tile. `zones` is the **Zone** each was
-    drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones** existed. `mix`
-    is the name of the **Mix** it was drawn with, `None` for a **Batch** minted before migration 12.
+    drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones** existed.
+    `slots` is the **Zone** each one's **Slot** was meant for, absent for a **Batch** minted before
+    migration 13. `mix` is the name of the **Mix** it was drawn with, `None` for a **Batch** minted before
+    migration 12.
     `unknown_short` is set only on the **Batch** as minted, from the classification the mint computed, and is
     never stored: a reload has nothing to say (ADR 0023).
     """
@@ -64,6 +66,7 @@ class Batch:
     wallpapers: tuple[Wallpaper, ...]
     drafts: Mapping[str, Verdict]
     zones: Mapping[str, Zone]
+    slots: Mapping[str, Zone]
     mix: str | None = None
     unknown_short: UnknownShort | None = field(default=None, compare=False)
 
@@ -174,10 +177,11 @@ class Batches:
                 (batch_id, iso_utc(created_at), len(chosen), mix.name),
             )
             write.executemany(
-                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone) VALUES (?, ?, ?, ?)",
+                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone, slot_zone)"
+                " VALUES (?, ?, ?, ?, ?)",
                 [
-                    (batch_id, scored.wallpaper.id, position, scored.zone.value)
-                    for position, scored in enumerate(chosen)
+                    (batch_id, tile.wallpaper.id, position, tile.zone.value, tile.slot.value)
+                    for position, tile in enumerate(chosen)
                 ],
             )
             # Resolved under the write lock, so a **History** edit cannot land between reading a **Verdict**
@@ -200,7 +204,8 @@ class Batches:
             created_at=created_at,
             wallpapers=tuple(scored.wallpaper for scored in chosen),
             drafts=drafts,
-            zones={scored.wallpaper.id: scored.zone for scored in chosen},
+            zones={tile.wallpaper.id: tile.zone for tile in chosen},
+            slots={tile.wallpaper.id: tile.slot for tile in chosen},
             mix=mix.name,
             unknown_short=_unknown_short(mix, classified, size),
         )
@@ -310,13 +315,11 @@ def _column_order(piece: Evidence) -> str:
 
 
 def _provenance(batch: Batch, wallpaper_id: str) -> Provenance:
-    """Why a tile was on the **Batch**: the **Zone** it was drawn from and the **Mix**, each where known."""
-    labels: dict[str, str] = {}
-    if wallpaper_id in batch.zones:
-        labels[evidence_log.PROVENANCE_ZONE] = batch.zones[wallpaper_id].value
-    if batch.mix is not None:
-        labels[evidence_log.PROVENANCE_MIX] = batch.mix
-    return labels
+    """Why a tile was on the **Batch**: the **Zone** it was drawn from, its **Slot**'s and the **Mix**, each
+    where the **Batch** knows it."""
+    return evidence_log.provenance(
+        zone=batch.zones.get(wallpaper_id), slot_zone=batch.slots.get(wallpaper_id), mix=batch.mix
+    )
 
 
 def zone_of(score: float) -> Zone:
@@ -473,14 +476,15 @@ def _batch_from(connection: sqlite3.Connection, batch: sqlite3.Row) -> Batch:
         created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
         wallpapers=tuple(wallpaper_from_row(row) for row in rows),
         drafts={str(row["wallpaper_id"]): Verdict(str(row["verdict"])) for row in drafted},
-        # A **Batch** minted before migration 6 has NULL here, and its tiles go unlabelled.
+        # NULL for a **Batch** minted before migration 6 (`zone`) or 13 (`slot_zone`): left unlabelled.
         zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
+        slots={str(row["id"]): Zone(str(row["slot_zone"])) for row in rows if row["slot_zone"] is not None},
         mix=None if batch["mix"] is None else str(batch["mix"]),
     )
 
 
 _SELECT_BATCH_WALLPAPERS = """
-SELECT w.*, bw.zone AS zone
+SELECT w.*, bw.zone AS zone, bw.slot_zone AS slot_zone
 FROM batch_wallpapers AS bw
 JOIN wallpapers AS w ON w.id = bw.wallpaper_id
 WHERE bw.batch_id = ?

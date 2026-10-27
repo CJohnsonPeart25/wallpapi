@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from wallpapi.model import Verdict
+from wallpapi.model import Verdict, Zone
 from wallpapi.taste.clock import Clock
 from wallpapi.taste.judgement import (
     Context,
@@ -63,7 +63,10 @@ SCREEN_HISTORY: Final = "history"
 """The **Screens** wallpapi asks on today; `compare` comes with the **Line-up**."""
 
 PROVENANCE_ZONE: Final = "zone"
-"""The **Zone** an **Item** was drawn from. The **Slot**'s **Zone** will sit beside it as `slot_zone`."""
+"""The **Zone** an **Item** was drawn from."""
+
+PROVENANCE_SLOT_ZONE: Final = "slot_zone"
+"""The **Zone** the **Slot** an **Item** filled was meant for: another than `zone` after a **Shortfall**."""
 
 PROVENANCE_MIX: Final = "mix"
 """The name of the **Mix** the screen was drawn with."""
@@ -142,6 +145,14 @@ def wallpaper_id(key: str) -> str:
     if source != ITEM_SOURCE or not separator:
         raise ValueError(f"{key!r} is not from the {ITEM_SOURCE} item source")
     return bare
+
+
+def provenance(*, zone: Zone | None, slot_zone: Zone | None, mix: str | None) -> Provenance:
+    """Why a drawn tile was on its screen, in wallpapi's labels: the **Zone** it was drawn from, the **Zone**
+    its **Slot** was meant for, and the **Mix**, each only where the screen knows it. For every screen drawn
+    from a **Mix**, a **Batch** or a **Line-up**."""
+    labels = {PROVENANCE_ZONE: zone, PROVENANCE_SLOT_ZONE: slot_zone, PROVENANCE_MIX: mix}
+    return {name: str(label) for name, label in labels.items() if label is not None}
 
 
 def tile_response(verdict: Verdict | None) -> TileResponse:

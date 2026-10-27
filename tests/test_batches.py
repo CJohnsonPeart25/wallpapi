@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +46,7 @@ def classified(*, bangers: int = 0, duds: int = 0, unknowns: int = 0) -> list[Sc
     ]
 
 
-def zone_counts(tiles: list[ScoredWallpaper]) -> Counter[Zone]:
+def zone_counts(tiles: Sequence[ScoredWallpaper]) -> Counter[Zone]:
     return Counter(tile.zone for tile in tiles)
 
 
@@ -118,6 +118,21 @@ def test_a_zone_that_falls_short_is_made_up_from_unknown() -> None:
         assert counts[Zone.DUD] == 0
         assert counts[Zone.BANGER] <= 1
         assert counts[Zone.UNKNOWN] == 8 - counts[Zone.BANGER]
+
+
+def test_a_tile_drawn_into_a_shortfall_remembers_the_zone_its_slot_was_meant_for() -> None:
+    """Half and half of eight is four slots each, exactly, so no roll. The one **Banger** fills one
+    **Banger** slot; the **Unknowns** fill their own four and the other three **Banger** slots, and each of
+    those three says so beside the **Zone** it came from."""
+    halves = Mix("halves", unknown=50, banger=50, dud=0)
+
+    tiles = draw(halves, classified(bangers=1, unknowns=20), 8, SeededRandom(1))
+
+    assert Counter((tile.zone, tile.slot) for tile in tiles) == {
+        (Zone.BANGER, Zone.BANGER): 1,
+        (Zone.UNKNOWN, Zone.UNKNOWN): 4,
+        (Zone.UNKNOWN, Zone.BANGER): 3,
+    }
 
 
 def test_banger_slots_take_the_highest_scores() -> None:
@@ -682,7 +697,11 @@ def test_a_submission_is_one_judgement_of_the_whole_screen_with_why_each_tile_wa
             Shown(
                 f"wallhaven:{w.id}",
                 TileResponse(verdict=GridVerdict.BAN) if n == 2 else TileResponse(),
-                {"zone": batch.zones[w.id].value, "mix": EXPLORE_MIX.name},
+                {
+                    "zone": batch.zones[w.id].value,
+                    "slot_zone": batch.slots[w.id].value,
+                    "mix": EXPLORE_MIX.name,
+                },
             )
             for n, w in enumerate(batch.wallpapers)
         ),
@@ -696,6 +715,28 @@ def test_a_submission_is_one_judgement_of_the_whole_screen_with_why_each_tile_wa
     (stored,) = rig.connection.execute("SELECT submitted_at FROM batches").fetchone()
     assert stored == submitted_at.isoformat()
     assert dt.datetime.fromisoformat(stored).tzinfo == dt.UTC
+
+
+def test_after_a_shortfall_each_tiles_provenance_names_its_slot_zone_beside_its_drawn_from_zone(
+    rig: BatchesRig,
+) -> None:
+    """An all-**Unknown** **Pool** under half and half: four **Banger** slots fall short and are made up from
+    **Unknown**. Each tile says both, read back from storage, so a reload keeps the slot."""
+    with storage.write(rig.connection) as write:
+        settings.save_mix(write, "halves", unknown=50, banger=50, dud=0)
+    rig.configure(active_mix="halves")
+    minted = rig.next()
+    batch = rig.next()
+
+    rig.submit(batch.id)
+
+    assert batch == minted
+    provenance = [shown.provenance for shown in rig.logged()[-1].shown]
+    assert Counter((p["zone"], p["slot_zone"]) for p in provenance) == {
+        ("unknown", "unknown"): 4,
+        ("unknown", "banger"): 4,
+    }
+    assert {p["mix"] for p in provenance} == {"halves"}
 
 
 def _tiles(rig: BatchesRig) -> dict[str, ItemResponse]:
