@@ -392,6 +392,27 @@ def lookalike_subjects(connection: sqlite3.Connection) -> list[str]:
     return [str(row["wallpaper_id"]) for row in connection.execute(query, subjects)]
 
 
+def times_compared(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dict[str, int]:
+    """How many **Judgements** on the compare **Screen** showed each **Wallpaper**, in one query, keyed by
+    every id asked about: whatever was answered, "none of these" included. A **Batch**, a **Skip** and a
+    **History** edit are other **Screens** and count nothing, and a **Line-up** never answered was never
+    recorded. What a **Line-up**'s wear is read from (ADR 0028)."""
+    requested = list(dict.fromkeys(wallpaper_ids))
+    counted = dict.fromkeys(requested, 0)
+    if not requested:
+        return counted
+    placeholders = ",".join("?" * len(requested))
+    rows = connection.execute(
+        f"SELECT substr(i.item, {_KEY_START}) AS wallpaper_id, COUNT(*) AS times"
+        f" FROM judgement_items AS i JOIN judgements AS j ON j.id = i.judgement_id"
+        f" WHERE j.screen = ? AND i.item IN ({placeholders}) GROUP BY i.item",
+        [SCREEN_COMPARE, *(item_key(w) for w in requested)],
+    )
+    for row in rows:
+        counted[str(row["wallpaper_id"])] = int(row["times"])
+    return counted
+
+
 def explicitly_decided(connection: sqlite3.Connection) -> set[str]:
     """Every **Wallpaper** with an **Explicit Verdict** standing. The only spelling of "explicit"."""
     return {str(row["wallpaper_id"]) for row in connection.execute(_EXPLICITLY_DECIDED)}

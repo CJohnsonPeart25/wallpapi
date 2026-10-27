@@ -1,12 +1,15 @@
 """The **Line-up**: drawing one for the compare tab, keeping it until it is answered, and answering it with a
 **Pick** into the **Evidence log**. Nothing else reads or writes `lineups` or `lineup_wallpapers`.
 
-A **Line-up** is drawn as a **Batch** is, from the classified **Pool** `Batches.ranked` gives, by the active
-**Mix**'s allocation (`allocation.draw`), at the **Line-up** size, but from the **Pool** less the live
-**Batch**'s tiles, so one **Wallpaper** is never asked about on both tabs at once. There is one live
-**Line-up**, kept until it is answered (ADR 0002's rule) or discarded by a **Pool reset** (ADR 0025), so a
-reload shows the same one. Answering records one **Judgement** and drops the **Line-up**, whose
-**Judgement** then holds all of it; the next is drawn when it is asked for.
+A **Line-up** is drawn by the active **Mix** and **Wear** (ADR 0028), at the **Line-up** size, from the
+classified **Pool** (`Batches.ranked`) less the live **Batch**'s tiles, so one **Wallpaper** is never asked
+about on both tabs at once. The allocation and the **Shortfall** are a **Batch**'s (`allocation.draw`); wear
+decides which **Wallpaper** fills each **Slot**, so a **Pick**, which moves no **Score**, does not bring the
+same best **Banger** back on every screen. `wear` is the one place wear is worked out.
+
+There is one live **Line-up**, kept until it is answered (ADR 0002's rule) or discarded by a **Pool reset**
+(ADR 0025), so a reload shows the same one. Answering records one **Judgement** and drops the **Line-up**,
+whose **Judgement** then holds all of it; the next is drawn when it is asked for.
 
 Answering takes nothing out of the **Pool** and decides nothing (ADR 0027): a **Pick** says one tile beat
 the others, which is relative Evidence, and a "none of these" says nothing. A star on a **Line-up** tile is
@@ -25,10 +28,10 @@ from typing import Final
 from uuid import uuid4
 
 from wallpapi import batches, evidence_log, settings, storage
-from wallpapi.allocation import draw
+from wallpapi.allocation import Drawn, ScoredWallpaper, Wear, draw
 from wallpapi.batches import Ranked
 from wallpapi.evidence_log import Theme
-from wallpapi.model import Wallpaper, Zone
+from wallpapi.model import Mix, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock, iso_utc
@@ -140,9 +143,8 @@ class Lineups:
         candidates = [scored for scored in ranked.scored if scored.wallpaper.id not in on_the_batch]
         if len(candidates) < FEWEST:
             return self._too_few()
-        vectors = self._embeddings.vectors([scored.wallpaper for scored in candidates])
         mix = settings.active_mix(connection)
-        chosen = draw(mix, candidates, settings.get(connection).lineup_size, self._random, vectors)
+        chosen = self._drawn(connection, mix, candidates, settings.get(connection).lineup_size)
         created_at = self._clock.now()
         lineup_id = self._new_id()
 
@@ -228,6 +230,23 @@ class Lineups:
                 error_at=status.last_error_at,
             )
         return LineupUnavailable(reason=LineupUnavailable.Reason.TOO_FEW)
+
+    def _drawn(
+        self, connection: sqlite3.Connection, mix: Mix, candidates: Sequence[ScoredWallpaper], size: int
+    ) -> list[Drawn]:
+        """`size` tiles from `candidates` by `mix` and their wear: the draw every **Instrument** shares (ADR
+        0028). An **Instrument**'s own rule narrows what it hands this, never how it draws: **Gauntlet**'s
+        champion stays, so it would hand the candidates less the champion and ask for one fewer."""
+        vectors = self._embeddings.vectors([scored.wallpaper for scored in candidates])
+        return draw(mix, candidates, size, self._random, vectors, wear=wear(connection, candidates))
+
+
+def wear(connection: sqlite3.Connection, candidates: Sequence[ScoredWallpaper]) -> Wear:
+    """How long each candidate should wait before it is lined up again: today, the times it was compared,
+    from one **Evidence log** query (ADR 0028). Each showing makes it wait longer; a **Verdict** is what ends
+    its turns. The one place wear is worked out: a rule that shows the comparison that teaches the most,
+    reading each **Score** and how sure it is, replaces this body and not the draw."""
+    return evidence_log.times_compared(connection, [scored.wallpaper.id for scored in candidates])
 
 
 def live(connection: sqlite3.Connection) -> Lineup | None:
