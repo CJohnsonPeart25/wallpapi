@@ -26,8 +26,9 @@ from wallpapi.evidence_log import HistoryEntry, ResolvedVerdict
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
+from wallpapi.similarity import BLENDED_SPACE, CLIP_SPACE, FALLBACK_SPACE
 from wallpapi.taste.clip import NEAR_DUPLICATE_SIMILARITY
-from wallpapi.taste.judgement import ItemResponse, Judgement, Shown
+from wallpapi.taste.judgement import ItemResponse, Judgement, LogPosition, RankingStamp, Shown
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 from wallpapi.taste.verdict_grid import Verdict as GridVerdict
@@ -472,6 +473,97 @@ def test_once_the_model_is_open_an_unembedded_decided_wallpaper_contributes_noth
     assert {s.zone for s in scored.values()} == {Zone.UNKNOWN}
 
 
+# -- the Ranking stamp
+
+
+def test_a_batch_minted_over_an_empty_log_is_stamped_with_no_log_position(rig: BatchesRig) -> None:
+    """Ranking ran, over nothing: the stamp names the **Space**, radius and decay it would have used, and
+    has no position to name. Nothing was embedded and the model is not open, so it was the fallback."""
+    rig.configure(similarity_radius=0.3, similarity_decay=2.5)
+
+    batch = rig.next()
+
+    assert batch.ranking == RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.3, decay=2.5)
+
+
+def test_the_stamp_names_the_newest_judgement_ranking_read(rig: BatchesRig) -> None:
+    """Two **History** edits a minute apart, then a mint: the position is the later edit's
+    recorded time and id."""
+    rig.stock([wallpaper("loved"), wallpaper("liked")])
+    rig.decide(Verdict.FAVOURITE, "loved")
+    rig.clock.advance(60)
+    rig.decide(Verdict.LIKE, "liked")
+    rig.retire("loved", "liked")
+    newest = rig.logged()[-1]
+
+    batch = rig.next()
+
+    assert newest.shown_set == ("wallhaven:liked",)
+    assert batch.ranking is not None
+    assert batch.ranking.read == LogPosition(
+        recorded_at=FIXED_NOW + dt.timedelta(minutes=1), judgement_id=newest.id
+    )
+
+
+def test_the_stamp_is_what_ranked_the_batch_at_mint_not_what_stands_at_submission(rig: BatchesRig) -> None:
+    """Minted under one radius and decay over an empty log; the settings change and a **Judgement** lands
+    before the submission. A reload and the **Judgement** both carry the mint's stamp."""
+    rig.configure(similarity_radius=0.3, similarity_decay=2.5)
+    minted = rig.next()
+    rig.configure(similarity_radius=0.2, similarity_decay=4.0)
+    rig.stock([wallpaper("elsewhere")])
+    rig.decide(Verdict.LIKE, "elsewhere")
+
+    reloaded = rig.next()
+    rig.submit(minted.id)
+
+    stamp = RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.3, decay=2.5)
+    assert (minted.ranking, reloaded.ranking, rig.logged()[-1].ranking) == (stamp, stamp, stamp)
+
+
+def _favour_one_with_both_embedded(rig: BatchesRig) -> None:
+    """A **Favourite** outside the **Pool** and one **Pool** member, both embedded: one pair CLIP can answer
+    while the model is not open, every other pair the fallback's."""
+    _favour_one_outside_the_pool(rig, embedded=True)
+    rig.store.store(NEWCOMER, np.array([1.0, 0.0], dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("embedded", "opened", "space"),
+    [
+        pytest.param(False, False, FALLBACK_SPACE, id="nothing embedded, model not open: the fallback"),
+        pytest.param(True, False, BLENDED_SPACE, id="a pair embedded, model not open: the blend"),
+        pytest.param(False, True, CLIP_SPACE, id="model open, nothing embedded: CLIP"),
+        pytest.param(True, True, CLIP_SPACE, id="model open, a pair embedded: CLIP"),
+    ],
+)
+def test_the_space_names_the_similarity_that_produced_the_scores(
+    rig: BatchesRig, tmp_path: Path, embedded: bool, opened: bool, space: str
+) -> None:
+    """While the model is not open a pair with two **Embeddings** is CLIP's and the rest the fallback's
+    (ADR 0024), so a ranking that met such a pair was the blend of the two, and one that met none was the
+    fallback alone. Once it is open every pair is CLIP's, an unembedded one 0.0 by CLIP's own rule."""
+    if embedded:
+        _favour_one_with_both_embedded(rig)
+    else:
+        _favour_one_outside_the_pool(rig, embedded=False)
+    if opened:
+        rig.open_model(tmp_path / "never_created")
+
+    batch = rig.next()
+
+    assert batch.ranking is not None
+    assert batch.ranking.space == space
+
+
+def test_the_clip_space_is_the_pinned_model_file() -> None:
+    """A different revision or file of the model is a different **Space**."""
+    assert CLIP_SPACE == (
+        "Xenova/clip-vit-base-patch32@d15189d7028b43f1d3e65039190477f6af591c2a"
+        "/onnx/vision_model_quantized.onnx"
+    )
+
+
 # -- the Draft Batch
 
 
@@ -711,6 +803,7 @@ def test_a_submission_is_one_judgement_of_the_whole_screen_with_why_each_tile_wa
         response=GridResponse(submitted=True),
         utc_offset=dt.timedelta(hours=1),
         first_shown_at=FIXED_NOW,
+        ranking=RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0),
     )
     (stored,) = rig.connection.execute("SELECT submitted_at FROM batches").fetchone()
     assert stored == submitted_at.isoformat()

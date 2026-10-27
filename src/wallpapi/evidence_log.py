@@ -195,7 +195,7 @@ def append(write: sqlite3.Connection, judgement: Judgement) -> bool:
                 judgement.app,
                 judgement.app_version,
                 submitted,
-                None if judgement.ranking is None else _json(_stamp_fields(judgement.ranking)),
+                None if judgement.ranking is None else stamp_text(judgement.ranking),
                 _json(judgement.context),
             ),
         ).rowcount
@@ -241,7 +241,7 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
             response=_judgement_response(instrument, row["submitted"]),
             utc_offset=None if row["utc_offset"] is None else dt.timedelta(seconds=int(row["utc_offset"])),
             first_shown_at=None if row["first_shown_at"] is None else _moment(row["first_shown_at"]),
-            ranking=None if row["ranking"] is None else _stamp(row["ranking"]),
+            ranking=None if row["ranking"] is None else stamp_from_text(row["ranking"]),
             context=_context(row["context"]),
             format_version=int(row["format_version"]),
         )
@@ -455,9 +455,11 @@ def _whole_seconds(offset: dt.timedelta) -> int:
     return int(seconds)
 
 
-def _stamp_fields(stamp: RankingStamp) -> dict[str, object]:
+def stamp_text(stamp: RankingStamp) -> str:
+    """A **Ranking stamp** as the **Evidence log** keeps it, JSON text: also how a screen waiting to be
+    answered keeps the stamp it was drawn under until its **Judgement** carries it."""
     read = stamp.read
-    return {
+    fields = {
         "read": None
         if read is None
         else {"recorded_at": instant(read.recorded_at), "judgement_id": read.judgement_id},
@@ -467,9 +469,11 @@ def _stamp_fields(stamp: RankingStamp) -> dict[str, object]:
         "distillation": stamp.distillation,
         "lens": stamp.lens,
     }
+    return _json(fields)
 
 
-def _stamp(stored: object) -> RankingStamp:
+def stamp_from_text(stored: object) -> RankingStamp:
+    """The **Ranking stamp** `stamp_text` wrote."""
     fields = json.loads(str(stored))
     read = fields["read"]
     return RankingStamp(

@@ -15,6 +15,7 @@ import hashlib
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -135,6 +136,17 @@ MODEL_SHA256 = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299
 
 MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MODEL_FILE}"
 
+CLIP_SPACE = f"{MODEL_REPO}@{MODEL_REVISION}/{MODEL_FILE}"
+"""The **Space** of the pinned CLIP image tower: its repository, revision and file, since another revision
+or another file of the same model places **Wallpapers** differently."""
+
+FALLBACK_SPACE = "colour-and-category"
+"""The **Space** of the colour-and-category baseline, `metadata_similarity`."""
+
+BLENDED_SPACE = f"{CLIP_SPACE}+{FALLBACK_SPACE}"
+"""The **Space** of a matrix that held both: CLIP for the pairs with two **Embeddings** and the baseline for
+the rest, as `similarities` answers while the model is not open (ADR 0024)."""
+
 EMBED_BATCH = 16
 
 CAUGHT_UP = 30.0
@@ -172,6 +184,15 @@ _UNUSABLE = (
     "Image similarity could not open its model ({failure}) — wallpapers are being compared by colour and "
     "category instead. Deleting the file under `models/` will fetch it again."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Measured:
+    """A `len(pool)` x `len(decided)` similarity matrix and the **Space** that produced it."""
+
+    matrix: NDArray[np.float32]
+    space: str
+
 
 type Similarity = Callable[[Sequence[Wallpaper], Sequence[Wallpaper]], NDArray[np.float32]]
 """A `len(pool)` x `len(decided)` matrix of similarities in `[0, 1]`: what `Embeddings` falls back to."""
@@ -234,17 +255,28 @@ class Embeddings:
         """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`. A pair without two **Embeddings**
         is the fallback's until the model is open and 0.0 after, beyond every radius (ADR 0024).
         """
+        return self.measure(pool, decided).matrix
+
+    def measure(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> Measured:
+        """`similarities`, with the **Space** that answered, decided in the same call so the two cannot
+        disagree: `CLIP_SPACE` once the model is open, an unembedded pair's 0.0 being CLIP's own rule;
+        while it is not, `BLENDED_SPACE` if any pair had two **Embeddings** and `FALLBACK_SPACE` if none
+        did.
+        """
         # Read once: `_open` sets it on the similarity thread, and a bool needs no lock.
-        if self._opened:
+        opened = self._opened
+        if opened:
             unembedded = np.zeros((len(pool), len(decided)), dtype=np.float32)
         else:
             unembedded = self._fallback(pool, decided)
         embedded = self._embedded(pool, decided)
         if embedded is None:
-            return unembedded
+            return Measured(unembedded, CLIP_SPACE if opened else FALLBACK_SPACE)
         mapped, both = embedded
-        blended = np.where(both, mapped, unembedded)
-        return np.clip(blended, 0.0, 1.0).astype(np.float32)
+        blended = np.clip(np.where(both, mapped, unembedded), 0.0, 1.0).astype(np.float32)
+        if opened:
+            return Measured(blended, CLIP_SPACE)
+        return Measured(blended, BLENDED_SPACE if bool(both.any()) else FALLBACK_SPACE)
 
     def near_duplicates(self, pool: Sequence[Wallpaper], banned: Sequence[Wallpaper]) -> NDArray[np.bool_]:
         """A `len(pool)` x `len(banned)` mask of the pairs that are one image reposted (ADR 0021): both
