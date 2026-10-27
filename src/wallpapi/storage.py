@@ -17,7 +17,7 @@ from wallpapi import evidence_log, settings
 from wallpapi.taste.judgement import Judgement, Shown, instant
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -160,6 +160,9 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         # 13: what a **Batch** records beyond its tiles: the **Zone** each **Slot** was meant for, the
         # **Ranking stamp** it was drawn under, and which tiles' previews were opened on its **Draft Batch**.
         (*((statement, ()) for statement in _MIGRATION_13), *seed_settings),
+        # 14: the **Line-up** on screen, and a place in the **Evidence log** for the **Response** fields no
+        # SQL reads; the **Line-up** size is seeded with the other settings.
+        (*((statement, ()) for statement in _MIGRATION_14), *seed_settings),
     )
 
 
@@ -474,6 +477,43 @@ it was drawn from; `NULL` for a **Batch** minted before it. `ranking` is the **R
 **Evidence log** keeps it, JSON text, `NULL` when nothing ranked the **Batch** or it was minted before this.
 `draft_preview` is the half of the **Draft Batch** that sits beside a tile's one mark: a row per tile whose
 preview was opened, set and never cleared, and dropped with the rest of the **Draft Batch**.
+"""
+
+
+_MIGRATION_14 = (
+    "ALTER TABLE judgements ADD COLUMN response TEXT",
+    "ALTER TABLE judgement_items ADD COLUMN response TEXT",
+    """
+CREATE TABLE lineups (
+    id         TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    mix        TEXT NOT NULL,
+    ranking    TEXT
+)
+""",
+    """
+CREATE TABLE lineup_wallpapers (
+    lineup_id    TEXT NOT NULL REFERENCES lineups (id),
+    wallpaper_id TEXT NOT NULL REFERENCES wallpapers (id),
+    position     INTEGER NOT NULL,
+    zone         TEXT NOT NULL,
+    slot_zone    TEXT NOT NULL,
+    PRIMARY KEY (lineup_id, wallpaper_id)
+)
+""",
+)
+"""Migration 14's schema.
+
+The two `response` columns are a **Response**'s fields that no SQL reads, as JSON text by field name: a
+**Pick** tile's `picked` and its screen's `none_of_these`, and whatever **Order** and **Gauntlet** add. A
+field SQL reads keeps a column of its own, as a **Pick** tile's `favourite` does in `favourite`. `NULL` for
+the verdict grid, whose fields all have columns, and for every row from before.
+
+`lineups` and `lineup_wallpapers` hold the **Line-up** waiting to be answered, as `batches` and
+`batch_wallpapers` hold a **Batch**: its mint time, **Mix** and **Ranking stamp** (JSON text, `NULL` when
+nothing ranked it), and each tile in on-screen order with the **Zone** it was drawn from and its **Slot**'s.
+A **Line-up** is deleted when it is answered, its **Judgement** then holding all of it, or by a **Pool
+reset**.
 """
 
 
