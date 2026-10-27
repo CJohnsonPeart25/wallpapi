@@ -175,6 +175,59 @@ def test_too_few_after_a_failed_refill_says_wallhaven_is_unreachable(rig: Lineup
     )
 
 
+# -- wear (ADR 0028) ---------------------------------------------------------------------------------------
+
+
+def test_a_banger_shown_waits_until_its_score_over_one_plus_wear_is_the_best_again(rig: LineupRig) -> None:
+    """Bangers A, B and C at about 90, 50 and 35 (a **Favourite** and a **Like** outside the **Pool**), one
+    **Banger** **Slot** and the other an **Unknown**'s. A is shown first; once worn, A is worth 45 and B
+    comes; with B worn too, A at 45 beats B at 25 and C at 35 again."""
+    rig.stock([wallpaper("loved"), wallpaper("liked"), wallpaper("a"), wallpaper("b"), wallpaper("c")])
+    rig.decide(Verdict.FAVOURITE, "loved")
+    rig.decide(Verdict.LIKE, "liked")
+    rig.retire("loved", "liked")
+    rig.similarity.similarity_by_pair.update(
+        {("a", "loved"): 0.975, ("b", "liked"): 1.0, ("c", "liked"): 0.91}
+    )
+    with storage.write(rig.connection) as write:
+        settings.save_mix(write, "halves", unknown=50, banger=50, dud=0)
+    rig.configure(active_mix="halves", lineup_size=2)
+
+    bangers: list[str] = []
+    for _ in range(3):
+        shown = rig.lineup()
+        (banger,) = [w for w in ids(shown) if shown.zones[w] is Zone.BANGER]
+        bangers.append(banger)
+        rig.pick(shown.id, banger)
+
+    assert bangers == ["a", "b", "a"]
+
+
+def test_every_unknown_is_lined_up_once_before_any_is_lined_up_twice(rig: LineupRig) -> None:
+    """Twelve **Unknowns** and three **Line-ups** of four, picked or passed over: twelve different tiles. A
+    draw blind to wear would repeat one with a chance of all but 1 in 495."""
+    shown: list[str] = []
+    for answer in range(3):
+        lined_up = rig.lineup()
+        shown += ids(lined_up)
+        rig.pick(lined_up.id, None if answer == 1 else ids(lined_up)[0])
+
+    assert sorted(shown) == IDS
+
+
+def test_a_lineup_discarded_by_a_pool_reset_adds_no_wear(rig: LineupRig) -> None:
+    """Only an answered **Line-up** is recorded, so only an answered one wears its tiles."""
+    discarded = rig.lineup()
+    rig.discard_lineup()
+    answered = rig.lineup()
+    rig.pick(answered.id, None)
+
+    worn = evidence_log.times_compared(rig.connection, IDS)
+
+    assert {w for w, times in worn.items() if times} == set(ids(answered))
+    assert set(ids(discarded)) - set(ids(answered)), "the seed drew the discarded tiles again: no test"
+
+
 # -- answering ---------------------------------------------------------------------------------------------
 
 
