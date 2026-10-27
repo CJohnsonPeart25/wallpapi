@@ -142,9 +142,9 @@ READINGS: Final[Mapping[Instrument, Reading]] = {
     VERDICT_GRID_V1: _read_grid,
 }
 """Evaluation reading version 1's answer keys of their own, one entry per **Instrument** name and version.
-Every other **Instrument** is read by its **Reduction**'s relative Evidence: **Pick** and **Order** now, and
-**Gauntlet** once its **Reduction** is in the table, with no entry here. One whose **Reduction** gives no
-relative Evidence is never a test answer, though its Evidence still counts."""
+Every other **Instrument** is read by its **Reduction**'s relative Evidence, with no entry here: **Pick**,
+**Order** and **Gauntlet**. One whose **Reduction** gives no relative Evidence is never a test answer, though
+its Evidence still counts."""
 
 
 def reading(judgement: Judgement) -> tuple[Pair, ...]:
