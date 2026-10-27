@@ -12,8 +12,8 @@ a **Judgement** back opens it.
 rule; `_RESOLUTION_CTE` is the SQL **History** pages and filters with, and with it a second spelling of the
 absolute part of the **Reductions**: a version 0 grid tile says its converted entry, and a version 1 tile on
 a submitted screen says its **Favourite** or its **Verdict**, an unmarked one an **Ignore**, while a screen
-not submitted (a **Skip**) says nothing; a **Pick** says **Favourite** of a starred tile and nothing absolute
-of any other. The tests hold the SQL to both `EXAMPLE_CASES` and to `evidence()`.
+not submitted (a **Skip**) says nothing; a **Pick** or an **Order** says **Favourite** of a starred tile and
+nothing absolute of any other. The tests hold the SQL to both `EXAMPLE_CASES` and to `evidence()`.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from wallpapi.taste.judgement import (
     Shown,
     instant,
 )
+from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.verdict_grid import (
     FAVOURITE_STRENGTH,
@@ -464,6 +465,8 @@ def _item_columns(judgement: Judgement, shown: Shown) -> _ItemColumns:
     if judgement.instrument == PICK_V1 and isinstance(response, PickTile):
         # No preview on a **Line-up**, so none was opened.
         return None, int(response.favourite), 0, None, _json({_PICKED: response.picked})
+    if judgement.instrument == ORDER_V1 and isinstance(response, OrderTile):
+        return None, int(response.favourite), 0, None, _json({_RANK: response.rank})
     raise _not_kept(judgement, f"a tile response of {response!r}")
 
 
@@ -476,12 +479,17 @@ def _screen_columns(judgement: Judgement) -> _ScreenColumns:
         return None, None
     if judgement.instrument == PICK_V1 and isinstance(response, PickResponse):
         return None, _json({_NONE_OF_THESE: response.none_of_these})
+    if judgement.instrument == ORDER_V1 and response is None:
+        return None, None
     raise _not_kept(judgement, f"a screen response of {response!r}")
 
 
 _PICKED: Final = "picked"
 _NONE_OF_THESE: Final = "none_of_these"
 """**Pick**'s field names in `response`: `PickTile.picked` and `PickResponse.none_of_these`."""
+
+_RANK: Final = "rank"
+"""**Order**'s field name in `response`: `OrderTile.rank`, `null` for a tile left unranked."""
 
 
 def _not_kept(judgement: Judgement, what: str) -> ValueError:
@@ -504,6 +512,8 @@ def _item_response(instrument: Instrument, row: sqlite3.Row) -> ItemResponse:
         )
     if instrument == PICK_V1:
         return PickTile(picked=bool(_fields(row)[_PICKED]), favourite=bool(row["favourite"]))
+    if instrument == ORDER_V1:
+        return OrderTile(rank=_rank(_fields(row)[_RANK]), favourite=bool(row["favourite"]))
     raise _not_read(instrument)
 
 
@@ -514,12 +524,21 @@ def _judgement_response(instrument: Instrument, row: sqlite3.Row) -> JudgementRe
         return GridResponse(submitted=bool(row["submitted"]))
     if instrument == PICK_V1:
         return PickResponse(none_of_these=bool(_fields(row)[_NONE_OF_THESE]))
+    if instrument == ORDER_V1:
+        return None
     raise _not_read(instrument)
 
 
 def _fields(row: sqlite3.Row) -> dict[str, object]:
     """The `response` column's fields, by name."""
     return dict(json.loads(str(row["response"])))
+
+
+def _rank(stored: object) -> int | None:
+    """An **Order** tile's rank as `response` holds it: a whole number, or `null` for unranked."""
+    if stored is None or type(stored) is int:
+        return stored
+    raise ValueError(f"the Evidence log holds a rank of {stored!r}")
 
 
 def _not_read(instrument: Instrument) -> ValueError:
@@ -614,17 +633,30 @@ ORDER BY i.judgement_id, i.position
 _KEY_START = len(ITEM_SOURCE) + 2
 """Where the bare id starts in a key, counting from 1 as SQLite's `substr` does."""
 
+_LINEUP_INSTRUMENTS: Final = (PICK_V1, ORDER_V1)
+"""The **Instruments** a **Line-up** is answered with, each of whose tiles says something absolute only when
+it was starred: a **Favourite**, in the `favourite` column. **Gauntlet** is one more entry."""
+
+
+def _any_of(instruments: Sequence[Instrument]) -> str:
+    """SQL true of a `j` row recorded by any of these **Instruments**, names and versions written in."""
+    return " OR ".join(
+        f"(j.instrument = '{each.name}' AND j.instrument_version = {each.version})" for each in instruments
+    )
+
+
 _SAYS_ABSOLUTE = f"""
 (
     (j.instrument = '{VERDICT_GRID_V1.name}'
         AND (j.instrument_version = {VERDICT_GRID_V0.version}
             OR (j.instrument_version = {VERDICT_GRID_V1.version} AND j.submitted = 1)))
-    OR (j.instrument = '{PICK_V1.name}' AND j.instrument_version = {PICK_V1.version} AND i.favourite = 1)
+    OR (({_any_of(_LINEUP_INSTRUMENTS)}) AND i.favourite = 1)
 )
 """
 """The tiles that are absolute Evidence: every tile of a converted grid **Judgement** and of a version 1
-grid screen that was submitted, and a starred tile on a **Pick**. A **Skip** says nothing about any **Item**
-on it, and a **Pick** nothing about a tile it did not star: what it says of the rest is relative."""
+grid screen that was submitted, and a starred tile on a **Line-up**, whichever **Instrument** answered it.
+A **Skip** says nothing about any **Item** on it, and a **Line-up** nothing about a tile it did not star:
+what it says of the rest is relative."""
 
 DECIDED = f"""
 SELECT DISTINCT substr(i.item, {_KEY_START})
@@ -676,8 +708,8 @@ resolution AS (
 """**Verdict resolution**, as the prelude to every query that needs it (ADR 0015, ADR 0027).
 
 `said` is what each tile that says anything absolute says, in the grid's four words or a legacy `cleared`:
-the second spelling of the **Reductions** the module docstring names. Only a starred tile on a **Pick** says
-anything absolute, and it says **Favourite**. The **Judgement** with the
+the second spelling of the **Reductions** the module docstring names. Only a starred tile on a **Line-up**
+says anything absolute, and it says **Favourite**. The **Judgement** with the
 latest recorded time decides, and an exact tie falls to the lower **Judgement** id; times are fixed-width
 UTC text, so text order is time order. A legacy **Clearance** as the latest resolves to `NULL`. In SQL
 because **History** filters and pages over the resolved **Verdict**.
