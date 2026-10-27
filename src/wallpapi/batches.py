@@ -1,6 +1,6 @@
 """**Batches**: drawing a **Batch** from the **Pool**, its **Draft Batch**, and submitting it into the
-**Evidence log** as one **Judgement**. Nothing else reads or writes `batches`, `batch_wallpapers` or
-`draft_batch`.
+**Evidence log** as one **Judgement**. Nothing else reads or writes `batches`, `batch_wallpapers`,
+`draft_batch` or `draft_preview`.
 
 A **Batch** persists until it is submitted (ADR 0002), skipped (ADR 0026) or discarded by a **Pool reset**
 (ADR 0025); only submitting records anything. Tile posts set a **Draft Batch** row and never toggle; absence
@@ -51,14 +51,14 @@ class UnknownShort:
 class Batch:
     """The **Wallpapers** shown at once, with the identity the submission quotes back.
 
-    `drafts` holds only marked **Wallpapers**: absence is an unmarked tile. `zones` is the **Zone** each was
-    drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones** existed.
-    `slots` is the **Zone** each one's **Slot** was meant for, absent for a **Batch** minted before
-    migration 13. `mix` is the name of the **Mix** it was drawn with, `None` for a **Batch** minted before
-    migration 12. `ranking` is the **Ranking stamp** it was drawn under, recorded at mint; `None` for a
-    **Batch** minted before migration 13.
-    `unknown_short` is set only on the **Batch** as minted, from the classification the mint computed, and is
-    never stored: a reload has nothing to say (ADR 0023).
+    `drafts` holds only marked **Wallpapers**: absence is an unmarked tile. `previewed` is every tile whose
+    preview was opened, the other half of the **Draft Batch**, kept beside the mark. `zones` is the **Zone**
+    each was drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones**
+    existed. `slots` is the **Zone** each one's **Slot** was meant for, absent for a **Batch** minted
+    before migration 13. `mix` is the name of the **Mix** it was drawn with, `None` for a **Batch** minted
+    before migration 12. `ranking` is the **Ranking stamp** it was drawn under, recorded at mint; `None`
+    for a **Batch** minted before migration 13. `unknown_short` is set only on the **Batch** as minted,
+    from the classification the mint computed, and is never stored: a reload has nothing to say (ADR 0023).
     """
 
     id: str
@@ -66,6 +66,7 @@ class Batch:
     created_at: dt.datetime
     wallpapers: tuple[Wallpaper, ...]
     drafts: Mapping[str, Verdict]
+    previewed: frozenset[str]
     zones: Mapping[str, Zone]
     slots: Mapping[str, Zone]
     mix: str | None = None
@@ -223,6 +224,7 @@ class Batches:
             created_at=created_at,
             wallpapers=tuple(scored.wallpaper for scored in chosen),
             drafts=drafts,
+            previewed=frozenset(),
             zones={tile.wallpaper.id: tile.zone for tile in chosen},
             slots={tile.wallpaper.id: tile.slot for tile in chosen},
             mix=mix.name,
@@ -318,7 +320,9 @@ class Batches:
                 shown=tuple(
                     Shown(
                         evidence_log.item_key(w),
-                        evidence_log.tile_response(claimed.drafts.get(w)),
+                        evidence_log.tile_response(
+                            claimed.drafts.get(w), preview_opened=w in claimed.previewed
+                        ),
                         _provenance(claimed, w),
                     )
                     for w in shown
@@ -334,6 +338,7 @@ class Batches:
         )
         pool.retire(write, shown)
         write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
+        write.execute("DELETE FROM draft_preview WHERE batch_id = ?", (batch_id,))
         write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (iso_utc(recorded_at), batch_id))
         ignored = sum(1 for w in shown if w not in claimed.drafts)
         return Submitted(batch_id=batch_id, recorded=len(shown), ignored=ignored)
@@ -441,6 +446,26 @@ def set_all_drafts(
     return replace(claimed, drafts={w.id: verdict for w in claimed.wallpapers})
 
 
+def open_preview(write: sqlite3.Connection, batch_id: str, wallpaper_id: str) -> Batch | SubmissionRefused:
+    """Record on the **Draft Batch** that one tile's full-size preview was opened, and answer with the
+    **Batch** as it now stands.
+
+    Beside the tile's mark, never instead of it, and set rather than toggled: opening it again changes
+    nothing, and nothing clears it but the end of the **Draft Batch**. Every refusal comes before anything
+    is written.
+    """
+    claimed = _claim(write, batch_id)
+    if isinstance(claimed, SubmissionRefused):
+        return claimed
+    if wallpaper_id not in {w.id for w in claimed.wallpapers}:
+        return SubmissionRefused(reason=SubmissionRefused.Reason.NOT_IN_BATCH)
+    write.execute(
+        "INSERT INTO draft_preview (batch_id, wallpaper_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        (batch_id, wallpaper_id),
+    )
+    return replace(claimed, previewed=claimed.previewed | {wallpaper_id})
+
+
 def showing(connection: sqlite3.Connection) -> set[str]:
     """Every **Wallpaper** in an unsubmitted **Batch**: the live one, plus any a database from before
     ADR 0002 still holds.
@@ -477,6 +502,7 @@ def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] =
     many. Children first, for the foreign keys.
     """
     write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({selection})", parameters)
+    write.execute(f"DELETE FROM draft_preview WHERE batch_id IN ({selection})", parameters)
     write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({selection})", parameters)
     return write.execute(f"DELETE FROM batches WHERE id IN ({selection})", parameters).rowcount
 
@@ -511,12 +537,16 @@ def _batch_from(connection: sqlite3.Connection, batch: sqlite3.Row) -> Batch:
     drafted = connection.execute(
         "SELECT wallpaper_id, verdict FROM draft_batch WHERE batch_id = ?", (batch_id,)
     ).fetchall()
+    previewed = connection.execute(
+        "SELECT wallpaper_id FROM draft_preview WHERE batch_id = ?", (batch_id,)
+    ).fetchall()
     return Batch(
         id=batch_id,
         size=int(batch["size"]),
         created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
         wallpapers=tuple(wallpaper_from_row(row) for row in rows),
         drafts={str(row["wallpaper_id"]): Verdict(str(row["verdict"])) for row in drafted},
+        previewed=frozenset(str(row["wallpaper_id"]) for row in previewed),
         # NULL for a **Batch** minted before migration 6 (`zone`) or 13 (`slot_zone`): left unlabelled.
         zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
         slots={str(row["id"]): Zone(str(row["slot_zone"])) for row in rows if row["slot_zone"] is not None},

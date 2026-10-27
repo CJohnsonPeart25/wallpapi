@@ -155,14 +155,15 @@ def provenance(*, zone: Zone | None, slot_zone: Zone | None, mix: str | None) ->
     return {name: str(label) for name, label in labels.items() if label is not None}
 
 
-def tile_response(verdict: Verdict | None) -> TileResponse:
+def tile_response(verdict: Verdict | None, *, preview_opened: bool = False) -> TileResponse:
     """A grid tile's version 1 **Response** from wallpapi's four-word `Verdict`: a **Favourite** is the flag,
-    the other three are `taste/`'s **Verdicts**, and `None` is an unmarked tile."""
+    the other three are `taste/`'s **Verdicts**, and `None` is an unmarked tile. `preview_opened` sits
+    beside whichever it is."""
     if verdict is None:
-        return TileResponse()
+        return TileResponse(preview_opened=preview_opened)
     if verdict is Verdict.FAVOURITE:
-        return TileResponse(favourite=True)
-    return TileResponse(verdict=GridVerdict(verdict.value))
+        return TileResponse(favourite=True, preview_opened=preview_opened)
+    return TileResponse(verdict=GridVerdict(verdict.value), preview_opened=preview_opened)
 
 
 def append(write: sqlite3.Connection, judgement: Judgement) -> bool:

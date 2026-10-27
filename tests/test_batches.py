@@ -643,6 +643,65 @@ def test_bulk_marking_one_batch_leaves_an_earlier_batchs_record_alone(rig: Batch
     assert rig.next().drafts == {w.id: Verdict.BAN for w in second.wallpapers}
 
 
+# -- the preview opened, on the Draft Batch
+
+
+def test_a_preview_opened_survives_a_reload_and_a_bulk_mark_and_is_submitted_beside_its_mark(
+    rig: BatchesRig,
+) -> None:
+    """Opened on one tile and that tile starred, then the whole **Batch** marked **Like**: the mark is
+    replaced, the preview stays, and only that tile's **Response** says it was opened."""
+    batch = rig.next()
+    opened = batch.wallpapers[3].id
+    rig.open_preview(batch.id, opened)
+    rig.set_draft(batch.id, opened, Verdict.FAVOURITE)
+    rig.set_all_drafts(batch.id, Verdict.LIKE)
+
+    reloaded = rig.next()
+    rig.submit(batch.id)
+
+    assert reloaded.previewed == {opened}
+    assert _tiles(rig) == {
+        w.id: TileResponse(verdict=GridVerdict.LIKE, preview_opened=w.id == opened) for w in batch.wallpapers
+    }
+
+
+def test_opening_a_preview_again_is_set_not_toggled_and_answers_with_the_batch(rig: BatchesRig) -> None:
+    """A replayed post, or the preview opened twice on one tile, lands on the same state."""
+    batch = rig.next()
+    first, second = batch.wallpapers[0].id, batch.wallpapers[1].id
+
+    rig.open_preview(batch.id, first)
+    rig.open_preview(batch.id, second)
+    again = rig.open_preview(batch.id, first)
+
+    assert isinstance(again, Batch)
+    assert again.previewed == {first, second}
+    assert rig.next() == again
+
+
+def test_opening_a_preview_of_a_wallpaper_the_batch_does_not_show_writes_nothing(rig: BatchesRig) -> None:
+    batch = rig.next()
+
+    refusal = rig.open_preview(batch.id, "nope")
+
+    assert refusal == SubmissionRefused(reason=SubmissionRefused.Reason.NOT_IN_BATCH)
+    assert rig.next().previewed == frozenset()
+
+
+@pytest.mark.parametrize("end", ["submit", "skip", "discard"])
+def test_the_previews_go_with_the_rest_of_the_draft_batch(rig: BatchesRig, end: str) -> None:
+    """Submitted, skipped or discarded by a **Pool reset**, the **Draft Batch** goes whole."""
+    batch = rig.next()
+    rig.open_preview(batch.id, batch.wallpapers[0].id)
+
+    {"submit": lambda: rig.submit(batch.id), "skip": lambda: rig.skip(batch.id), "discard": rig.discard}[
+        end
+    ]()
+
+    assert rig.previewed_rows() == 0
+
+
 def _shown_twice(rig: BatchesRig, batch: Batch) -> None:
     del batch
     rig.next()
@@ -657,10 +716,14 @@ def _all_banned(rig: BatchesRig, batch: Batch) -> None:
     rig.set_all_drafts(batch.id, Verdict.BAN)
 
 
+def _previewed(rig: BatchesRig, batch: Batch) -> None:
+    rig.open_preview(batch.id, batch.wallpapers[0].id)
+
+
 @pytest.mark.parametrize(
     "act",
-    [_shown_twice, _three_marked, _all_banned],
-    ids=["shown and reloaded", "tiles marked", "all banned"],
+    [_shown_twice, _three_marked, _all_banned, _previewed],
+    ids=["shown and reloaded", "tiles marked", "all banned", "a preview opened"],
 )
 def test_a_batch_that_is_never_submitted_records_nothing(
     rig: BatchesRig, act: Callable[[BatchesRig, Batch], None]
@@ -683,6 +746,7 @@ OPERATIONS: dict[str, Callable[[BatchesRig, str], object]] = {
     "mark all": lambda rig, batch_id: rig.set_all_drafts(batch_id, Verdict.FAVOURITE),
     "submit": lambda rig, batch_id: rig.submit(batch_id),
     "skip": lambda rig, batch_id: rig.skip(batch_id),
+    "open a preview": lambda rig, batch_id: rig.open_preview(batch_id, "wp0000"),
 }
 
 
