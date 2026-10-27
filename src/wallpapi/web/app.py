@@ -68,7 +68,8 @@ REFUSALS: dict[StrEnum, Refusal] = {
     ),
     SubmissionRefused.Reason.UNKNOWN_BATCH: Refusal(
         HTTPStatus.NOT_FOUND,
-        "That batch is no longer live here: it was skipped or reset, or this instance never drew it.",
+        "That batch is no longer live here: it was skipped or reset, or replaced when the page was opened "
+        "again in another tab, or this instance never drew it. Nothing was recorded.",
         banner=True,
     ),
     SubmissionRefused.Reason.IGNORE_DRAFTED: Refusal(
@@ -78,8 +79,9 @@ REFUSALS: dict[StrEnum, Refusal] = {
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
     LineupRefused.Reason.UNKNOWN_LINEUP: Refusal(
         HTTPStatus.CONFLICT,
-        "That line-up is no longer on screen: it was answered or reset, in another tab or by a key pressed "
-        "twice. Nothing more was recorded; this is the one on screen now.",
+        "That line-up is no longer on screen: it was answered or reset, or replaced when the compare tab was "
+        "opened again in another tab, or a key was pressed twice. Nothing more was recorded; this is the one "
+        "on screen now.",
         banner=True,
     ),
     LineupRefused.Reason.NOT_IN_LINEUP: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
@@ -305,7 +307,8 @@ async def _posted_mix(request: Request) -> dict[str, str]:
 
 @router.get("/", response_class=HTMLResponse)
 def batch_page(request: Request, modules: Wired) -> HTMLResponse:
-    """The **Batch** page's shell, which fetches its **Batch** from `/batch`. It mints nothing."""
+    """The **Batch** page's shell, which fetches a new **Batch** from `/batch` as it loads, and the next from
+    `/batch/next` after an answer. It mints nothing itself."""
     connection = modules.connect()
     return templates.TemplateResponse(
         request,
@@ -316,7 +319,15 @@ def batch_page(request: Request, modules: Wired) -> HTMLResponse:
 
 @router.get("/batch", response_class=HTMLResponse)
 def batch_view(request: Request, modules: Wired) -> HTMLResponse:
-    """The live **Batch** as the fragment the shell swaps in."""
+    """A new **Batch** for a visit, as the fragment the shell swaps in when it loads: the live one is
+    replaced, unrecorded, with its **Draft Batch** (ADR 0029)."""
+    return _batch_view(request, modules, modules.batches.fresh(modules.connect()))
+
+
+@router.get("/batch/next", response_class=HTMLResponse)
+def next_batch_view(request: Request, modules: Wired) -> HTMLResponse:
+    """The live **Batch**, or a new one if there is none, as the fragment the shell swaps in after a
+    submission or a **Skip**, refused or not: never a visit, so a refusal shows the one live now."""
     return _batch_view(request, modules, modules.batches.next(modules.connect()))
 
 
@@ -449,8 +460,8 @@ def choose_mix(request: Request, modules: Wired, mix: Annotated[str, Form()]) ->
 
 @router.get("/compare", response_class=HTMLResponse)
 def compare_page(request: Request, modules: Wired, instrument: str = "") -> HTMLResponse:
-    """The compare tab's shell for the **Instrument** the URL names, which fetches its **Line-up** from
-    `/compare/lineup`. It draws nothing."""
+    """The compare tab's shell for the **Instrument** the URL names, which fetches a new **Line-up** from
+    `/compare/lineup` as it loads. It draws nothing itself."""
     return templates.TemplateResponse(
         request,
         "compare.html",
@@ -464,10 +475,10 @@ def compare_page(request: Request, modules: Wired, instrument: str = "") -> HTML
 
 @router.get("/compare/lineup", response_class=HTMLResponse)
 def lineup_view(request: Request, modules: Wired, instrument: str = "") -> HTMLResponse:
-    """The live **Line-up** as the fragment the shell swaps in, its tiles answering the named
-    **Instrument**."""
+    """A new **Line-up** for a visit, as the fragment the shell swaps in, its tiles answering the named
+    **Instrument**: the live one is replaced, unrecorded, with its stars (ADR 0029)."""
     chosen = _instrument(instrument)
-    return _lineup_view(request, chosen, modules.lineups.next(modules.connect()))
+    return _lineup_view(request, chosen, modules.lineups.fresh(modules.connect()))
 
 
 @router.post("/compare/pick", response_class=HTMLResponse)

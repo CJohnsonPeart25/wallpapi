@@ -26,10 +26,10 @@
   route, one swap and one marked state. After any swap the rail reads the tile's mark back, which is how
   the ring, the star and the rail agree. Marking does not dismiss the preview.
 
-  Opening it is recorded on the **Draft Batch**, so it survives a reload and goes in with the tile at
-  submission. The post is an htmx form inside the dialog, outside anything htmx swaps: `open` sets the
-  tile and fires its `preview-opened` event, and the form posts it with the **Batch** ID. Nothing comes
-  back to swap.
+  Opening it is recorded on the **Draft Batch**, so it goes in with the tile at submission; like a mark, it
+  lives only as long as the **Batch** does, and a reload replaces that (ADR 0029). The post is an htmx form
+  inside the dialog, outside anything htmx swaps: `open` sets the tile and fires its `preview-opened` event,
+  and the form posts it with the **Batch** ID. Nothing comes back to swap.
 #}
 <dialog
   id="preview-dialog"

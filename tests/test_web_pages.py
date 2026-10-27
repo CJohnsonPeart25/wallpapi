@@ -247,12 +247,12 @@ def test_each_tile_says_its_zone_in_words(db_path: Path) -> None:
     """`data-zone` for the stylesheet, and the word itself, since states told apart only by colour are
     states nobody colour-blind can tell apart."""
     harness = make_harness(db_path)
-    loved = live(harness).wallpapers[0].id
-    harness.similarity.similarity_by_pair.update({(f"wp{n:04d}", loved): 0.95 for n in range(24)})
 
     with serving(harness) as client:
         first = client.get("/batch").text
         batch_id = batch_id_of(first)
+        loved = live(harness).wallpapers[0].id
+        harness.similarity.similarity_by_pair.update({(f"wp{n:04d}", loved): 0.95 for n in range(24)})
         client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": loved, "verdict": "favourite"})
         client.post("/submit", data={"batch_id": batch_id})
         second = client.get("/batch").text
