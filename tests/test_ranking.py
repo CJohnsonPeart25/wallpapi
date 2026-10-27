@@ -114,6 +114,21 @@ def test_the_decided_columns_come_in_item_key_order_whatever_order_the_evidence_
     assert table.calls == [(("x",), ("wallhaven:a", "wallhaven:b", "wallhaven:c"))]
 
 
+def test_a_decided_candidate_counts_its_own_evidence_unless_asked_not_to() -> None:
+    """Batches' default: a candidate decided from **History** while still in the **Pool** is scored against
+    itself at distance 0. The evaluation asks otherwise, and only its own column goes: the other's Evidence
+    still counts. At radius 1 every distance is inside it, which a similarity of 0 would not escape."""
+    table = Table({("a", "a"): 1.0, ("b", "b"): 1.0, ("a", "b"): 0.0, ("b", "a"): 0.0})
+    evidence = [absolute("a", 100), absolute("b", -100)]
+
+    counted = rank(evidence, ["a", "b", "c"], table, radius=1.0, decay=0.0)
+    held_out = rank(evidence, ["a", "b", "c"], table, radius=1.0, decay=0.0, own_evidence=False)
+
+    assert counted.scores == (0.0, 0.0, 0.0)
+    assert held_out.scores == (-100.0, 100.0, 0.0)
+    assert len(table.calls) == 2
+
+
 def test_nothing_decided_is_every_score_exactly_zero_from_one_empty_matrix() -> None:
     """Where every install starts: a matrix with no columns is the ordinary path, still asked for once."""
     table = Table()
