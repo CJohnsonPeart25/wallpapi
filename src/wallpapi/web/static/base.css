@@ -126,8 +126,13 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
 }
 
 /* The ring: the mark, readable across the grid with the pointer nowhere near it. Ban also fades. One rule
-   for a tile's draft and a History row's resolved Verdict, so a favourite reads the same on both pages. */
-:is(.tile[data-draft-verdict="favourite"], .history-row[data-resolved-verdict="favourite"]) img {
+   for a tile's draft and a History row's resolved Verdict, so a favourite reads the same on both pages; a
+   starred Line-up tile, which has no draft, takes the favourite's ring from its pressed star. */
+:is(
+  .tile[data-draft-verdict="favourite"],
+  .history-row[data-resolved-verdict="favourite"],
+  .lineup-tile:has(> .star[aria-pressed="true"])
+) img {
   outline: 4px solid var(--favourite);
   outline-offset: -4px;
 }

@@ -79,7 +79,8 @@ def test_the_shell_mints_nothing_and_fetches_the_batch_on_load_and_after_a_submi
 
 def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
     """The **Batch**, a tile, the grid, the **Mix** switcher and the banner never extend the shell; nor do
-    the **Line-up**, the next one a **Pick** answers with, and the **Line-up** size switcher."""
+    the **Line-up**, the same one a star answers with, the next one a **Pick** answers with, and the
+    **Line-up** size switcher."""
     harness, client = web
     fetched = client.get("/batch")
     batch_id = batch_id_of(fetched.text)
@@ -94,6 +95,14 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
         client.post("/submit", data={"batch_id": batch_id}),
         client.post("/skip", data={"batch_id": batch_id_of(client.get("/batch").text)}),
         lineup,
+        client.post(
+            "/compare/star?instrument=pick",
+            data={
+                "lineup_id": lineup_of(lineup.text)[0],
+                "wallpaper_id": lineup_of(lineup.text)[1][0],
+                "starred": "true",
+            },
+        ),
         client.post("/compare/pick", data={"lineup_id": lineup_of(lineup.text)[0]}),
         client.post("/compare/size", data={"size": "3"}),
     ]
@@ -567,6 +576,101 @@ def test_a_pick_of_a_wallpaper_the_lineup_does_not_show_is_a_bare_404(web: Web) 
 
     assert refused.status_code == HTTPStatus.NOT_FOUND
     assert evidence_log.judgements(harness.connect()) == []
+
+
+def _lineup_stars(body: str) -> list[str]:
+    """Each **Line-up** tile's one star, as its opening tag, in on-screen order."""
+    tiles = re.findall(r'<li class="lineup-tile".*?</li>', body, flags=re.DOTALL)
+    return [_star(tile) for tile in tiles]
+
+
+def _lineup_starred(body: str) -> list[bool]:
+    """Whether each **Line-up** tile's star shows pressed, in on-screen order."""
+    return ['aria-pressed="true"' in star for star in _lineup_stars(body)]
+
+
+def test_a_star_answers_with_the_same_lineup_starred_and_a_reload_still_shows_it(web: Web) -> None:
+    """Starring never answers the **Line-up** or draws the next: the response is the same one, the tile's
+    star now pressed and offering to come off, and nothing is recorded until the **Line-up** is answered."""
+    harness, client = web
+    shown = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    lineup_id, tiles = shown
+
+    starred = client.post(
+        "/compare/star?instrument=pick",
+        data={"lineup_id": lineup_id, "wallpaper_id": tiles[1], "starred": "true"},
+    )
+    reloaded = client.get("/compare/lineup?instrument=pick").text
+
+    assert starred.status_code == HTTPStatus.OK
+    assert lineup_of(starred.text) == lineup_of(reloaded) == shown
+    for body in (starred.text, reloaded):
+        stars = _lineup_stars(body)
+        assert _lineup_starred(body) == [n == 1 for n in range(4)]
+        assert '"starred": "false"' in html.unescape(stars[1])
+        assert '"starred": "true"' in html.unescape(stars[0])
+    assert 'hx-post="/compare/pick"' in starred.text, "the tiles still answer the Instrument posted"
+    assert evidence_log.judgements(harness.connect()) == []
+
+    cleared = client.post(
+        "/compare/star?instrument=pick",
+        data={"lineup_id": lineup_id, "wallpaper_id": tiles[1], "starred": "false"},
+    )
+
+    assert _lineup_starred(cleared.text) == [False] * 4
+
+
+def test_star_then_pick_records_one_judgement_with_both_and_the_favourite_reaches_the_library(
+    web: Web,
+) -> None:
+    """What the star is for on the compare tab: one **Pick** **Judgement** with the **Favourite** on its tile
+    beside the winner, the starred **Wallpaper** in the **Library** and out of the **Pool**, and every other
+    tile still in it."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    members = [w.id for w in pool.members(harness.connect())]
+    client.post(
+        "/compare/star?instrument=pick",
+        data={"lineup_id": lineup_id, "wallpaper_id": tiles[0], "starred": "true"},
+    )
+
+    response = client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[2]})
+
+    assert response.status_code == HTTPStatus.OK
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert [s.response for s in judgement.shown] == [
+        PickTile(picked=n == 2, favourite=n == 0) for n in range(4)
+    ]
+    assert [written.wallpaper_id for written in harness.library.written] == [tiles[0]]
+    assert [w.id for w in pool.members(harness.connect())] == [w for w in members if w != tiles[0]]
+    assert _lineup_starred(response.text) == [False] * 4, "the next starts unstarred"
+
+
+def test_a_star_on_a_lineup_no_longer_on_screen_is_refused_in_words_with_the_one_on_screen_now(
+    web: Web,
+) -> None:
+    """A second tab: the star lands on a **Line-up** already answered, so it is a 409 that swaps in the one on
+    screen now, as a stale **Pick** is; a tile the **Line-up** does not show is a bare 404."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    client.post("/compare/pick", data={"lineup_id": lineup_id})
+    live_now = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+
+    stale = client.post(
+        "/compare/star?instrument=pick",
+        data={"lineup_id": lineup_id, "wallpaper_id": tiles[0], "starred": "true"},
+    )
+    unknown = client.post(
+        "/compare/star?instrument=pick",
+        data={"lineup_id": live_now[0], "wallpaper_id": "never-shown", "starred": "true"},
+    )
+
+    assert stale.status_code == HTTPStatus.CONFLICT
+    assert "That line-up is no longer on screen" in " ".join(stale.text.split())
+    assert lineup_of(stale.text) == live_now
+    assert unknown.status_code == HTTPStatus.NOT_FOUND
+    assert _lineup_starred(client.get("/compare/lineup").text) == [False] * 4
+    assert harness.connect().execute("SELECT COUNT(*) FROM lineup_stars").fetchone()[0] == 0
 
 
 def test_switching_the_lineup_size_answers_with_the_switcher_alone_and_reaches_the_next_lineup(

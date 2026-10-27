@@ -201,6 +201,35 @@ def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_b
     assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
 
 
+def test_every_lineup_tile_has_the_grids_star_beside_its_pick_never_inside_it(web: Web) -> None:
+    """The same star as the grid's (star.html), by click or F, as a direct child of the tile so F finds it,
+    and a sibling of the Pick rather than inside it, so a click on the star is never a click on the tile.
+    It posts the tile's star to the live **Line-up** for the **Instrument** on screen, carrying the
+    **Line-up** ID, and swaps the **Line-up** back; it is synced with the answers on `#lineup`, so a star and
+    an answer are never in flight together."""
+    _, client = web
+    fragment = client.get("/compare/lineup?instrument=pick").text
+
+    tiles = re.findall(r'<li class="lineup-tile">(.*?)</li>', fragment, flags=re.DOTALL)
+    assert len(tiles) == 4
+    for tile in tiles:
+        (star,) = re.findall(r'<button\b[^>]*class="star"[^>]*>', tile)
+        pick = tile[tile.index('class="pick"') : tile.index("</button>")]
+        assert 'class="star"' not in pick
+        assert tile.index("</button>") < tile.index('class="star"'), "the star follows the Pick, outside it"
+        wallpaper_id = re.search(r'data-wallpaper-id="(\w+)"', tile).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+        assert 'hx-post="/compare/star?instrument=pick"' in star
+        assert 'hx-target="#lineup"' in star
+        assert 'hx-sync="#lineup:drop"' in star
+        assert 'hx-include="#lineup-id"' in star
+        assert f'"wallpaper_id": "{wallpaper_id}", "starred": "true"' in html.unescape(star)
+        assert 'aria-pressed="false"' in star
+        trigger = html.unescape(re.search(r'hx-trigger="([^"]*)"', star).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+        assert trigger.startswith("click, keydown[")
+        assert "'f'" in trigger
+        assert trigger.endswith("] from:body")
+
+
 def test_the_lineup_size_switcher_offers_two_to_eight_and_marks_the_stored_size(db_path: Path) -> None:
     harness = make_harness(db_path)
     workflows.save_settings(harness.modules, lineup_size=6)
