@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+from wallpapi.taste import reductions
 from wallpapi.taste.evaluation import (
     Accuracy,
     Comparison,
@@ -27,7 +29,10 @@ from wallpapi.taste.evaluation import (
     reading,
     replay,
 )
+from wallpapi.taste.evidence import Evidence, RelativeEvidence
 from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
+from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
+from wallpapi.taste.reductions import UnknownInstrument
 from wallpapi.taste.verdict_grid import (
     VERDICT_GRID_V0,
     VERDICT_GRID_V1,
@@ -425,3 +430,231 @@ def test_a_candidate_better_on_every_screen_wins_and_worse_on_every_screen_is_wo
 def test_a_comparison_needs_the_same_test_judgements_on_both_sides() -> None:
     with pytest.raises(ValueError, match="same test Judgements"):
         compare(marked(0.5, 1.0), marked(0.5))
+
+
+# -- the Line-up: the pairs its Reductions give ---------------------------------------------------------
+
+PICKED = PickTile(picked=True)
+PASSED = PickTile()
+STARRED = PickTile(favourite=True)
+
+
+def picked(tiles: Mapping[str, PickTile], *, second: int, none_of_these: bool = False) -> Judgement:
+    """A **Pick** of a **Line-up** on the compare **Screen**, its tiles in on-screen order."""
+    return judged(
+        tiles,
+        second=second,
+        instrument=PICK_V1,
+        response=PickResponse(none_of_these=none_of_these),
+        screen="compare",
+    )
+
+
+def hand_worked_picks() -> list[Judgement]:
+    """One warm-up grid screen, a **Pick** of five, a "none of these" and a **Pick** of two."""
+    return [
+        judged({"a": FAVOURITE, "c": LIKE, "b": BAN}, second=0),
+        picked({"p": PASSED, "q": PICKED, "r": PASSED, "s": PASSED, "t": PASSED}, second=1),
+        picked({"u": PASSED, "v": PASSED}, second=2, none_of_these=True),
+        picked({"u": PASSED, "v": PICKED}, second=3),
+    ]
+
+
+def hand_worked_picks_table() -> Table:
+    return Table(
+        {
+            ("p", "a"): 0.95,
+            ("q", "c"): 0.95,
+            ("r", "c"): 0.95,
+            ("t", "b"): 0.95,
+            ("u", "a"): 0.95,
+            ("v", "q"): 0.95,
+        }
+    )
+
+
+def test_pick_accuracy_on_a_tiny_log_is_the_hand_worked_answer() -> None:
+    """Warm-up 1, radius 0.1 and decay 0, so each near decided Item adds exactly its value. The warm-up grid
+    decides a (Favourite, 100), c (Like, 50) and b (Ban, -100).
+
+    The first **Pick**: q (near c, 50) over p (near a, 100), wrong, 0; over r (near c, 50), a tie, half;
+    over s (near nothing, 0), right, 1; over t (near b, -100), right, 1. 2.5 of 4: 0.625.
+
+    "None of these" gives no pair, so it is no test answer.
+
+    The second **Pick**: v over u. u is near a, 100. v is near q, but q only ever won a **Pick**: relative
+    Evidence, which ranking ignores, so q is no decided Item and v scores 0. 0 < 100, wrong: 0.0.
+
+    Each **Pick** weighs once: (0.625 + 0.0) / 2 = 0.3125, where pooling the five pairs would give 2.5 / 5.
+    Resampling two **Picks**, a quarter of the resamples are both 0.0 and a quarter both 0.625, so the 95%
+    range is exactly 0.0 to 0.625.
+    """
+    log = hand_worked_picks()
+
+    tested = replay(log, hand_worked_picks_table(), radius=RADIUS, decay=DECAY, warm_up=1)
+
+    assert tested == (
+        Marked(log[1].id, PICK_V1, pairs=4, accuracy=0.625, items=("p", "q", "r", "s", "t")),
+        Marked(log[3].id, PICK_V1, pairs=1, accuracy=0.0, items=("u", "v")),
+    )
+    assert pairwise_accuracy(tested) == (
+        Accuracy(PICK_V1, judgements=2, accuracy=0.3125, range=Range(0.0, 0.625)),
+    )
+
+
+def test_a_pick_reads_as_its_winner_over_each_other_tile() -> None:
+    screen = picked({"p": PASSED, "q": PICKED, "r": PASSED}, second=0)
+
+    assert reading(screen) == (Pair("q", "p"), Pair("q", "r"))
+
+
+def test_none_of_these_is_never_a_test_answer() -> None:
+    assert reading(picked({"p": PASSED, "q": STARRED}, second=0, none_of_these=True)) == ()
+
+
+def test_a_pick_never_makes_its_winner_a_decided_item() -> None:
+    """Relative Evidence still does not feed ranking: after the first **Pick**, won by q, the second
+    **Pick**'s matrix has the grid's three decided Items as its columns and no q."""
+    table = hand_worked_picks_table()
+
+    replay(hand_worked_picks(), table, radius=RADIUS, decay=DECAY, warm_up=1)
+
+    assert table.calls == [(("p", "q", "r", "s", "t"), ("a", "b", "c")), (("u", "v"), ("a", "b", "c"))]
+
+
+def test_a_star_on_a_pick_is_no_pair_but_is_evidence_for_the_screens_after_it() -> None:
+    """A starred tile is absolute 100, which orders it against nothing on its screen: the **Pick**'s one
+    pair is still its winner over the starred loser, and no grid pair is read from it. A later screen sees
+    the star: a Like near it over a Ban, right."""
+    star = picked({"won": PICKED, "starred": STARRED}, second=0)
+    later = judged({"near": LIKE, "far": BAN}, second=1)
+
+    marks = replay([star, later], Table({("near", "starred"): 0.95}), radius=RADIUS, decay=DECAY, warm_up=0)
+
+    assert reading(star) == (Pair("won", "starred"),)
+    assert [(each.judgement_id, each.instrument, each.accuracy) for each in marks] == [
+        (star.id, PICK_V1, 0.5),
+        (later.id, VERDICT_GRID_V1, 1.0),
+    ]
+
+
+def test_a_pick_on_items_decided_since_it_was_drawn_scores_neither_against_its_own_verdict() -> None:
+    """A **Batch** drawn after the **Line-up** may show its tiles and be submitted first (the one-way draw
+    exclusion): x a Like, y a Ban. The **Pick** of y over x is marked from that, each without its own
+    **Verdict**: x near nothing, 0; y near x, 50. y over x, right."""
+    log = [
+        judged({"x": LIKE, "y": BAN}, second=0),
+        picked({"x": PASSED, "y": PICKED}, second=1),
+    ]
+
+    marks = replay(log, Table({("y", "x"): 0.95}), radius=RADIUS, decay=DECAY, warm_up=1)
+
+    assert [each.accuracy for each in marks] == [1.0]
+
+
+def test_grid_and_pick_rows_stand_side_by_side_and_the_comparison_covers_each() -> None:
+    """The hand-worked grid log and the hand-worked **Picks** in one log, the **Picks** after: the grid row
+    is 0.75 and the **Pick** row 0.3125 as each was alone, the **Picks** now also seeing the grid's test
+    screens, which are near none of their tiles. A candidate radius of 0 reaches nothing (decay 0 keeps the
+    weight 1): every pair a tie, 0.5 on every screen. Grid differences 0 and -0.5, mean -0.25; **Pick**
+    differences -0.125 and +0.5, mean 0.1875."""
+    log = [
+        *hand_worked_log(),
+        picked({"p": PASSED, "q": PICKED, "r": PASSED, "s": PASSED, "t": PASSED}, second=11),
+        picked({"u": PASSED, "v": PICKED}, second=12),
+    ]
+    table = Table(
+        {
+            **hand_worked_table().pairs,
+            ("p", "a"): 0.95,
+            ("q", "c"): 0.95,
+            ("r", "c"): 0.95,
+            ("t", "b"): 0.95,
+            ("u", "a"): 0.95,
+        }
+    )
+
+    baseline = replay(log, table, radius=RADIUS, decay=DECAY, warm_up=1)
+    candidate = replay(log, table, radius=0.0, decay=DECAY, warm_up=1)
+
+    assert [each.accuracy for each in baseline] == [0.5, 1.0, 0.625, 0.0]
+    assert pairwise_accuracy(baseline) == (
+        Accuracy(PICK_V1, judgements=2, accuracy=0.3125, range=Range(0.0, 0.625)),
+        Accuracy(VERDICT_GRID_V1, judgements=2, accuracy=0.75, range=Range(0.5, 1.0)),
+    )
+    assert [(each.instrument, each.judgements, each.difference) for each in compare(baseline, candidate)] == [
+        (PICK_V1, 2, 0.1875),
+        (VERDICT_GRID_V1, 2, -0.25),
+    ]
+
+
+def test_an_instrument_with_a_reduction_and_no_test_judgements_has_no_row() -> None:
+    """**Pick** has a **Reduction**, but here its one answer is warm-up and the other "none of these": the
+    grid alone has a row, not a **Pick** row of nought."""
+    log = [
+        picked({"p": PICKED, "q": PASSED}, second=0),
+        *hand_worked_log()[1:],
+        picked({"u": PASSED, "v": PASSED}, second=3, none_of_these=True),
+    ]
+
+    accuracy = pairwise_accuracy(replay(log, hand_worked_table(), radius=RADIUS, decay=DECAY, warm_up=1))
+
+    assert [each.instrument for each in accuracy] == [VERDICT_GRID_V1]
+
+
+@dataclass(frozen=True, slots=True)
+class Placed(ItemResponse):
+    """A stand-in **Line-up** tile **Response**: where the tile was put, 1 the best, `None` unplaced."""
+
+    place: int | None = None
+
+
+ORDER_V1 = Instrument("order", 1)
+
+
+def reduce_placed(judgement: Judgement) -> list[Evidence]:
+    """A stand-in for a **Line-up** **Instrument** this evaluation was written before: each placed tile over
+    every tile placed below it and every unplaced one, strength 1 each."""
+    places = [
+        (shown.item, shown.response.place if isinstance(shown.response, Placed) else None)
+        for shown in judgement.shown
+    ]
+    return [
+        RelativeEvidence(winner, loser, 1.0, judgement.id, judgement.recorded_at)
+        for winner, above in places
+        if above is not None
+        for loser, below in places
+        if loser != winner and (below is None or below > above)
+    ]
+
+
+def test_a_new_line_up_instrument_gets_its_row_from_its_reduction_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A **Reduction** added to the table, and nothing in the evaluation: its pairs are its test answers and
+    it has a row of its own. Placed 1 near the Favourite (100), 2 near nothing (0), the unplaced near the
+    Like (50): first over second right, first over unplaced right, second over unplaced wrong: 2 of 3."""
+    monkeypatch.setitem(reductions.REDUCTIONS, ORDER_V1, reduce_placed)
+    ordered = judged(
+        {"first": Placed(1), "second": Placed(2), "unplaced": Placed()},
+        second=1,
+        instrument=ORDER_V1,
+        response=None,
+        screen="compare",
+    )
+    log = [judged({"a": FAVOURITE, "c": LIKE}, second=0), ordered]
+    table = Table({("first", "a"): 0.95, ("unplaced", "c"): 0.95})
+
+    accuracy = pairwise_accuracy(replay(log, table, radius=RADIUS, decay=DECAY, warm_up=1))
+
+    assert reading(ordered) == (
+        Pair("first", "second"),
+        Pair("first", "unplaced"),
+        Pair("second", "unplaced"),
+    )
+    assert [(each.instrument, each.judgements, each.accuracy) for each in accuracy] == [(ORDER_V1, 1, 2 / 3)]
+
+
+def test_an_instrument_with_no_reduction_has_no_reading_either() -> None:
+    with pytest.raises(UnknownInstrument):
+        reading(judged({"a": Placed(1), "b": Placed()}, second=0, instrument=Instrument("unbuilt", 1)))
