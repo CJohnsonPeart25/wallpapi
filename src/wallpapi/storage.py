@@ -5,13 +5,17 @@ Every rule below was verified in this project against SQLite 3.50.4; each sits b
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import sqlite3
 import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from wallpapi import settings
+from wallpapi import evidence_log, settings
+from wallpapi.taste.judgement import Judgement, Shown, instant
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
 SCHEMA_VERSION = 12
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
@@ -152,7 +156,7 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         # 12: the **Evidence log** (ADR 0027): one row per **Judgement** and one per shown **Item**,
         # append-only by trigger, and the **Mix** a **Batch** was minted from. The **Decision log** is
         # converted into it and left as it was, unread.
-        (*((statement, ()) for statement in _MIGRATION_12), *seed_settings),
+        (*((statement, ()) for statement in _MIGRATION_12), _convert_decision_log, *seed_settings),
     )
 
 
@@ -308,6 +312,147 @@ The **Decision log**'s foreign key to `wallpapers` becomes a trigger, because a 
 **History** edit of a **Wallpaper** this database never recorded is refused by the database, as before. Both
 tables refuse an update or a delete outright. `batches.mix` is `NULL` for a **Batch** minted before it.
 """
+
+
+def _convert_decision_log(write: sqlite3.Connection) -> None:
+    """Migration 12's conversion: the **Decision log** into **Judgements**, once (ADR 0027). Reads
+    `decision_log`, `batches` and `batch_wallpapers` and changes none of them.
+
+    Each submitted **Batch** (the entries sharing a `batch_id`) becomes one verdict grid version 0
+    **Judgement** on the batch **Screen**: its entries in on-screen order (an entry with no tile row after
+    the placed ones, by sequence), each in its old words with the stored **Zone** as **Provenance** where
+    there is one, the **Batch**'s mint time as first-shown, and the latest of its entries' times as its
+    recorded time. Each entry with no **Batch** becomes a **History** **Judgement** of one **Item**.
+
+    Order by sequence becomes order by time. Taken in old sequence order, each **Judgement** keeps its time
+    unless an earlier one on an **Item** it shares is at or after it, and then moves to one microsecond after
+    the latest such: on a plain tie that is ADR 0027's one microsecond, and a move that makes a new tie, or a
+    time the clock wrote out of order, moves on as far as it must. So on every **Item** the time order is the
+    old sequence order, and each resolves as it did. Nothing here depends on the database it runs in, so two
+    copies of one log convert to the same ids.
+
+    The ids are `taste/`'s hash of the canonical form, format version 1, whose spelling a test pins; a change
+    to it is a new format version, which `Judgement` refuses to build at 1. The rows are written by the
+    statements below rather than `evidence_log.append`, so a later migration that changes the tables cannot
+    change what this one writes.
+    """
+    placed = {
+        (str(row["batch_id"]), str(row["wallpaper_id"])): (int(row["position"]), row["zone"])
+        for row in write.execute("SELECT batch_id, wallpaper_id, position, zone FROM batch_wallpapers")
+    }
+    minted = {
+        str(row["id"]): str(row["created_at"]) for row in write.execute("SELECT id, created_at FROM batches")
+    }
+    groups: dict[tuple[str, str | int], list[sqlite3.Row]] = {}
+    for row in write.execute(
+        "SELECT seq, wallpaper_id, batch_id, verdict, recorded_at FROM decision_log ORDER BY seq"
+    ):
+        group = ("entry", int(row["seq"])) if row["batch_id"] is None else ("batch", str(row["batch_id"]))
+        groups.setdefault(group, []).append(row)
+
+    latest: dict[str, dt.datetime] = {}
+    for rows in groups.values():
+        wallpaper_ids = [str(row["wallpaper_id"]) for row in rows]
+        at = max(dt.datetime.fromisoformat(str(row["recorded_at"])) for row in rows)
+        at = max([at, *(latest[w] + evidence_log.ONE_MICROSECOND for w in wallpaper_ids if w in latest)])
+        batch_id = rows[0]["batch_id"]
+        judgement = (
+            _converted_entry(rows[0], at)
+            if batch_id is None
+            else _converted_batch(str(batch_id), rows, at, placed, minted)
+        )
+        _insert_converted(write, judgement)
+        latest.update(dict.fromkeys(wallpaper_ids, at))
+
+
+def _converted_entry(row: sqlite3.Row, at: dt.datetime) -> Judgement:
+    """One entry with no **Batch**: a **History** edit, or a legacy **Clearance**."""
+    return Judgement(
+        instrument=VERDICT_GRID_V0,
+        screen=evidence_log.SCREEN_HISTORY,
+        shown=(_converted_tile(row, {}),),
+        recorded_at=at,
+        app=evidence_log.APP,
+        app_version=evidence_log.APP_VERSION,
+    )
+
+
+def _converted_batch(
+    batch_id: str,
+    rows: list[sqlite3.Row],
+    at: dt.datetime,
+    placed: dict[tuple[str, str], tuple[int, object]],
+    minted: dict[str, str],
+) -> Judgement:
+    """One submitted **Batch**'s entries, in on-screen order."""
+    unplaced = len(placed) + 1
+
+    def on_screen(row: sqlite3.Row) -> tuple[int, int]:
+        return placed.get((batch_id, str(row["wallpaper_id"])), (unplaced, None))[0], int(row["seq"])
+
+    def provenance(row: sqlite3.Row) -> dict[str, str]:
+        zone = placed.get((batch_id, str(row["wallpaper_id"])), (unplaced, None))[1]
+        return {} if zone is None else {evidence_log.PROVENANCE_ZONE: str(zone)}
+
+    created = minted.get(batch_id)
+    return Judgement(
+        instrument=VERDICT_GRID_V0,
+        screen=evidence_log.SCREEN_BATCH,
+        shown=tuple(_converted_tile(row, provenance(row)) for row in sorted(rows, key=on_screen)),
+        recorded_at=at,
+        app=evidence_log.APP,
+        app_version=evidence_log.APP_VERSION,
+        first_shown_at=None if created is None else dt.datetime.fromisoformat(created),
+    )
+
+
+def _converted_tile(row: sqlite3.Row, provenance: dict[str, str]) -> Shown:
+    return Shown(
+        evidence_log.item_key(str(row["wallpaper_id"])),
+        LegacyTileResponse(LegacyEntry(str(row["verdict"]))),
+        provenance,
+    )
+
+
+def _insert_converted(write: sqlite3.Connection, judgement: Judgement) -> None:
+    """Migration 12's rows for one converted **Judgement**, in the columns the tables had then."""
+    write.execute(
+        "INSERT INTO judgements (id, format_version, instrument, instrument_version, screen, recorded_at,"
+        " utc_offset, first_shown_at, app, app_version, submitted, ranking, context)"
+        " VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, '{}')",
+        (
+            judgement.id,
+            judgement.format_version,
+            judgement.instrument.name,
+            judgement.instrument.version,
+            judgement.screen,
+            instant(judgement.recorded_at),
+            None if judgement.first_shown_at is None else instant(judgement.first_shown_at),
+            judgement.app,
+            judgement.app_version,
+        ),
+    )
+    write.executemany(
+        "INSERT INTO judgement_items (judgement_id, position, item, verdict, favourite, preview_opened,"
+        " entry, provenance) VALUES (?, ?, ?, NULL, 0, 0, ?, ?)",
+        [
+            (
+                judgement.id,
+                position,
+                shown.item,
+                _legacy_entry(shown),
+                json.dumps(dict(shown.provenance), sort_keys=True),
+            )
+            for position, shown in enumerate(judgement.shown)
+        ],
+    )
+
+
+def _legacy_entry(shown: Shown) -> str:
+    response = shown.response
+    if not isinstance(response, LegacyTileResponse):
+        raise TypeError(f"migration 12 converts only legacy tiles, not {response!r}")
+    return response.entry.value
 
 
 _SEED_SETTING = "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING"
