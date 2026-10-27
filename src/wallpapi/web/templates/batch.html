@@ -22,13 +22,8 @@
   grid's check is on `#batch` itself: a tile or bulk swap inside it bubbles its own event up through here.
 #}
 {% block actions %}
-  {# The page's theme as the browser resolved it, posted with a submission or a skip for the Judgement's
-     Context: `data-theme` when the theme button chose one, otherwise what the OS asked Pico for. Never
-     stored as a setting, and the server drops anything but light or dark. #}
-  {% set theme_value -%}
-    js:{theme: document.documentElement.dataset.theme
-      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')}
-  {%- endset %}
+  {# The page's theme as the browser resolved it, posted with a submission or a skip (theme_value.html). #}
+  {% set theme_value | trim %}{% include "theme_value.html" %}{% endset %}
   <li>
     {% include "mix.html" %}
   </li>

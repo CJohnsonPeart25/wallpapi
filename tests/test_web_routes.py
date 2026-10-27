@@ -22,8 +22,10 @@ from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
 from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import SubmissionRefused
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
+from wallpapi.lineup import LineupRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
+from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.verdict_grid import GridResponse, TileResponse
 from wallpapi.web.app import REFUSALS
 
@@ -31,21 +33,24 @@ Web = tuple[Harness, TestClient]
 
 
 def test_every_page_boots_on_the_shell_and_tiles_come_from_the_cache(web: Web) -> None:
-    """The smoke test across all three pages: a template error in the shell breaks every one at once. A
-    **Batch** of tiles is served from `/thumb`, never hotlinked (`thumbnails.py`)."""
+    """The smoke test across all four pages: a template error in the shell breaks every one at once. A
+    **Batch** and a **Line-up** of tiles are served from `/thumb`, never hotlinked (`thumbnails.py`)."""
     _, client = web
 
-    responses = {path: client.get(path) for path in ("/", "/history", "/settings")}
+    responses = {path: client.get(path) for path in ("/", "/compare", "/history", "/settings")}
     batch = client.get("/batch").text
+    lineup = client.get("/compare/lineup?instrument=pick").text
 
     for path, response in responses.items():
         assert response.status_code == HTTPStatus.OK, path
         assert "<nav" in response.text, path
-        for link in ('href="/"', 'href="/history"', 'href="/settings"'):
+        for link in ('href="/"', 'href="/compare"', 'href="/history"', 'href="/settings"'):
             assert link in response.text, path
     assert batch.count('data-wallpaper-id="') == 8
     assert batch.count('src="/thumb/') == 8
-    assert "th.wallhaven.cc" not in batch
+    assert lineup.count('data-wallpaper-id="') == 4
+    assert lineup.count('src="/thumb/') == 4
+    assert "th.wallhaven.cc" not in batch + lineup
 
 
 def test_a_thumbnail_is_fetched_once_and_then_served_off_disk(web: Web) -> None:
@@ -73,11 +78,13 @@ def test_the_shell_mints_nothing_and_fetches_the_batch_on_load_and_after_a_submi
 
 
 def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
-    """The **Batch**, a tile, the grid, the **Mix** switcher and the banner never extend the shell."""
+    """The **Batch**, a tile, the grid, the **Mix** switcher and the banner never extend the shell; nor do
+    the **Line-up**, the next one a **Pick** answers with, and the **Line-up** size switcher."""
     harness, client = web
     fetched = client.get("/batch")
     batch_id = batch_id_of(fetched.text)
     wallpaper_id = live(harness).wallpapers[0].id
+    lineup = client.get("/compare/lineup?instrument=pick")
 
     swaps = [
         fetched,
@@ -86,6 +93,9 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
         client.post("/mix", data={"mix": "refine"}),
         client.post("/submit", data={"batch_id": batch_id}),
         client.post("/skip", data={"batch_id": batch_id_of(client.get("/batch").text)}),
+        lineup,
+        client.post("/compare/pick", data={"lineup_id": lineup_of(lineup.text)[0]}),
+        client.post("/compare/size", data={"size": "3"}),
     ]
 
     for swap in swaps:
@@ -459,6 +469,158 @@ def test_switching_to_a_mix_nobody_has_heard_of_is_a_400_and_changes_nothing(web
     assert settings.active_mix(harness.connect()) == EXPLORE_MIX
 
 
+# -- the compare tab ---------------------------------------------------------------------------------
+
+
+LINEUP_ID = re.compile(r'name="lineup_id" value="([0-9a-f]+)"')
+TILE_ID = re.compile(r'data-wallpaper-id="(\w+)"')
+
+
+def lineup_of(body: str) -> tuple[str, list[str]]:
+    """The **Line-up** ID a fragment carries for its answers, and its tiles' ids in order."""
+    match = LINEUP_ID.search(body)
+    assert match is not None, "the fragment must carry the Line-up ID it will answer"
+    return match.group(1), TILE_ID.findall(body)
+
+
+def test_the_compare_shell_mints_nothing_and_fetches_the_lineup_for_its_instrument(web: Web) -> None:
+    """The **Instrument** is carried in the URL, **Pick** when none is named; one the tab does not offer is
+    a 404."""
+    _, client = web
+
+    shell = client.get("/compare").text
+    named = client.get("/compare?instrument=pick")
+
+    assert 'hx-get="/compare/lineup?instrument=pick"' in shell
+    assert 'data-wallpaper-id="' not in shell
+    assert named.status_code == HTTPStatus.OK
+    assert client.get("/compare?instrument=order").status_code == HTTPStatus.NOT_FOUND
+    assert client.get("/compare/lineup?instrument=order").status_code == HTTPStatus.NOT_FOUND
+
+
+def test_a_reload_fetches_the_same_lineup(web: Web) -> None:
+    _, client = web
+
+    first = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    again = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+
+    assert again == first
+
+
+def test_a_pick_records_the_winner_with_the_theme_and_answers_with_the_next_lineup(web: Web) -> None:
+    """One post, one swap: the response is the next **Line-up**, not a banner and a refetch, so the next set
+    comes at once. Nothing leaves the **Pool**."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    members = pool.members(harness.connect())
+
+    response = client.post(
+        "/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[2], "theme": "dark"}
+    )
+
+    assert response.status_code == HTTPStatus.OK
+    assert "<html" not in response.text
+    following, _ = lineup_of(response.text)
+    assert following != lineup_id
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert (judgement.instrument, judgement.screen) == (PICK_V1, "compare")
+    assert [s.response for s in judgement.shown] == [PickTile(picked=n == 2) for n in range(4)]
+    assert judgement.response == PickResponse()
+    assert judgement.context == {"theme": "dark"}
+    assert pool.members(harness.connect()) == members
+
+
+def test_none_of_these_is_a_pick_with_no_wallpaper(web: Web) -> None:
+    harness, client = web
+    lineup_id, _ = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+
+    response = client.post("/compare/pick", data={"lineup_id": lineup_id})
+
+    assert response.status_code == HTTPStatus.OK
+    assert lineup_of(response.text)[0] != lineup_id
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert judgement.response == PickResponse(none_of_these=True)
+
+
+def test_answering_a_lineup_twice_is_refused_in_words_with_the_one_on_screen_now(web: Web) -> None:
+    """A second tab, or a number key pressed twice: a 409 that says so and swaps in the **Line-up** now on
+    screen, so the stale page catches up; only the first answer is recorded."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[0]})
+    live_now = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+
+    again = client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[1]})
+
+    assert again.status_code == HTTPStatus.CONFLICT
+    assert "That line-up is no longer on screen" in " ".join(again.text.split())
+    assert lineup_of(again.text) == live_now
+    assert len(evidence_log.judgements(harness.connect())) == 1
+
+
+def test_a_pick_of_a_wallpaper_the_lineup_does_not_show_is_a_bare_404(web: Web) -> None:
+    """No control posts one, so it is a status, not a sentence."""
+    harness, client = web
+    lineup_id, _ = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+
+    refused = client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": "never-shown"})
+
+    assert refused.status_code == HTTPStatus.NOT_FOUND
+    assert evidence_log.judgements(harness.connect()) == []
+
+
+def test_switching_the_lineup_size_answers_with_the_switcher_alone_and_reaches_the_next_lineup(
+    web: Web,
+) -> None:
+    harness, client = web
+    lineup_id, _ = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+
+    switched = client.post("/compare/size", data={"size": "6"})
+    still = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    following = client.post("/compare/pick", data={"lineup_id": lineup_id}).text
+
+    assert switched.status_code == HTTPStatus.OK
+    assert 'id="lineup-size"' in switched.text
+    assert 'value="6" selected' in switched.text
+    assert "data-wallpaper-id" not in switched.text
+    assert len(still[1]) == 4, "the Line-up on screen keeps its size"
+    assert len(lineup_of(following)[1]) == 6
+    assert settings.get(harness.connect()).lineup_size == 6
+
+
+@pytest.mark.parametrize("posted", ["1", "9", "four", ""])
+def test_a_lineup_size_outside_two_to_eight_is_a_400_and_changes_nothing(web: Web, posted: str) -> None:
+    """Refused at the edge as the settings module refuses it: the switcher comes back as stored."""
+    harness, client = web
+
+    refused = client.post("/compare/size", data={"size": posted})
+
+    assert refused.status_code == HTTPStatus.BAD_REQUEST
+    assert 'value="4" selected' in refused.text
+    assert settings.get(harness.connect()).lineup_size == 4
+
+
+@pytest.mark.parametrize(
+    ("arrange", "words"),
+    [
+        pytest.param({"fill_pool": 0}, ["fewer than two"], id="nothing arrived yet"),
+        pytest.param({"fail_from_call": 1}, ["cannot reach Wallhaven", "set up to fail"], id="unreachable"),
+    ],
+)
+def test_an_unavailable_lineup_is_a_page_in_words_never_a_500(
+    db_path: Path, arrange: dict[str, int], words: list[str]
+) -> None:
+    harness = make_harness(db_path, **arrange)  # pyright: ignore[reportArgumentType]
+
+    with serving(harness) as client:
+        response = client.get("/compare/lineup?instrument=pick")
+
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+    for word in words:
+        assert word in " ".join(response.text.split())
+    assert "too_few" not in response.text
+
+
 # -- when there is nothing to show -------------------------------------------------------------------
 
 
@@ -787,12 +949,16 @@ def test_resetting_the_pool_answers_with_the_section_and_what_it_removed(web: We
     does to the modules is `test_pool.py`'s; this is that the route reached it."""
     harness, client = web
     live(harness)
+    client.get("/compare/lineup?instrument=pick")
 
     response = client.post("/settings/pool/reset", follow_redirects=False)
 
     said = " ".join(response.text.split())
     assert response.status_code == HTTPStatus.OK
-    assert "Removed 24 pool members, discarded the batch on screen and evicted 0 thumbnails." in said
+    assert (
+        "Removed 24 pool members, discarded the batch and the line-up on screen and evicted 0 thumbnails."
+        in said
+    )
     assert "The pool holds 0 wallpapers." in said
     assert "<html" not in response.text
     assert pool.members(harness.connect()) == []
@@ -890,7 +1056,7 @@ def test_deleting_a_mix_redirects_or_says_why_not(
 def test_every_refusal_reason_has_its_own_entry() -> None:
     """`REFUSALS` is keyed by `StrEnum` members from two modules, which hash as their string values: a new
     reason reusing another's value would silently take over that entry's response."""
-    reasons = [*SubmissionRefused.Reason, *HistoryRefused.Reason]
+    reasons = [*SubmissionRefused.Reason, *HistoryRefused.Reason, *LineupRefused.Reason]
 
     assert len(REFUSALS) == len(reasons)
     assert all(REFUSALS.keys() & {reason} for reason in reasons)

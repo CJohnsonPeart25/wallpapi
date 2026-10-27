@@ -1,0 +1,56 @@
+{#
+  What `/compare/lineup` swaps into the compare shell's `#lineup`, and what an answer swaps in after it: the
+  **Line-up**, or why there is none, with a line above it when the answer that brought it was refused.
+
+  The **Line-up** ID rides along as `#lineup-id`, which every answer includes; the nav's "none of these"
+  holds no input of its own for the same reason the **Batch** page's Submit holds none. The page's theme is
+  on the list as an `hx-vals` every tile inherits, beside its own `wallpaper_id`.
+
+  Each tile is one button, the thumbnail and its number on it: a click or the number key posts it as the
+  winner. The button is the tile's only control and fills it, so a star (8pa.10) has room to sit beside it
+  in the `<li>`, never inside it. The number is a `<kbd>` because it is the key to press. Every tile is the
+  same size whatever its **Zone**, and no **Zone** is shown: a label is not what is being compared.
+#}
+{% if refused %}
+  <p class="lineup-refused" role="status">{{ refused }}</p>
+{% endif %}
+{% if lineup %}
+  {% set theme_value | trim %}{% include "theme_value.html" %}{% endset %}
+  {% set answer_keys | trim %}{% include "answer_keys.html" %}{% endset %}
+  <input type="hidden" id="lineup-id" name="lineup_id" value="{{ lineup.id }}" />
+  <ul class="lineup" data-size="{{ lineup.wallpapers | length }}" hx-vals="{{ theme_value }}">
+    {% for wallpaper in lineup.wallpapers %}
+      <li class="lineup-tile">
+        <button
+          type="button"
+          class="pick"
+          data-wallpaper-id="{{ wallpaper.id }}"
+          aria-label="Pick {{ loop.index }}"
+          hx-post="/compare/{{ instrument }}"
+          hx-vals='{"wallpaper_id": "{{ wallpaper.id }}"}'
+          hx-include="#lineup-id"
+          hx-target="#lineup"
+          hx-sync="#lineup:drop"
+          hx-trigger="click, keydown[key=='{{ loop.index }}'&&{{ answer_keys }}] from:body"
+        >
+          <img src="/thumb/{{ wallpaper.id }}" alt="" />
+          <kbd class="key">{{ loop.index }}</kbd>
+        </button>
+      </li>
+    {% endfor %}
+  </ul>
+{% elif unavailable.reason.value == "wallhaven_unreachable" %}
+  <p>Nothing to compare: wallpapi cannot reach Wallhaven, so the pool has not filled.</p>
+  <p><small>
+    The last attempt failed{% if unavailable.error_at %} at
+    {{ unavailable.error_at.strftime("%H:%M") }} UTC{% endif %}: {{ unavailable.error }}.
+    The refill keeps trying.
+  </small></p>
+  <p><a href="/compare?instrument={{ instrument }}">Try again</a></p>
+{% else %}
+  <p>
+    Nothing to compare yet — the pool holds fewer than two wallpapers that are not on the batch
+    being judged. The background refill fills it from Wallhaven; give it a moment and reload.
+  </p>
+  <p><a href="/compare?instrument={{ instrument }}">Try again</a></p>
+{% endif %}
