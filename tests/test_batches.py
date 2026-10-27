@@ -26,7 +26,7 @@ from wallpapi.decisions import HistoryEntry, ResolvedVerdict
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
-from wallpapi.similarity import NEAR_DUPLICATE_SIMILARITY
+from wallpapi.taste.clip import NEAR_DUPLICATE_SIMILARITY
 from wallpapi.taste.rng import SeededRandom
 
 SCORE = 50.0

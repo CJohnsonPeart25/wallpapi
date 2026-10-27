@@ -4,9 +4,9 @@ Read from the source with `ast`, as `test_threads.py` guards against `time.sleep
 docstring may name what the code must not do. Two rules:
 
 - nothing under `taste/` imports a wallpapi module outside `taste/`, so it can leave as its own package;
-- everything under `taste/` imports only from `PURE`, and never calls `open` or `__import__`, so it opens no
-  file or connection, starts no thread and makes no network call. An allowlist, not a list of the modules
-  that do those things: a module missing from a denylist would pass unseen.
+- everything under `taste/` imports only from `PURE`, and never calls `open`, `__import__` or any `.open`,
+  so it opens no file or connection, starts no thread and makes no network call. An allowlist, not a list
+  of the modules that do those things: a module missing from a denylist would pass unseen.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ PURE = frozenset(
         "json",
         "math",
         "numpy",
+        "PIL",
         "random",
         "statistics",
         "time",
@@ -42,11 +43,15 @@ PURE = frozenset(
     }
 )
 """The top-level modules `taste/` may import besides itself: the standard library's pure parts and numpy.
-`time` is the clock's; `time.sleep` is refused everywhere by `test_threads.py`. Adding one here is a claim
-that it opens nothing, starts nothing and calls out to nothing."""
+`time` is the clock's; `time.sleep` is refused everywhere by `test_threads.py`. `PIL` is the CLIP
+preprocessing's, for an image already decoded: `Image.open` is refused by `FORBIDDEN_METHODS`. Adding one here
+is a claim that it opens nothing, starts nothing and calls out to nothing."""
 
 FORBIDDEN_CALLS = frozenset({"open", "__import__"})
 """Builtins that reach a file or a module without an import statement."""
+
+FORBIDDEN_METHODS = frozenset({"open"})
+"""Attributes that open a file whatever they hang off: `Image.open`, `Path.open`."""
 
 
 def _package_of(path: Path) -> str:
@@ -81,7 +86,8 @@ def outside_taste(source: str, package: str) -> list[int]:
 
 
 def impure(source: str, package: str) -> list[int]:
-    """Lines importing anything outside `PURE` and `taste/`, or calling a `FORBIDDEN_CALLS` builtin."""
+    """Lines importing anything outside `PURE` and `taste/`, or calling a `FORBIDDEN_CALLS` builtin or a
+    `FORBIDDEN_METHODS` attribute."""
     lines = [
         line
         for line, name in imported(source, package)
@@ -91,6 +97,13 @@ def impure(source: str, package: str) -> list[int]:
         node.lineno
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALLS
+    ]
+    lines += [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in FORBIDDEN_METHODS
     ]
     return sorted(lines)
 
@@ -169,6 +182,8 @@ def test_the_import_guard_passes_taste_and_the_outside_world(source: str) -> Non
         "import importlib",
         "open('x')",
         "__import__('socket')",
+        "Image.open('x')",
+        "path.open('rb')",
     ],
 )
 def test_the_purity_guard_sees_what_reaches_outside(source: str) -> None:
@@ -178,7 +193,7 @@ def test_the_purity_guard_sees_what_reaches_outside(source: str) -> None:
 def test_the_purity_guard_passes_pure_code() -> None:
     source = (
         "from __future__ import annotations\nimport datetime as dt\nimport numpy as np\n"
-        "from numpy.typing import NDArray\nfrom .evidence import AbsoluteEvidence\n"
+        "from numpy.typing import NDArray\nfrom .evidence import AbsoluteEvidence\nfrom PIL import Image\n"
     )
 
     assert impure(source, TASTE_PACKAGE) == []

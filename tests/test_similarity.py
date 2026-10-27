@@ -37,7 +37,6 @@ from wallpapi.pool import RefillStrategy
 from wallpapi.similarity import (
     CATEGORY_SHARE,
     CAUGHT_UP,
-    NEAR_DUPLICATE_SIMILARITY,
     RETRY_MODEL,
     EmbeddingCache,
     Embeddings,
@@ -45,6 +44,7 @@ from wallpapi.similarity import (
     Similarity,
     metadata_similarity,
 )
+from wallpapi.taste.clip import NEAR_DUPLICATE_SIMILARITY
 from wallpapi.thumbnails import Thumbnails
 
 RED = ("#ff0000", "#880000")
