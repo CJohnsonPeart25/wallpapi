@@ -69,8 +69,9 @@ def test_a_thumbnail_is_fetched_once_and_then_served_off_disk(web: Web) -> None:
 def test_the_shell_mints_nothing_and_fetches_a_new_batch_on_load_and_the_next_after_a_submission(
     web: Web,
 ) -> None:
-    """A load is a visit, which draws a new **Batch**; the refetch after an answer asks for the next, which
-    hands back the live one if a refusal left one (ADR 0029). Both swap into `#batch`."""
+    """A load is a visit, which draws a new **Batch**, and so is a page restored from the back-forward cache;
+    the refetch after an answer asks for the next, which hands back the live one if a refusal left one (ADR
+    0029). Both swap into `#batch`."""
     _, client = web
 
     shell = client.get("/").text
@@ -79,7 +80,7 @@ def test_the_shell_mints_nothing_and_fetches_a_new_batch_on_load_and_the_next_af
     refetcher = re.search(r'<div\s+id="batch-next"[^>]*>', shell)
     assert loader is not None and refetcher is not None
     assert 'hx-get="/batch"' in loader.group(0)
-    assert 'hx-trigger="load"' in loader.group(0)
+    assert 'hx-trigger="load, pageshow[persisted] from:window"' in loader.group(0)
     assert 'hx-get="/batch/next"' in refetcher.group(0)
     assert 'hx-trigger="batch-submitted from:body"' in refetcher.group(0)
     assert 'hx-target="#batch"' in refetcher.group(0)
@@ -500,13 +501,14 @@ def lineup_of(body: str) -> tuple[str, list[str]]:
 
 def test_the_compare_shell_mints_nothing_and_fetches_the_lineup_for_its_instrument(web: Web) -> None:
     """The **Instrument** is carried in the URL, **Pick** when none is named; one the tab does not offer is
-    a 404."""
+    a 404. A load, or a restore from the back-forward cache, is a visit (ADR 0029)."""
     _, client = web
 
     shell = client.get("/compare").text
     named = client.get("/compare?instrument=pick")
 
     assert 'hx-get="/compare/lineup?instrument=pick"' in shell
+    assert 'hx-trigger="load, pageshow[persisted] from:window"' in shell
     assert 'data-wallpaper-id="' not in shell
     assert named.status_code == HTTPStatus.OK
     assert client.get("/compare?instrument=order").status_code == HTTPStatus.NOT_FOUND

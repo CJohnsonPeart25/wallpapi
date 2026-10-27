@@ -6,8 +6,9 @@
   The **Instrument** is in the URL (`?instrument=pick`), and the choice above the **Line-up** names each the
   tab offers; only **Pick** so far. `#lineup` loads `/compare/lineup` for that **Instrument** as soon as the
   page is up, which draws a new **Line-up** and replaces the one live before, unrecorded, stars and all:
-  each visit is a new screen (ADR 0029). An answer swaps the next **Line-up** straight in: one post, one
-  swap, so the next set comes at once. Until the first fetch lands, `#lineup` holds one empty tile per place, so the **Line-up**
+  each visit is a new screen (ADR 0029), a page restored from the back-forward cache included, as on the
+  **Batch** page. An answer swaps the next **Line-up** straight in: one post, one swap, so the next set comes
+  at once. Until the first fetch lands, `#lineup` holds one empty tile per place, so the **Line-up**
   is laid out at its real size and the thumbnails arrive into it.
 
   "None of these" and the **Line-up** size are in the nav, away from the tiles, as Submit is on the **Batch**
@@ -55,7 +56,7 @@
   <div
     id="lineup"
     hx-get="/compare/lineup?instrument={{ instrument }}"
-    hx-trigger="load"
+    hx-trigger="load, pageshow[persisted] from:window"
     hx-on::before-swap="if ([409, 503].includes(event.detail.xhr.status)) event.detail.shouldSwap = true"
   >
     <ul class="lineup" data-size="{{ lineup_size }}">
