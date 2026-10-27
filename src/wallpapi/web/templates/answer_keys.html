@@ -1,7 +1,0 @@
-{#
-  When a key pressed on the compare tab is an answer, as the rest of an htmx trigger filter after the key
-  itself: not while a field has the focus (the size switcher in the nav), not with a modifier held, so the
-  browser keeps Ctrl+1 and the like, and not on a key held down, which would answer every line-up it
-  brought. Captured with `{% set %}` by compare.html and lineup_view.html.
-#}
-!ctrlKey&&!metaKey&&!altKey&&!repeat&&!target.closest('input,select,textarea')

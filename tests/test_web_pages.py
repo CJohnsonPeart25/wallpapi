@@ -96,6 +96,7 @@ def test_every_tile_has_one_star_beside_its_rail_that_f_presses_on_the_focused_o
         assert trigger.endswith("] from:body")
         for condition in ("'f'", "!repeat", "!ctrlKey", "!metaKey", "!altKey", "this.parentElement"):
             assert condition in trigger
+        assert "!target.closest('input,select,textarea')" in trigger
         for state in (":focus-visible", ":hover"):
             assert state in trigger
 
