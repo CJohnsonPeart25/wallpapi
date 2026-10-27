@@ -17,7 +17,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi.taste.evidence import AbsoluteEvidence, Evidence
+from wallpapi.taste.evidence import Evidence
+from wallpapi.taste.resolution import resolve
 
 type Similarity = Callable[[Sequence[str], Sequence[str]], NDArray[np.floating]]
 """Item keys to a candidates x decided matrix of similarities in `[0, 1]`, rows and columns in the order
@@ -45,15 +46,16 @@ def rank(
 ) -> Ranking:
     """**Score** every candidate against the decided Items.
 
-    Absolute Evidence resolves latest-wins per Item, and the decided Items are those standing at a non-zero
-    value, as columns in the order the Evidence first names them. `similarity` is called exactly once, for
-    the whole candidates x decided matrix (Invariant 2), even when nothing is decided; a matrix of any other
-    shape raises `ValueError`. Relative Evidence is accepted and, in the MVP, ignored.
+    Absolute Evidence resolves latest-wins per Item (`resolution.resolve`), and the decided Items are those
+    standing at a non-zero value, as columns in the order the Evidence first names them. `similarity` is
+    called exactly once, for the whole candidates x decided matrix (Invariant 2), even when nothing is
+    decided; a matrix of any other shape raises `ValueError`. Relative Evidence is accepted and, in the MVP,
+    ignored.
 
     A candidate that is itself decided is scored against its own Evidence, at distance 0. Holding it out is
     the caller's choice.
     """
-    standing = _standing(evidence)
+    standing = resolve(evidence)
     decided = [item for item, piece in standing.items() if piece.strength != 0]
     similarities = similarity(candidates, decided)
     if similarities.shape != (len(candidates), len(decided)):
@@ -63,24 +65,6 @@ def rank(
         )
     values = [standing[item].strength for item in decided]
     return Ranking(scores=_scores(similarities, values, radius, decay))
-
-
-def _standing(evidence: Iterable[Evidence]) -> dict[str, AbsoluteEvidence]:
-    """The absolute Evidence that stands for each Item it names, keyed in the order first named."""
-    standing: dict[str, AbsoluteEvidence] = {}
-    for piece in evidence:
-        if isinstance(piece, AbsoluteEvidence):
-            held = standing.get(piece.item)
-            if held is None or _decides_over(piece, held):
-                standing[piece.item] = piece
-    return standing
-
-
-def _decides_over(piece: AbsoluteEvidence, held: AbsoluteEvidence) -> bool:
-    """Latest-wins: the later recorded time decides, and an exact tie falls to the lower **Judgement** id."""
-    if piece.recorded_at != held.recorded_at:
-        return piece.recorded_at > held.recorded_at
-    return piece.judgement_id < held.judgement_id
 
 
 def _scores(

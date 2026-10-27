@@ -16,6 +16,8 @@ from numpy.typing import NDArray
 
 from wallpapi.taste.evidence import AbsoluteEvidence, Evidence, RelativeEvidence
 from wallpapi.taste.ranking import Ranking, rank
+from wallpapi.taste.resolution import EXAMPLE_CASES, ExampleCase
+from wallpapi.taste.verdict_grid import LEGACY_STRENGTHS
 
 RADIUS = 0.15
 DECAY = 4.0
@@ -180,3 +182,19 @@ def test_a_favourite_and_a_ban_equally_near_sum_to_exactly_zero_at_any_similarit
     result = scores([absolute("loved", 100), absolute("hated", -100)], candidates, table)
 
     assert result == (0.0,) * len(candidates)
+
+
+@pytest.mark.parametrize("case", EXAMPLE_CASES, ids=[case.name for case in EXAMPLE_CASES])
+def test_ranking_resolves_by_the_latest_wins_example_cases(case: ExampleCase) -> None:
+    """Each Item a candidate at distance 0 from itself and beyond the radius of every other: its **Score** is
+    exactly the strength its standing gives, a **Clearance** last scoring 0 as an undecided Item."""
+    items = list(case.standing)
+    table = Table({(item, item): 1.0 for item in items})
+    evidence = [
+        absolute(said.item, LEGACY_STRENGTHS[said.value], said.judgement_id, said.recorded_at)
+        for said in case.said
+    ]
+
+    result = scores(evidence, items, table)
+
+    assert result == tuple(LEGACY_STRENGTHS[case.standing[item].value] for item in items)
