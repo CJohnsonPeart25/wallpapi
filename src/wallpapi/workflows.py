@@ -21,7 +21,7 @@ from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload
-from wallpapi.lineup import LineupRefused, Picked
+from wallpapi.lineup import Lineup, LineupRefused, Picked
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
 from wallpapi.thumbnails import ThumbnailEviction
@@ -72,17 +72,32 @@ def skip(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> Subm
         return modules.batches.skip(write, batch_id, theme=theme)
 
 
+def star_lineup_tile(
+    modules: Modules, lineup_id: str, wallpaper_id: str, *, starred: bool
+) -> Lineup | LineupRefused:
+    """Star one tile of the live **Line-up**, or take its star off. Held until the **Line-up** is answered,
+    so nothing is decided yet and there is no tail."""
+    with storage.write(modules.connect()) as write:
+        return lineup.star(write, lineup_id, wallpaper_id, starred=starred)
+
+
 def pick(
     modules: Modules, lineup_id: str, winner: str | None, *, theme: Theme | None = None
 ) -> Picked | LineupRefused:
-    """Answer the live **Line-up** with `winner`, or "none of these" with `None`, with the page's `theme`.
+    """Answer the live **Line-up** with `winner`, or "none of these" with `None`, with the page's `theme`;
+    then, if a tile was starred, reconcile the **Library**, as a submission does.
 
-    No tail: nothing left the **Pool** and nothing was decided, so there is nothing to reconcile or evict.
-    A star on a **Line-up** tile will change that (8pa.10): a **Pick** with a starred tile is then followed
-    by **Library** reconciliation, as a submission is.
+    Only a starred answer changes a **Favourite**, so only it reconciles: an unstarred **Pick** makes no
+    network call, and the next **Line-up** comes at once. No eviction: the only **Wallpapers** a **Pick**
+    takes out of the **Pool** are its **Favourites**, whose thumbnails are kept for ever, and every other
+    tile stays in the **Pool**.
     """
-    with storage.write(modules.connect()) as write:
-        return modules.lineups.pick(write, lineup_id, winner, theme=theme)
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        picked = modules.lineups.pick(write, lineup_id, winner, theme=theme)
+    if isinstance(picked, Picked) and picked.starred:
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return picked
 
 
 def choose_lineup_size(modules: Modules, size: str) -> Settings | SettingsRefused:
