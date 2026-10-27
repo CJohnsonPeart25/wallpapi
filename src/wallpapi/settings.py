@@ -29,6 +29,13 @@ anyone can judge at once.
 
 DEFAULT_BATCH_SIZE = 8
 
+MIN_LINEUP_SIZE = 2
+MAX_LINEUP_SIZE = 8
+"""The accepted **Line-up** size range, inclusive: one wallpaper compares with nothing, and more than eight
+side by side are too small to choose between."""
+
+DEFAULT_LINEUP_SIZE = 4
+
 MIN_POOL_TARGET_SIZE = 1
 MAX_POOL_TARGET_SIZE = 20_000
 """The accepted **Pool** target size range. Every whole-**Pool** operation is linear in it, so there is a
@@ -410,6 +417,20 @@ class Settings:
         label="Batch size",
         help="Wallpapers per batch, {minimum} to {maximum}. Applies to the next batch — the one on screen "
         "keeps the size it was built with.",
+    )
+    lineup_size = _whole(
+        default=DEFAULT_LINEUP_SIZE,
+        minimum=MIN_LINEUP_SIZE,
+        maximum=MAX_LINEUP_SIZE,
+        message={
+            SettingsRefused.Reason.OUT_OF_RANGE: "Line-up size must be between {minimum} and {maximum}.",
+            SettingsRefused.Reason.NOT_A_NUMBER: "Line-up size must be a whole number between {minimum} and "
+            "{maximum}.",
+        },
+        section=_UNHEADED,
+        label="Line-up size",
+        help="Wallpapers side by side on the compare tab, {minimum} to {maximum}; it can be switched there "
+        "too. Applies to the next line-up — the one on screen keeps the size it was drawn with.",
     )
     library_path = Field(
         # Under Pictures, where Windows' slideshow settings start, in a subfolder of its own.
