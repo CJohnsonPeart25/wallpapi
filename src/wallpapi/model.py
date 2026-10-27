@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -31,27 +30,6 @@ class Verdict(StrEnum):
     LIKE = "like"
     IGNORE = "ignore"
     BAN = "ban"
-
-
-class Clearance(StrEnum):
-    """The legacy **Decision log** entry that withdrew an **Explicit Verdict** (ADR 0015); read, never
-    written.
-    """
-
-    CLEARED = "cleared"
-
-
-@dataclass(frozen=True, slots=True)
-class DecisionEntry:
-    """One appended row of the **Decision log**, ordered by `seq` (invariant 4). `entry` is not named
-    `verdict` because the log also holds legacy **Clearances**.
-    """
-
-    seq: int
-    wallpaper_id: str
-    batch_id: str | None
-    entry: Verdict | Clearance
-    recorded_at: dt.datetime
 
 
 class Zone(StrEnum):

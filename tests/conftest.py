@@ -45,7 +45,7 @@ from wallpapi.batches import Batch, Batches, SubmissionRefused, Submitted
 from wallpapi.compose import Modules, compose
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
-from wallpapi.model import Clearance, Verdict, Wallpaper
+from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EMBED_BATCH, Embeddings
 from wallpapi.taste.clock import Clock
@@ -357,7 +357,7 @@ QUIET = RefillStatus(
 class BatchesRig:
     """`Batches` over one database, with the fakes behind it: a real `Embeddings` falling back to hand-defined
     similarities, and the fake clock. **Wallpapers** are admitted, retired and decided as `pool` and
-    `decisions` do, each in its own write."""
+    `evidence_log` do, each in its own write."""
 
     connection: sqlite3.Connection
     similarity: FakeSimilarities
@@ -519,10 +519,11 @@ def write_old_pool(db_path: Path, wallpapers: Sequence[Wallpaper]) -> None:
             )
 
 
-def write_log_entries(db_path: Path, entries: Mapping[str, Verdict | Clearance]) -> None:
-    """Append one **History**-style entry per **Wallpaper**, behind the seam."""
+def write_log_entries(db_path: Path, entries: Mapping[str, str]) -> None:
+    """Append one **History**-style **Decision log** entry per **Wallpaper**, in the old table's words
+    (`cleared` among them), behind the seam: for a database migration 12 has not yet converted."""
     with raw_connection(db_path) as connection:
         connection.executemany(
             "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
-            [(w, entry.value, FIXED_NOW.isoformat()) for w, entry in entries.items()],
+            [(w, entry, FIXED_NOW.isoformat()) for w, entry in entries.items()],
         )

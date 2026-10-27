@@ -17,7 +17,7 @@ from tests.conftest import BatchesRig, batches_rig, raw_connection, write_log_en
 from tests.fakes import catalogue_of
 from wallpapi import evidence_log, pool, settings, storage
 from wallpapi.batches import zone_of
-from wallpapi.model import Clearance, Verdict, Zone
+from wallpapi.model import Verdict, Zone
 from wallpapi.settings import (
     RETUNED_SIMILARITY_RADIUS,
     SUPERSEDED_POOL_TARGET_SIZE,
@@ -89,9 +89,7 @@ def test_migration_retires_every_pool_member_the_decision_log_already_mentions(d
     with raw_connection(db_path) as connection:
         storage.migrate(connection, to=9)
     write_old_pool(db_path, catalogue_of(12))
-    write_log_entries(
-        db_path, {"wp0000": Verdict.LIKE, "wp0001": Verdict.IGNORE, "wp0002": Clearance.CLEARED}
-    )
+    write_log_entries(db_path, {"wp0000": "like", "wp0001": "ignore", "wp0002": "cleared"})
 
     with raw_connection(db_path) as connection:
         storage.migrate(connection)
