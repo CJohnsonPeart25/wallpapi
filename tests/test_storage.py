@@ -153,6 +153,35 @@ def test_write_waits_for_a_held_lock_and_then_succeeds(migrated: Path) -> None:
         assert {"holder", "waiter"} <= keys
 
 
+def test_a_read_only_connection_refuses_a_write_and_is_handed_back_able_to_write(migrated: Path) -> None:
+    with closing(storage.connect(migrated)) as connection:
+        with (
+            storage.read_only(connection) as reading,
+            pytest.raises(sqlite3.OperationalError, match="readonly"),
+        ):
+            reading.execute("INSERT INTO settings (key, value) VALUES ('sneaked', '1')")
+
+        with storage.write(connection) as handle:
+            handle.execute("INSERT INTO settings (key, value) VALUES ('after', '1')")
+        keys = {str(row["key"]) for row in connection.execute("SELECT key FROM settings")}
+        assert "after" in keys
+        assert "sneaked" not in keys
+
+
+def test_a_read_only_block_sees_one_snapshot_while_another_connection_writes(migrated: Path) -> None:
+    """What makes the evaluation safe beside a running server: a **Judgement** committed between two of its
+    reads cannot be half seen."""
+    with closing(storage.connect(migrated)) as connection, closing(storage.connect(migrated)) as server:
+        with storage.read_only(connection) as reading:
+            before = reading.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+            with storage.write(server) as handle:
+                handle.execute("INSERT INTO settings (key, value) VALUES ('meanwhile', '1')")
+            during = reading.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+
+        assert during == before
+        assert connection.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == before + 1
+
+
 def _sqlite_calls(path: Path, *names: str) -> list[int]:
     """Lines calling `sqlite3.<name>`, or passing `detect_types`, which is how adapters get switched on.
     Parsed, not grepped: a docstring may say it."""
