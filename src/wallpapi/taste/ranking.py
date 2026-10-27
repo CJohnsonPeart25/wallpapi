@@ -43,20 +43,24 @@ def rank(
     *,
     radius: float,
     decay: float,
+    own_evidence: bool = True,
 ) -> Ranking:
     """**Score** every candidate against the decided Items.
 
     Absolute Evidence resolves latest-wins per Item (`resolution.resolve`), and the decided Items are those
-    standing at a non-zero value, as columns in the order the Evidence first names them. `similarity` is
-    called exactly once, for the whole candidates x decided matrix (Invariant 2), even when nothing is
-    decided; a matrix of any other shape raises `ValueError`. Relative Evidence is accepted and, in the MVP,
-    ignored.
+    standing at a non-zero value, as columns in **Item** key order, whatever order the Evidence names them in:
+    a **Score** is a sum over the columns, and the same floats summed in another order can differ in the last
+    bit. `similarity` is called exactly once, for the whole candidates x decided matrix (Invariant 2), even
+    when nothing is decided; a matrix of any other shape raises `ValueError`. Relative Evidence is accepted
+    and, in the MVP, ignored.
 
-    A candidate that is itself decided is scored against its own Evidence, at distance 0. Holding it out is
-    the caller's choice.
+    A candidate that is itself decided is scored against its own Evidence, at distance 0, unless
+    `own_evidence` is `False`: then its own column weighs exactly 0 for it, at any radius, and every other
+    column still counts. The evaluation asks for that, so an **Item** is never scored against its own
+    Evidence; Batches keeps the default.
     """
     standing = resolve(evidence)
-    decided = [item for item, piece in standing.items() if piece.strength != 0]
+    decided = sorted(item for item, piece in standing.items() if piece.strength != 0)
     similarities = similarity(candidates, decided)
     if similarities.shape != (len(candidates), len(decided)):
         raise ValueError(
@@ -64,13 +68,18 @@ def rank(
             f"{len(candidates)} x {len(decided)} candidates by decided Items"
         )
     values = [standing[item].strength for item in decided]
-    return Ranking(scores=_scores(similarities, values, radius, decay))
+    own = None if own_evidence else _same(candidates, decided)
+    return Ranking(scores=_scores(similarities, values, radius, decay, own))
 
 
 def _scores(
-    similarities: NDArray[np.floating], values: Sequence[float], radius: float, decay: float
+    similarities: NDArray[np.floating],
+    values: Sequence[float],
+    radius: float,
+    decay: float,
+    own: NDArray[np.bool_] | None = None,
 ) -> tuple[float, ...]:
-    """The masked exponential over a candidates x decided matrix.
+    """The masked exponential over a candidates x decided matrix, `own` marking the weights to drop.
 
     float64, not the matrix's float32: a **Zone** is decided on the *sign* of a sum of values up to
     +/-100, which is exactly what float32 cancellation eats first.
@@ -79,6 +88,8 @@ def _scores(
     # Masked rather than clipped: beyond the radius a decided Item contributes nothing at all, which is not
     # the same as contributing `exp(-decay * radius)`.
     weights = np.where(distance <= radius, np.exp(-decay * distance), 0.0)
+    if own is not None:
+        weights[own] = 0.0
     # An elementwise multiply and a row sum rather than `weights @ values`, which would be the obvious
     # spelling and is wrong here. A BLAS matrix-vector product may reorder its terms and use fused
     # multiply-add, so a candidate equally similar to a **Favourite** and to a **Ban** comes out at a few
@@ -87,3 +98,14 @@ def _scores(
     # already candidates x decided, and this multiplies it in place rather than allocating again.
     weights *= np.asarray(values, dtype=np.float64)
     return tuple(weights.sum(axis=1).tolist())
+
+
+def _same(candidates: Sequence[str], decided: Sequence[str]) -> NDArray[np.bool_]:
+    """The candidates x decided mask of each candidate's own column."""
+    columns = {item: index for index, item in enumerate(decided)}
+    own = np.zeros((len(candidates), len(decided)), dtype=np.bool_)
+    for row, item in enumerate(candidates):
+        column = columns.get(item)
+        if column is not None:
+            own[row, column] = True
+    return own

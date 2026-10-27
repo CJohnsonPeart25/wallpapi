@@ -269,7 +269,7 @@ class Embeddings:
             unembedded = np.zeros((len(pool), len(decided)), dtype=np.float32)
         else:
             unembedded = self._fallback(pool, decided)
-        embedded = self._embedded(pool, decided)
+        embedded = self._embedded([w.id for w in pool], [w.id for w in decided])
         if embedded is None:
             return Measured(unembedded, CLIP_SPACE if opened else FALLBACK_SPACE)
         mapped, both = embedded
@@ -278,32 +278,52 @@ class Embeddings:
             return Measured(blended, CLIP_SPACE)
         return Measured(blended, BLENDED_SPACE if bool(both.any()) else FALLBACK_SPACE)
 
+    def stored_similarities(self, pool_ids: Sequence[str], decided_ids: Sequence[str]) -> NDArray[np.float32]:
+        """`similarities` as it answers once the model is open, whatever state the model is in, by
+        **Wallpaper** id: the mapped cosine where both sides have an **Embedding** and 0.0 where either has
+        none (ADR 0024). Reads the store and nothing else: it never opens, fetches or embeds, and never asks
+        the fallback, so a command can use it without the model.
+        """
+        embedded = self._embedded(pool_ids, decided_ids)
+        if embedded is None:
+            return np.zeros((len(pool_ids), len(decided_ids)), dtype=np.float32)
+        mapped, both = embedded
+        return np.clip(np.where(both, mapped, 0.0), 0.0, 1.0).astype(np.float32)
+
+    def unembedded(self, wallpaper_ids: Sequence[str]) -> set[str]:
+        """Those of `wallpaper_ids` with no **Embedding** `similarities` would use: none stored, or one of
+        another width or all zeros."""
+        held = self._store.vectors_for(wallpaper_ids)
+        width = next(iter(held.values())).size if held else 0
+        _, known = _rows(wallpaper_ids, held, width)
+        return {w for w, embedded in zip(wallpaper_ids, known, strict=True) if not embedded}
+
     def near_duplicates(self, pool: Sequence[Wallpaper], banned: Sequence[Wallpaper]) -> NDArray[np.bool_]:
         """A `len(pool)` x `len(banned)` mask of the pairs that are one image reposted (ADR 0021): both
         sides embedded and `clip.near_duplicates`. The fallback never enters it, because flat-colour pairs
         score 1.0 there.
         """
-        embedded = self._embedded(pool, banned)
+        embedded = self._embedded([w.id for w in pool], [w.id for w in banned])
         if embedded is None:
             return np.zeros((len(pool), len(banned)), dtype=np.bool_)
         mapped, both = embedded
         return both & clip.near_duplicates(mapped)
 
     def _embedded(
-        self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]
+        self, pool_ids: Sequence[str], decided_ids: Sequence[str]
     ) -> tuple[NDArray[np.float32], NDArray[np.bool_]] | None:
         """The mapped cosine of every pair and the mask of pairs where both sides have an **Embedding**, in
         one lookup; `None` when there is nothing to compare.
         """
-        if not pool or not decided:
+        if not pool_ids or not decided_ids:
             return None
-        held = self._store.vectors_for([w.id for w in pool] + [w.id for w in decided])
+        held = self._store.vectors_for([*pool_ids, *decided_ids])
         if not held:
             return None
         width = next(iter(held.values())).size
 
-        pool_rows, pool_known = _rows([w.id for w in pool], held, width)
-        decided_rows, decided_known = _rows([w.id for w in decided], held, width)
+        pool_rows, pool_known = _rows(pool_ids, held, width)
+        decided_rows, decided_known = _rows(decided_ids, held, width)
         mapped = clip.similarities(pool_rows, decided_rows)
         return mapped, pool_known[:, None] & decided_known[None, :]
 
