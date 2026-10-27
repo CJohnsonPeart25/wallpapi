@@ -471,8 +471,8 @@ def batches_rig(
 @dataclass
 class LineupRig(BatchesRig):
     """`Lineups` beside the `Batches` it draws with, over the same database and fakes: the **Line-up** is
-    drawn as a **Batch** is, by `Batches.ranked` and the **Embeddings**, so a **Batch** can be live beside it.
-    `next` is still the **Batch**; `lineup` is the **Line-up**."""
+    drawn from `Batches.ranked` with the **Embeddings** and its own **Wear**, so a **Batch** can be live
+    beside it. `next` is still the **Batch**; `lineup` is the **Line-up**."""
 
     lineups_minted: list[str] = field(default_factory=list[str])
 
