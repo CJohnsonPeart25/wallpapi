@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from wallpapi.model import Verdict
+from wallpapi.model import Verdict, Zone
 from wallpapi.taste.clock import Clock
 from wallpapi.taste.judgement import (
     Context,
@@ -63,10 +63,25 @@ SCREEN_HISTORY: Final = "history"
 """The **Screens** wallpapi asks on today; `compare` comes with the **Line-up**."""
 
 PROVENANCE_ZONE: Final = "zone"
-"""The **Zone** an **Item** was drawn from. The **Slot**'s **Zone** will sit beside it as `slot_zone`."""
+"""The **Zone** an **Item** was drawn from."""
+
+PROVENANCE_SLOT_ZONE: Final = "slot_zone"
+"""The **Zone** the **Slot** an **Item** filled was meant for: another than `zone` after a **Shortfall**."""
 
 PROVENANCE_MIX: Final = "mix"
 """The name of the **Mix** the screen was drawn with."""
+
+CONTEXT_THEME: Final = "theme"
+"""The **Context** field naming the page's theme as the browser resolved it: `Theme`'s values."""
+
+
+class Theme(StrEnum):
+    """The page's theme when a screen was answered, `system` already resolved by the browser. Never a
+    setting: it describes the moment, and is recorded only where the page sent it."""
+
+    LIGHT = "light"
+    DARK = "dark"
+
 
 HISTORY_PAGE_SIZE = 100
 """Rows on one page of **History**: it grows by hundreds of **Ignores** a week and needs *a* bound."""
@@ -144,14 +159,29 @@ def wallpaper_id(key: str) -> str:
     return bare
 
 
-def tile_response(verdict: Verdict | None) -> TileResponse:
+def provenance(*, zone: Zone | None, slot_zone: Zone | None, mix: str | None) -> Provenance:
+    """Why a drawn tile was on its screen, in wallpapi's labels: the **Zone** it was drawn from, the **Zone**
+    its **Slot** was meant for, and the **Mix**, each only where the screen knows it. For every screen drawn
+    from a **Mix**, a **Batch** or a **Line-up**."""
+    labels = {PROVENANCE_ZONE: zone, PROVENANCE_SLOT_ZONE: slot_zone, PROVENANCE_MIX: mix}
+    return {name: str(label) for name, label in labels.items() if label is not None}
+
+
+def context(*, theme: Theme | None) -> Context:
+    """The **Context** of a screen answered on the page: the theme where the page sent one, and nothing for
+    what it did not. For every screen the page answers, a **Batch** or a **Line-up**."""
+    return {} if theme is None else {CONTEXT_THEME: theme.value}
+
+
+def tile_response(verdict: Verdict | None, *, preview_opened: bool = False) -> TileResponse:
     """A grid tile's version 1 **Response** from wallpapi's four-word `Verdict`: a **Favourite** is the flag,
-    the other three are `taste/`'s **Verdicts**, and `None` is an unmarked tile."""
+    the other three are `taste/`'s **Verdicts**, and `None` is an unmarked tile. `preview_opened` sits
+    beside whichever it is."""
     if verdict is None:
-        return TileResponse()
+        return TileResponse(preview_opened=preview_opened)
     if verdict is Verdict.FAVOURITE:
-        return TileResponse(favourite=True)
-    return TileResponse(verdict=GridVerdict(verdict.value))
+        return TileResponse(favourite=True, preview_opened=preview_opened)
+    return TileResponse(verdict=GridVerdict(verdict.value), preview_opened=preview_opened)
 
 
 def append(write: sqlite3.Connection, judgement: Judgement) -> bool:
@@ -184,7 +214,7 @@ def append(write: sqlite3.Connection, judgement: Judgement) -> bool:
                 judgement.app,
                 judgement.app_version,
                 submitted,
-                None if judgement.ranking is None else _json(_stamp_fields(judgement.ranking)),
+                None if judgement.ranking is None else stamp_text(judgement.ranking),
                 _json(judgement.context),
             ),
         ).rowcount
@@ -230,7 +260,7 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
             response=_judgement_response(instrument, row["submitted"]),
             utc_offset=None if row["utc_offset"] is None else dt.timedelta(seconds=int(row["utc_offset"])),
             first_shown_at=None if row["first_shown_at"] is None else _moment(row["first_shown_at"]),
-            ranking=None if row["ranking"] is None else _stamp(row["ranking"]),
+            ranking=None if row["ranking"] is None else stamp_from_text(row["ranking"]),
             context=_context(row["context"]),
             format_version=int(row["format_version"]),
         )
@@ -444,9 +474,11 @@ def _whole_seconds(offset: dt.timedelta) -> int:
     return int(seconds)
 
 
-def _stamp_fields(stamp: RankingStamp) -> dict[str, object]:
+def stamp_text(stamp: RankingStamp) -> str:
+    """A **Ranking stamp** as the **Evidence log** keeps it, JSON text: also how a screen waiting to be
+    answered keeps the stamp it was drawn under until its **Judgement** carries it."""
     read = stamp.read
-    return {
+    fields = {
         "read": None
         if read is None
         else {"recorded_at": instant(read.recorded_at), "judgement_id": read.judgement_id},
@@ -456,9 +488,11 @@ def _stamp_fields(stamp: RankingStamp) -> dict[str, object]:
         "distillation": stamp.distillation,
         "lens": stamp.lens,
     }
+    return _json(fields)
 
 
-def _stamp(stored: object) -> RankingStamp:
+def stamp_from_text(stored: object) -> RankingStamp:
+    """The **Ranking stamp** `stamp_text` wrote."""
     fields = json.loads(str(stored))
     read = fields["read"]
     return RankingStamp(

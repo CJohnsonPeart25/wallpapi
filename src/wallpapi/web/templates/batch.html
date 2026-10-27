@@ -22,16 +22,24 @@
   grid's check is on `#batch` itself: a tile or bulk swap inside it bubbles its own event up through here.
 #}
 {% block actions %}
+  {# The page's theme as the browser resolved it, posted with a submission or a skip for the Judgement's
+     Context: `data-theme` when the theme button chose one, otherwise what the OS asked Pico for. Never
+     stored as a setting, and the server drops anything but light or dark. #}
+  {% set theme_value -%}
+    js:{theme: document.documentElement.dataset.theme
+      || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')}
+  {%- endset %}
   <li>
     {% include "mix.html" %}
   </li>
   <li>
-    {# Records nothing and asks nothing: the tiles stay in the Pool, and the refetch is the same as a
-       submission's (ADR 0026). #}
+    {# Decides nothing and asks nothing: the screen is recorded as passed over, the tiles stay in the
+       Pool, and the refetch is the same as a submission's (ADR 0026). #}
     <form
       data-skip
       hx-post="/skip"
       hx-include="#batch-id"
+      hx-vals="{{ theme_value }}"
       hx-target="#batch-banner"
       hx-disabled-elt="find button"
     >
@@ -45,6 +53,7 @@
       data-submit
       hx-post="/submit"
       hx-include="#batch-id"
+      hx-vals="{{ theme_value }}"
       hx-target="#batch-banner"
       hx-disabled-elt="find button"
     >

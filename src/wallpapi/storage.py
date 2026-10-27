@@ -17,7 +17,7 @@ from wallpapi import evidence_log, settings
 from wallpapi.taste.judgement import Judgement, Shown, instant
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -157,6 +157,9 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         # append-only by trigger, and the **Mix** a **Batch** was minted from. The **Decision log** is
         # converted into it and left as it was, unread.
         (*((statement, ()) for statement in _MIGRATION_12), _convert_decision_log, *seed_settings),
+        # 13: what a **Batch** records beyond its tiles: the **Zone** each **Slot** was meant for, the
+        # **Ranking stamp** it was drawn under, and which tiles' previews were opened on its **Draft Batch**.
+        (*((statement, ()) for statement in _MIGRATION_13), *seed_settings),
     )
 
 
@@ -453,6 +456,25 @@ def _legacy_entry(shown: Shown) -> str:
     if not isinstance(response, LegacyTileResponse):
         raise TypeError(f"migration 12 converts only legacy tiles, not {response!r}")
     return response.entry.value
+
+
+_MIGRATION_13 = (
+    "ALTER TABLE batch_wallpapers ADD COLUMN slot_zone TEXT",
+    "ALTER TABLE batches ADD COLUMN ranking TEXT",
+    """
+CREATE TABLE draft_preview (
+    batch_id     TEXT NOT NULL REFERENCES batches (id),
+    wallpaper_id TEXT NOT NULL REFERENCES wallpapers (id),
+    PRIMARY KEY (batch_id, wallpaper_id)
+)
+""",
+)
+"""Migration 13's schema. `slot_zone` is the **Zone** a tile's **Slot** was meant for, beside `zone`, the one
+it was drawn from; `NULL` for a **Batch** minted before it. `ranking` is the **Ranking stamp** as the
+**Evidence log** keeps it, JSON text, `NULL` when nothing ranked the **Batch** or it was minted before this.
+`draft_preview` is the half of the **Draft Batch** that sits beside a tile's one mark: a row per tile whose
+preview was opened, set and never cleared, and dropped with the rest of the **Draft Batch**.
+"""
 
 
 _SEED_SETTING = "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING"

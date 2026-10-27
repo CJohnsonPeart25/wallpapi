@@ -25,6 +25,11 @@
   clicks the matching control on the tile behind, so there is one route, one swap and one marked state.
   After any swap the rail reads the tile's mark back, which is how the ring and the rail agree. Marking
   does not dismiss the preview.
+
+  Opening it is recorded on the **Draft Batch**, so it survives a reload and goes in with the tile at
+  submission. The post is an htmx form inside the dialog, outside anything htmx swaps: `open` sets the
+  tile and fires its `preview-opened` event, and the form posts it with the **Batch** ID. Nothing comes
+  back to swap.
 #}
 <dialog
   id="preview-dialog"
@@ -47,6 +52,7 @@
       this.$refs.source.setAttribute('href', tile.dataset.pageUrl);
       this.sync();
       this.$el.showModal();
+      this.$nextTick(() => this.$refs.opened.dispatchEvent(new Event('preview-opened')));
     },
     dismiss(event) {
       if (document.fullscreenElement) {
@@ -75,6 +81,16 @@
   x-on:close="closed()"
   x-on:htmx:after-settle.camel.window="sync()"
 >
+  <form
+    x-ref="opened"
+    hidden
+    hx-post="/draft/preview"
+    hx-include="#batch-id"
+    hx-trigger="preview-opened"
+    hx-swap="none"
+  >
+    <input type="hidden" name="wallpaper_id" x-bind:value="showing" />
+  </form>
   <article class="preview">
     <img x-ref="image" alt="" />
     <div class="preview-bar">

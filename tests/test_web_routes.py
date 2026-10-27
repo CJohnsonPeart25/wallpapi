@@ -24,6 +24,7 @@ from wallpapi.batches import SubmissionRefused
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
+from wallpapi.taste.verdict_grid import GridResponse, TileResponse
 from wallpapi.web.app import REFUSALS
 
 Web = tuple[Harness, TestClient]
@@ -179,8 +180,9 @@ def test_posting_the_same_batch_twice_is_refused_and_still_refetches(web: Web) -
     assert [len(j.shown) for j in evidence_log.judgements(harness.connect())] == [8]
 
 
-def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None:
-    """ADR 0026: the same refetch as a submission, and a new **Batch** behind it, but nothing in the log."""
+def test_a_skip_decides_nothing_says_so_and_triggers_a_refetch(web: Web) -> None:
+    """ADR 0026: the same refetch as a submission, and a new **Batch** behind it; the log holds the screen,
+    passed over, and nothing in it is decided."""
     harness, client = web
     shown = batch_id_of(client.get("/batch").text)
 
@@ -189,9 +191,9 @@ def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None
 
     assert response.status_code == HTTPStatus.OK
     assert response.headers["HX-Trigger"] == "batch-submitted"
-    assert "Skipped — nothing was recorded." in response.text
+    assert "Skipped — nothing was decided." in response.text
     assert batch_id_of(following) != shown
-    assert evidence_log.judgements(harness.connect()) == []
+    assert [j.response for j in evidence_log.judgements(harness.connect())] == [GridResponse(submitted=False)]
 
 
 def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(web: Web) -> None:
@@ -205,6 +207,55 @@ def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(w
     assert again.status_code == HTTPStatus.NOT_FOUND
     assert "That batch is no longer live here" in again.text
     assert again.headers["HX-Trigger"] == "batch-submitted"
+
+
+def test_a_preview_opened_is_posted_without_a_swap_survives_a_reload_and_is_submitted_on_its_tile(
+    web: Web,
+) -> None:
+    """What the preview posts when it opens: nothing comes back to swap, and the flag is server state, so the
+    page reloaded and submitted still carries it, on that tile only."""
+    harness, client = web
+    batch_id = batch_id_of(client.get("/batch").text)
+    shown = live(harness).wallpapers
+    opened = shown[1].id
+
+    posted = client.post("/draft/preview", data={"batch_id": batch_id, "wallpaper_id": opened})
+    reloaded = batch_id_of(client.get("/batch").text)
+    client.post("/submit", data={"batch_id": reloaded})
+
+    assert posted.status_code == HTTPStatus.NO_CONTENT
+    assert posted.text == ""
+    assert reloaded == batch_id
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert [s.response for s in judgement.shown] == [
+        TileResponse(preview_opened=w.id == opened) for w in shown
+    ]
+
+
+@pytest.mark.parametrize("path", ["/submit", "/skip"])
+@pytest.mark.parametrize(
+    ("posted", "context"),
+    [
+        pytest.param({"theme": "dark"}, {"theme": "dark"}, id="dark"),
+        pytest.param({"theme": "light"}, {"theme": "light"}, id="light"),
+        pytest.param({}, {}, id="none posted"),
+        pytest.param({"theme": "system"}, {}, id="system unresolved is dropped"),
+        pytest.param({"theme": "sepia"}, {}, id="anything else is dropped"),
+    ],
+)
+def test_submit_and_skip_store_the_posted_theme_and_drop_anything_but_light_or_dark(
+    web: Web, path: str, posted: dict[str, str], context: dict[str, str]
+) -> None:
+    """The theme rides on the post as an htmx value; it is validated here and never refuses the post."""
+    harness, client = web
+    batch_id = batch_id_of(client.get("/batch").text)
+    stored = settings.get(harness.connect())
+
+    response = client.post(path, data={"batch_id": batch_id, **posted})
+
+    assert response.status_code == HTTPStatus.OK
+    assert [j.context for j in evidence_log.judgements(harness.connect())] == [context]
+    assert settings.get(harness.connect()) == stored, "the theme is never a setting"
 
 
 HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus, str]] = [
@@ -249,6 +300,12 @@ HAND_MADE_POSTS: list[tuple[str, Callable[[str], dict[str, str]], HTTPStatus, st
     (
         "/history/verdict",
         lambda _: {"wallpaper_id": "nope", "verdict": "like"},
+        HTTPStatus.NOT_FOUND,
+        "unknown wallpaper",
+    ),
+    (
+        "/draft/preview",
+        lambda batch: {"batch_id": batch, "wallpaper_id": "nope"},
         HTTPStatus.NOT_FOUND,
         "unknown wallpaper",
     ),

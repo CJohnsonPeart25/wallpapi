@@ -3,8 +3,10 @@
 
   "system" is no `data-theme` on <html> at all, which is Pico following the OS; the other two set it.
   The choice is kept in localStorage because it is a preference of this browser on this machine, not a
-  setting of wallpapi's — it is not in the database, and the server never hears of it. The inline
-  script in base.html applies it before first paint; this only changes it.
+  setting of wallpapi's — it is not in the settings, and the server never hears the choice. What it does
+  hear is the theme the page was in, light or dark with "system" resolved, posted with a submission or a
+  skip as a fact about that moment (batch.html). The inline script in base.html applies the choice before
+  first paint; this only changes it.
 #}
 <button
   type="button"

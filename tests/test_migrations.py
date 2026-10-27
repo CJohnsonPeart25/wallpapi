@@ -497,3 +497,40 @@ def test_scores_and_zones_are_the_same_after_the_conversion(db_path: Path) -> No
         "wp0008": Zone.UNKNOWN,
         "wp0009": Zone.BANGER,
     }
+
+
+def test_a_batch_live_across_migration_13_has_no_slot_zone_stamp_or_preview_and_submits_without_them(
+    db_path: Path,
+) -> None:
+    """A **Batch** minted at version 12 knows the **Zone** each tile came from and its **Mix**, but not its
+    **Slots** or its **Ranking stamp**: they are left absent, never guessed, and its **Judgement** says so."""
+    with raw_connection(db_path) as connection:
+        storage.migrate(connection, to=12)
+        with storage.write(connection) as write:
+            write.execute(
+                "INSERT INTO wallpapers"
+                " VALUES ('wp0000', 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')"
+            )
+            write.execute(
+                "INSERT INTO batches (id, created_at, size, mix) VALUES ('b1', ?, 1, 'explore')",
+                (iso_utc(T),),
+            )
+            write.execute(
+                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone)"
+                " VALUES ('b1', 'wp0000', 0, 'unknown')"
+            )
+
+    with batches_rig(db_path) as rig:
+        live = rig.next()
+        rig.submit("b1")
+        (judgement,) = rig.logged()
+
+    assert (live.id, live.zones, live.slots, live.ranking, live.previewed) == (
+        "b1",
+        {"wp0000": Zone.UNKNOWN},
+        {},
+        None,
+        frozenset(),
+    )
+    assert [shown.provenance for shown in judgement.shown] == [{"zone": "unknown", "mix": "explore"}]
+    assert judgement.ranking is None

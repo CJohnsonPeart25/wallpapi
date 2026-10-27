@@ -1,11 +1,13 @@
 """**Batches**: drawing a **Batch** from the **Pool**, its **Draft Batch**, and submitting it into the
-**Evidence log** as one **Judgement**. Nothing else reads or writes `batches`, `batch_wallpapers` or
-`draft_batch`.
+**Evidence log** as one **Judgement**. Nothing else reads or writes `batches`, `batch_wallpapers`,
+`draft_batch` or `draft_preview`.
 
 A **Batch** persists until it is submitted (ADR 0002), skipped (ADR 0026) or discarded by a **Pool reset**
-(ADR 0025); only submitting records anything. Tile posts set a **Draft Batch** row and never toggle; absence
-is an unmarked tile, which a submitted **Judgement** reads as an **Ignore**, and an **Ignore** is never
-drafted. A **Batch** is submitted once. Every write takes the caller's write handle, behind one claim check.
+(ADR 0025). Submitting and skipping each record one **Judgement**, and only submitting decides anything; a
+reset records nothing. Tile posts set a **Draft Batch** row and never toggle; absence is an unmarked
+tile, which a submitted **Judgement** reads as an **Ignore**, and an **Ignore** is never drafted. Opening a
+tile's preview sets a row of its own beside the mark. A **Batch** is submitted once. Every write takes the
+caller's write handle, behind one claim check.
 """
 
 from __future__ import annotations
@@ -23,16 +25,17 @@ from numpy.typing import NDArray
 
 from wallpapi import evidence_log, pool, settings, storage
 from wallpapi.allocation import PERCENT, ScoredWallpaper, draw
+from wallpapi.evidence_log import Theme
 from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock, iso_utc
 from wallpapi.taste.evidence import AbsoluteEvidence, Evidence
-from wallpapi.taste.judgement import Judgement, Provenance, Shown
+from wallpapi.taste.judgement import Judgement, LogPosition, Provenance, RankingStamp, Shown
 from wallpapi.taste.ranking import rank
 from wallpapi.taste.reductions import evidence
 from wallpapi.taste.rng import SeededRandom
-from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,11 +54,14 @@ class UnknownShort:
 class Batch:
     """The **Wallpapers** shown at once, with the identity the submission quotes back.
 
-    `drafts` holds only marked **Wallpapers**: absence is an unmarked tile. `zones` is the **Zone** each was
-    drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones** existed. `mix`
-    is the name of the **Mix** it was drawn with, `None` for a **Batch** minted before migration 12.
-    `unknown_short` is set only on the **Batch** as minted, from the classification the mint computed, and is
-    never stored: a reload has nothing to say (ADR 0023).
+    `drafts` holds only marked **Wallpapers**: absence is an unmarked tile. `previewed` is every tile whose
+    preview was opened, the other half of the **Draft Batch**, kept beside the mark. `zones` is the **Zone**
+    each was drawn from at mint time, never recomputed; absent for a **Batch** minted before **Zones**
+    existed. `slots` is the **Zone** each one's **Slot** was meant for, absent for a **Batch** minted
+    before migration 13. `mix` is the name of the **Mix** it was drawn with, `None` for a **Batch** minted
+    before migration 12. `ranking` is the **Ranking stamp** it was drawn under, recorded at mint; `None`
+    for a **Batch** minted before migration 13. `unknown_short` is set only on the **Batch** as minted,
+    from the classification the mint computed, and is never stored: a reload has nothing to say (ADR 0023).
     """
 
     id: str
@@ -63,9 +69,22 @@ class Batch:
     created_at: dt.datetime
     wallpapers: tuple[Wallpaper, ...]
     drafts: Mapping[str, Verdict]
+    previewed: frozenset[str]
     zones: Mapping[str, Zone]
+    slots: Mapping[str, Zone]
     mix: str | None = None
+    ranking: RankingStamp | None = None
     unknown_short: UnknownShort | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class Ranked:
+    """The classified **Pool** and the **Ranking stamp** of the ranking that scored it, for any screen drawn
+    from it. `stamp` is `None` when nothing was ranked: an empty **Pool**, or nothing in it but **Bans** and
+    their near-duplicates."""
+
+    scored: tuple[ScoredWallpaper, ...]
+    stamp: RankingStamp | None
 
 
 @dataclass(frozen=True)
@@ -153,7 +172,8 @@ class Batches:
         if existing is not None:
             return existing
 
-        classified = self.classify(connection)
+        ranked = self.ranked(connection)
+        classified = ranked.scored
         if not classified:
             return self._nothing_to_show()
         # From the one sequence, so a row of `vectors` cannot drift from its **Wallpaper**.
@@ -170,14 +190,21 @@ class Batches:
             if contended is not None:
                 return contended
             write.execute(
-                "INSERT INTO batches (id, created_at, size, mix) VALUES (?, ?, ?, ?)",
-                (batch_id, iso_utc(created_at), len(chosen), mix.name),
+                "INSERT INTO batches (id, created_at, size, mix, ranking) VALUES (?, ?, ?, ?, ?)",
+                (
+                    batch_id,
+                    iso_utc(created_at),
+                    len(chosen),
+                    mix.name,
+                    None if ranked.stamp is None else evidence_log.stamp_text(ranked.stamp),
+                ),
             )
             write.executemany(
-                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone) VALUES (?, ?, ?, ?)",
+                "INSERT INTO batch_wallpapers (batch_id, wallpaper_id, position, zone, slot_zone)"
+                " VALUES (?, ?, ?, ?, ?)",
                 [
-                    (batch_id, scored.wallpaper.id, position, scored.zone.value)
-                    for position, scored in enumerate(chosen)
+                    (batch_id, tile.wallpaper.id, position, tile.zone.value, tile.slot.value)
+                    for position, tile in enumerate(chosen)
                 ],
             )
             # Resolved under the write lock, so a **History** edit cannot land between reading a **Verdict**
@@ -200,14 +227,22 @@ class Batches:
             created_at=created_at,
             wallpapers=tuple(scored.wallpaper for scored in chosen),
             drafts=drafts,
-            zones={scored.wallpaper.id: scored.zone for scored in chosen},
+            previewed=frozenset(),
+            zones={tile.wallpaper.id: tile.zone for tile in chosen},
+            slots={tile.wallpaper.id: tile.slot for tile in chosen},
             mix=mix.name,
+            ranking=ranked.stamp,
             unknown_short=_unknown_short(mix, classified, size),
         )
 
     def classify(self, connection: sqlite3.Connection) -> tuple[ScoredWallpaper, ...]:
         """Every **Pool** **Wallpaper** that is neither **Banned** nor a near-duplicate of a **Ban**, with its
-        **Score** and **Zone**, in one call.
+        **Score** and **Zone**, in one call: `ranked` without the stamp."""
+        return self.ranked(connection).scored
+
+    def ranked(self, connection: sqlite3.Connection) -> Ranked:
+        """The classified **Pool**, and the **Ranking stamp** that says what ranked it: the newest
+        **Judgement** ranking read, the **Space** the similarity call answered in, and the radius and decay.
 
         Ranking (`taste/`) gives the **Scores**, from the Evidence `taste/`'s **Reductions** make of every
         **Judgement** in the **Evidence log**; its decided columns are every **Item** standing at a non-zero
@@ -217,7 +252,7 @@ class Batches:
         """
         members = pool.members(connection)
         if not members:
-            return ()
+            return Ranked(scored=(), stamp=None)
         judged = pool.decided(connection)
         resolved = evidence_log.resolve(connection, [w.id for w in members] + [w.id for w in judged])
 
@@ -227,15 +262,19 @@ class Batches:
             reposts = self._embeddings.near_duplicates(candidates, banned).any(axis=1)
             candidates = [w for w, repost in zip(candidates, reposts, strict=True) if not repost]
         if not candidates:
-            return ()
+            return Ranked(scored=(), stamp=None)
 
+        log = evidence_log.judgements(connection)
         # In **Item** key order, so the decided columns come in the order `pool.decided` gives the
         # **Wallpapers** and every **Score**'s sum runs in the order it always has.
-        found = sorted(evidence(evidence_log.judgements(connection)), key=_column_order)
+        found = sorted(evidence(log), key=_column_order)
         by_key = {evidence_log.item_key(w.id): w for w in [*candidates, *judged]}
+        spaces: list[str] = []
 
         def similarity(rows: Sequence[str], columns: Sequence[str]) -> NDArray[np.float32]:
-            return self._embeddings.similarities([by_key[k] for k in rows], [by_key[k] for k in columns])
+            measured = self._embeddings.measure([by_key[k] for k in rows], [by_key[k] for k in columns])
+            spaces.append(measured.space)
+            return measured.matrix
 
         current = settings.get(connection)
         ranking = rank(
@@ -245,25 +284,89 @@ class Batches:
             radius=current.similarity_radius,
             decay=current.similarity_decay,
         )
-        return tuple(
+        # `rank` calls the similarity function exactly once, even with nothing decided (Invariant 2).
+        (space,) = spaces
+        newest = log[-1] if log else None
+        stamp = RankingStamp(
+            read=None if newest is None else LogPosition(newest.recorded_at, newest.id),
+            space=space,
+            radius=current.similarity_radius,
+            decay=current.similarity_decay,
+        )
+        scored = tuple(
             ScoredWallpaper(wallpaper=wallpaper, score=score, zone=zone_of(score))
             for wallpaper, score in zip(candidates, ranking.scores, strict=True)
         )
+        return Ranked(scored=scored, stamp=stamp)
 
-    def submit(self, write: sqlite3.Connection, batch_id: str) -> Submitted | SubmissionRefused:
+    def submit(
+        self, write: sqlite3.Connection, batch_id: str, *, theme: Theme | None = None
+    ) -> Submitted | SubmissionRefused:
         """Record the **Batch** in the **Evidence log** as one **Judgement**, inside the caller's write
         transaction.
 
         Claim the **Batch**; append a submitted verdict grid **Judgement** of every tile in on-screen order,
-        each with its mark or unmarked, the **Zone** it was drawn from and the **Mix** as **Provenance**, its
-        mint time as first shown and the clock's local offset; retire everything shown from the **Pool** (ADR
-        0016); clear the **Draft Batch**. An unmarked tile is recorded as one, and read as an **Ignore**.
-        `BEGIN IMMEDIATE` took the write lock before the claim is read, so a second tab cannot split them.
+        each with its mark or unmarked and whether its preview was opened (`_record` says what else); retire
+        everything shown from the **Pool** (ADR 0016); clear the **Draft Batch**. An unmarked tile is
+        recorded as one, and read as an **Ignore**. `theme` is the page's, into the **Context**. `BEGIN
+        IMMEDIATE` took the write lock before the claim is read, so a second tab cannot split them.
         """
         claimed = _claim(write, batch_id)
         if isinstance(claimed, SubmissionRefused):
             return claimed
+        recorded_at = self._record(
+            write,
+            claimed,
+            {
+                w.id: evidence_log.tile_response(
+                    claimed.drafts.get(w.id), preview_opened=w.id in claimed.previewed
+                )
+                for w in claimed.wallpapers
+            },
+            GridResponse(submitted=True),
+            theme,
+        )
         shown = [w.id for w in claimed.wallpapers]
+        pool.retire(write, shown)
+        write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
+        write.execute("DELETE FROM draft_preview WHERE batch_id = ?", (batch_id,))
+        write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (iso_utc(recorded_at), batch_id))
+        ignored = sum(1 for w in shown if w not in claimed.drafts)
+        return Submitted(batch_id=batch_id, recorded=len(shown), ignored=ignored)
+
+    def skip(
+        self, write: sqlite3.Connection, batch_id: str, *, theme: Theme | None = None
+    ) -> SubmissionRefused | None:
+        """Record a **Skip** of the live **Batch** `batch_id` and drop it with its tiles and **Draft Batch**
+        inside the caller's transaction, or say why not (ADR 0026).
+
+        The **Judgement** has every **Response** blank: no tile carries its mark or its preview, and the
+        screen was not submitted, so its **Reduction** gives nothing. What describes the screen is kept, as
+        `_record` writes it for a submission. Nothing leaves the **Pool**, so its tiles may be drawn again.
+        Behind the same claim as a submission, so a stale tab cannot skip what another has submitted.
+        """
+        claimed = _claim(write, batch_id)
+        if isinstance(claimed, SubmissionRefused):
+            return claimed
+        self._record(
+            write, claimed, {w.id: TileResponse() for w in claimed.wallpapers}, GridResponse(), theme
+        )
+        _drop(write, "?", (batch_id,))
+        return None
+
+    def _record(
+        self,
+        write: sqlite3.Connection,
+        batch: Batch,
+        tiles: Mapping[str, TileResponse],
+        response: GridResponse,
+        theme: Theme | None,
+    ) -> dt.datetime:
+        """Append the verdict grid **Judgement** of `batch` answered with `tiles` and `response`, and say
+        when it was recorded. Every tile in on-screen order with its **Provenance**, the **Ranking stamp**
+        the **Batch** was minted under, its mint time as first shown, the clock's local offset, and the page's
+        `theme` in the **Context** where it sent one."""
+        shown = [w.id for w in batch.wallpapers]
         now = self._clock.now()
         recorded_at = evidence_log.recorded_time(write, shown, now)
         evidence_log.append(
@@ -271,27 +374,18 @@ class Batches:
             Judgement(
                 instrument=VERDICT_GRID_V1,
                 screen=evidence_log.SCREEN_BATCH,
-                shown=tuple(
-                    Shown(
-                        evidence_log.item_key(w),
-                        evidence_log.tile_response(claimed.drafts.get(w)),
-                        _provenance(claimed, w),
-                    )
-                    for w in shown
-                ),
+                shown=tuple(Shown(evidence_log.item_key(w), tiles[w], _provenance(batch, w)) for w in shown),
                 recorded_at=recorded_at,
                 app=evidence_log.APP,
                 app_version=evidence_log.APP_VERSION,
-                response=GridResponse(submitted=True),
+                response=response,
                 utc_offset=self._clock.utc_offset(now),
-                first_shown_at=claimed.created_at,
+                first_shown_at=batch.created_at,
+                ranking=batch.ranking,
+                context=evidence_log.context(theme=theme),
             ),
         )
-        pool.retire(write, shown)
-        write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
-        write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (iso_utc(recorded_at), batch_id))
-        ignored = sum(1 for w in shown if w not in claimed.drafts)
-        return Submitted(batch_id=batch_id, recorded=len(shown), ignored=ignored)
+        return recorded_at
 
     def _nothing_to_show(self) -> BatchUnavailable:
         """Why the **Pool** had nothing. A recorded refill failure outranks "nothing yet"."""
@@ -310,13 +404,11 @@ def _column_order(piece: Evidence) -> str:
 
 
 def _provenance(batch: Batch, wallpaper_id: str) -> Provenance:
-    """Why a tile was on the **Batch**: the **Zone** it was drawn from and the **Mix**, each where known."""
-    labels: dict[str, str] = {}
-    if wallpaper_id in batch.zones:
-        labels[evidence_log.PROVENANCE_ZONE] = batch.zones[wallpaper_id].value
-    if batch.mix is not None:
-        labels[evidence_log.PROVENANCE_MIX] = batch.mix
-    return labels
+    """Why a tile was on the **Batch**: the **Zone** it was drawn from, its **Slot**'s and the **Mix**, each
+    where the **Batch** knows it."""
+    return evidence_log.provenance(
+        zone=batch.zones.get(wallpaper_id), slot_zone=batch.slots.get(wallpaper_id), mix=batch.mix
+    )
 
 
 def zone_of(score: float) -> Zone:
@@ -398,6 +490,26 @@ def set_all_drafts(
     return replace(claimed, drafts={w.id: verdict for w in claimed.wallpapers})
 
 
+def open_preview(write: sqlite3.Connection, batch_id: str, wallpaper_id: str) -> Batch | SubmissionRefused:
+    """Record on the **Draft Batch** that one tile's full-size preview was opened, and answer with the
+    **Batch** as it now stands.
+
+    Beside the tile's mark, never instead of it, and set rather than toggled: opening it again changes
+    nothing, and nothing clears it but the end of the **Draft Batch**. Every refusal comes before anything
+    is written.
+    """
+    claimed = _claim(write, batch_id)
+    if isinstance(claimed, SubmissionRefused):
+        return claimed
+    if wallpaper_id not in {w.id for w in claimed.wallpapers}:
+        return SubmissionRefused(reason=SubmissionRefused.Reason.NOT_IN_BATCH)
+    write.execute(
+        "INSERT INTO draft_preview (batch_id, wallpaper_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        (batch_id, wallpaper_id),
+    )
+    return replace(claimed, previewed=claimed.previewed | {wallpaper_id})
+
+
 def showing(connection: sqlite3.Connection) -> set[str]:
     """Every **Wallpaper** in an unsubmitted **Batch**: the live one, plus any a database from before
     ADR 0002 still holds.
@@ -409,24 +521,10 @@ def discard_live(write: sqlite3.Connection) -> int:
     """Drop every unsubmitted **Batch** with its tiles and **Draft Batch** inside the caller's transaction,
     and say how many: a **Pool reset**'s half (ADR 0025). All of them, so nothing is left showing.
 
-    An unsubmitted **Batch** has no **Judgement**, so nothing is recorded or left dangling. A
-    submitted one is never touched.
+    Housekeeping, not a **Judgement**: nothing is recorded, and an unsubmitted **Batch** has no
+    **Judgement** to leave dangling. A submitted one is never touched.
     """
     return _drop(write, _SELECT_UNSUBMITTED)
-
-
-def skip(write: sqlite3.Connection, batch_id: str) -> SubmissionRefused | None:
-    """Drop the live **Batch** `batch_id` with its tiles and **Draft Batch** inside the caller's
-    transaction, or say why not: a **Skip** (ADR 0026).
-
-    Nothing is recorded and nothing leaves the **Pool**, so its tiles may be drawn again. Behind the same
-    claim as a submission, so a stale tab cannot skip what another has submitted.
-    """
-    claimed = _claim(write, batch_id)
-    if isinstance(claimed, SubmissionRefused):
-        return claimed
-    _drop(write, "?", (batch_id,))
-    return None
 
 
 def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] = ()) -> int:
@@ -434,6 +532,7 @@ def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] =
     many. Children first, for the foreign keys.
     """
     write.execute(f"DELETE FROM draft_batch WHERE batch_id IN ({selection})", parameters)
+    write.execute(f"DELETE FROM draft_preview WHERE batch_id IN ({selection})", parameters)
     write.execute(f"DELETE FROM batch_wallpapers WHERE batch_id IN ({selection})", parameters)
     return write.execute(f"DELETE FROM batches WHERE id IN ({selection})", parameters).rowcount
 
@@ -441,7 +540,7 @@ def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] =
 def _claim(write: sqlite3.Connection, batch_id: str) -> Batch | SubmissionRefused:
     """The unsubmitted **Batch** `batch_id`, or why it cannot be drafted against, submitted or skipped."""
     row = write.execute(
-        "SELECT id, created_at, size, mix, submitted_at FROM batches WHERE id = ?", (batch_id,)
+        "SELECT id, created_at, size, mix, ranking, submitted_at FROM batches WHERE id = ?", (batch_id,)
     ).fetchone()
     if row is None:
         return SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
@@ -455,7 +554,8 @@ def live(connection: sqlite3.Connection) -> Batch | None:
     `Batches.next`.
     """
     row = connection.execute(
-        "SELECT id, created_at, size, mix FROM batches WHERE submitted_at IS NULL ORDER BY rowid DESC LIMIT 1"
+        "SELECT id, created_at, size, mix, ranking FROM batches WHERE submitted_at IS NULL"
+        " ORDER BY rowid DESC LIMIT 1"
     ).fetchone()
     return None if row is None else _batch_from(connection, row)
 
@@ -467,20 +567,26 @@ def _batch_from(connection: sqlite3.Connection, batch: sqlite3.Row) -> Batch:
     drafted = connection.execute(
         "SELECT wallpaper_id, verdict FROM draft_batch WHERE batch_id = ?", (batch_id,)
     ).fetchall()
+    previewed = connection.execute(
+        "SELECT wallpaper_id FROM draft_preview WHERE batch_id = ?", (batch_id,)
+    ).fetchall()
     return Batch(
         id=batch_id,
         size=int(batch["size"]),
         created_at=dt.datetime.fromisoformat(str(batch["created_at"])),
         wallpapers=tuple(wallpaper_from_row(row) for row in rows),
         drafts={str(row["wallpaper_id"]): Verdict(str(row["verdict"])) for row in drafted},
-        # A **Batch** minted before migration 6 has NULL here, and its tiles go unlabelled.
+        previewed=frozenset(str(row["wallpaper_id"]) for row in previewed),
+        # NULL for a **Batch** minted before migration 6 (`zone`) or 13 (`slot_zone`): left unlabelled.
         zones={str(row["id"]): Zone(str(row["zone"])) for row in rows if row["zone"] is not None},
+        slots={str(row["id"]): Zone(str(row["slot_zone"])) for row in rows if row["slot_zone"] is not None},
         mix=None if batch["mix"] is None else str(batch["mix"]),
+        ranking=None if batch["ranking"] is None else evidence_log.stamp_from_text(batch["ranking"]),
     )
 
 
 _SELECT_BATCH_WALLPAPERS = """
-SELECT w.*, bw.zone AS zone
+SELECT w.*, bw.zone AS zone, bw.slot_zone AS slot_zone
 FROM batch_wallpapers AS bw
 JOIN wallpapers AS w ON w.id = bw.wallpaper_id
 WHERE bw.batch_id = ?

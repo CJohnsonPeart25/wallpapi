@@ -423,13 +423,17 @@ class BatchesRig:
         with storage.write(self.connection) as write:
             return batches.set_all_drafts(write, batch_id, verdict)
 
+    def open_preview(self, batch_id: str, wallpaper_id: str) -> Batch | SubmissionRefused:
+        with storage.write(self.connection) as write:
+            return batches.open_preview(write, batch_id, wallpaper_id)
+
     def submit(self, batch_id: str) -> Submitted | SubmissionRefused:
         with storage.write(self.connection) as write:
             return self.batches.submit(write, batch_id)
 
     def skip(self, batch_id: str) -> SubmissionRefused | None:
         with storage.write(self.connection) as write:
-            return batches.skip(write, batch_id)
+            return self.batches.skip(write, batch_id)
 
     def discard(self) -> int:
         """Drop every unsubmitted **Batch**, as a **Pool reset** does."""
@@ -442,6 +446,9 @@ class BatchesRig:
 
     def drafted_rows(self) -> int:
         return int(self.connection.execute("SELECT COUNT(*) FROM draft_batch").fetchone()[0])
+
+    def previewed_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM draft_preview").fetchone()[0])
 
     def empty_the_pool(self) -> None:
         with storage.write(self.connection) as write:
