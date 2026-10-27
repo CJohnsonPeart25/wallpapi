@@ -1,6 +1,6 @@
 """The **Line-up**: drawing one for each visit to the compare tab, holding its stars and an **Order**'s ranks
-while it is live, and answering it with a **Pick** or an **Order** into the **Evidence log**. Nothing else
-reads or writes `lineups`, `lineup_wallpapers`, `lineup_stars` or `lineup_ranks`.
+while it is live, and answering it with a **Pick**, an **Order** or a **Gauntlet** into the **Evidence log**.
+Nothing else reads or writes `lineups`, `lineup_wallpapers`, `lineup_stars` or `lineup_ranks`.
 
 A **Line-up** is drawn by the active **Mix** and **Wear** (ADR 0028), at the **Line-up** size, from the
 classified **Pool** (`Batches.ranked`) less the live **Batch**'s tiles, so one **Wallpaper** is never asked
@@ -24,6 +24,15 @@ every other tile stays.
 An **Order** is built a click at a time, each rank held against its tile of the live **Line-up**
 (`Lineups.rank`) as a star is, and goes with it the same way. It is answered when all but the last tile are
 ranked, the last place implied, or when it is submitted as it stands (`Lineups.order`).
+
+A **Gauntlet** is answered as a **Pick** is (`Lineups.gauntlet`), and its winner is the champion of the next
+**Line-up**: kept in its place, with one more screen to its streak if it was the champion already, while the
+other tiles are drawn around it as any **Line-up**'s are (`Lineups.next` with `keeping`). The champion and
+its streak are held on its tile of the live **Line-up**, so they last exactly as long as the screen: a
+visit, a **Pool reset** or "none of these" ends the streak. A champion is kept only while it could be drawn:
+in the **Pool**, off the live **Batch**, not a **Ban**'s near-duplicate. A winner starred on the screen it
+won has left the **Pool** as a **Favourite**, so its streak ends there too, as does one a **Batch** decided
+in the meantime.
 """
 
 from __future__ import annotations
@@ -44,6 +53,7 @@ from wallpapi.model import Mix, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock, iso_utc
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Instrument,
     ItemResponse,
@@ -69,7 +79,9 @@ class Lineup:
     for; `mix` the name of the **Mix** it was drawn with; `ranking` the **Ranking stamp** it was drawn under,
     `None` when nothing ranked it. All recorded at mint, never recomputed. `starred` is every tile starred
     so far and `ranked` every tile an **Order** in progress has ranked, best first, both held while the
-    **Line-up** is live.
+    **Line-up** is live. `champion` is the tile a **Gauntlet** kept from the screen before, `None` on a
+    **Line-up** drawn whole, and `streak` how many screens in a row it has won, the count its crown shows,
+    0 with no champion.
     """
 
     id: str
@@ -81,6 +93,8 @@ class Lineup:
     ranking: RankingStamp | None
     starred: frozenset[str] = frozenset()
     ranked: tuple[str, ...] = ()
+    champion: str | None = None
+    streak: int = 0
 
     def rank_of(self, wallpaper_id: str) -> int | None:
         """The tile's rank on the **Order** in progress, 1 the best, or `None` while it is unranked."""
@@ -142,6 +156,32 @@ class Ordered:
     starred: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class Champion:
+    """A **Gauntlet**'s winner, to keep its place on the next **Line-up**: the tile, the position it won at,
+    how many screens in a row it has now won, and the **Zone** it was drawn from and its **Slot**'s on the
+    screen it was first drawn onto, which its **Provenance** goes on giving."""
+
+    wallpaper_id: str
+    position: int
+    streak: int
+    zone: Zone
+    slot: Zone
+
+
+@dataclass(frozen=True, slots=True)
+class Gauntleted:
+    """What a **Gauntlet** recorded: the **Line-up** answered, its winner, `None` for "none of these", and the
+    tiles starred on it, each now a **Favourite**, in on-screen order; and `champion`, the winner for the next
+    **Line-up** to keep, `None` after "none of these". Whether it can still be kept is the next draw's to
+    say (`Lineups.next`)."""
+
+    lineup_id: str
+    winner: str | None
+    starred: tuple[str, ...] = ()
+    champion: Champion | None = None
+
+
 def _new_id() -> str:
     return uuid4().hex
 
@@ -178,17 +218,28 @@ class Lineups:
         """
         return self._mint(connection, replacing=True)
 
-    def next(self, connection: sqlite3.Connection) -> Lineup | LineupUnavailable:
+    def next(
+        self, connection: sqlite3.Connection, *, keeping: Champion | None = None
+    ) -> Lineup | LineupUnavailable:
         """The live **Line-up**, drawing one only if there is none: what follows an answer, or a refused one,
-        never a visit. No **API call**."""
+        never a visit. No **API call**.
+
+        One drawn after a **Gauntlet** is `keeping` its champion: in the position it won at, or last if the
+        **Line-up** size has shrunk below that, with the other tiles drawn around it, as many as the size
+        less one and the candidates allow. A champion that could not be drawn now (it has left the **Pool**
+        or is on the live **Batch**) is not kept, and the **Line-up** is drawn whole; so is one when a
+        **Line-up** is live already, as after another tab drew it.
+        """
         existing = live(connection)
         if existing is not None:
             return existing
-        return self._mint(connection, replacing=False)
+        return self._mint(connection, replacing=False, keeping=keeping)
 
-    def _mint(self, connection: sqlite3.Connection, *, replacing: bool) -> Lineup | LineupUnavailable:
-        """Draw a **Line-up** and store it, `replacing` the live one or, if another request drew one first,
-        handing that back.
+    def _mint(
+        self, connection: sqlite3.Connection, *, replacing: bool, keeping: Champion | None = None
+    ) -> Lineup | LineupUnavailable:
+        """Draw a **Line-up**, around the champion it is `keeping` if it can, and store it, `replacing` the
+        live one or, if another request drew one first, handing that back.
 
         Ranked outside the write transaction, which stays short; without `replacing`, re-read under the
         write lock so two requests at once cannot each draw one.
@@ -202,7 +253,20 @@ class Lineups:
                     discard_live(write)
             return self._too_few()
         mix = settings.active_mix(connection)
-        chosen = self._drawn(connection, mix, candidates, settings.get(connection).lineup_size)
+        size = settings.get(connection).lineup_size
+        kept = _keepable(keeping, candidates)
+        if kept is None:
+            chosen = self._drawn(connection, mix, candidates, size)
+            champion, streak = None, 0
+        else:
+            held, at = kept
+            challengers = [scored for scored in candidates if scored is not at]
+            chosen = self._drawn(connection, mix, challengers, size - 1)
+            chosen.insert(
+                min(held.position, len(chosen)),
+                Drawn(wallpaper=at.wallpaper, score=at.score, zone=held.zone, slot=held.slot),
+            )
+            champion, streak = held.wallpaper_id, held.streak
         created_at = self._clock.now()
         lineup_id = self._new_id()
 
@@ -223,10 +287,17 @@ class Lineups:
                 ),
             )
             write.executemany(
-                "INSERT INTO lineup_wallpapers (lineup_id, wallpaper_id, position, zone, slot_zone)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO lineup_wallpapers (lineup_id, wallpaper_id, position, zone, slot_zone, streak)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 [
-                    (lineup_id, tile.wallpaper.id, position, tile.zone.value, tile.slot.value)
+                    (
+                        lineup_id,
+                        tile.wallpaper.id,
+                        position,
+                        tile.zone.value,
+                        tile.slot.value,
+                        streak if tile.wallpaper.id == champion else None,
+                    )
                     for position, tile in enumerate(chosen)
                 ],
             )
@@ -239,6 +310,8 @@ class Lineups:
             slots={tile.wallpaper.id: tile.slot for tile in chosen},
             mix=mix.name,
             ranking=ranked.stamp,
+            champion=champion,
+            streak=streak,
         )
 
     def pick(
@@ -267,6 +340,45 @@ class Lineups:
             theme=theme,
         )
         return Picked(lineup_id=lineup_id, winner=winner, starred=starred)
+
+    def gauntlet(
+        self, write: sqlite3.Connection, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+    ) -> Gauntleted | LineupRefused:
+        """Answer the live **Line-up** `lineup_id` with `winner`, or "none of these" with `None`, inside the
+        caller's write transaction, and drop it; or say why not, before anything is written.
+
+        One **Gauntlet** version 1 **Judgement**, recorded as a **Pick** is, with the streak the champion
+        carried onto this screen, the count its crown showed. The winner is handed back as the champion for
+        the next **Line-up** to keep where it won: one more screen to its streak if it was the champion here,
+        a streak of 1 if it was a challenger. "None of these" hands back none, which ends the streak. A
+        starred tile leaves the **Pool**; nothing else does.
+        """
+        claimed = _claim(write, lineup_id)
+        if claimed is None:
+            return LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+        shown = [w.id for w in claimed.wallpapers]
+        if winner is not None and winner not in shown:
+            return LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+        starred = self._answer(
+            write,
+            claimed,
+            GAUNTLET_V1,
+            lambda w: GauntletTile(picked=w == winner, favourite=w in claimed.starred),
+            GauntletResponse(streak=claimed.streak, none_of_these=winner is None),
+            theme=theme,
+        )
+        champion = (
+            None
+            if winner is None
+            else Champion(
+                wallpaper_id=winner,
+                position=shown.index(winner),
+                streak=claimed.streak + 1 if winner == claimed.champion else 1,
+                zone=claimed.zones[winner],
+                slot=claimed.slots[winner],
+            )
+        )
+        return Gauntleted(lineup_id=lineup_id, winner=winner, starred=starred, champion=champion)
 
     def rank(
         self,
@@ -392,9 +504,21 @@ class Lineups:
     ) -> list[Drawn]:
         """`size` tiles from `candidates` by `mix` and their wear: the draw every **Instrument** shares (ADR
         0028). An **Instrument**'s own rule narrows what it hands this, never how it draws: **Gauntlet**'s
-        champion stays, so it would hand the candidates less the champion and ask for one fewer."""
+        champion stays, so `_mint` hands it the candidates less the champion and asks for one fewer."""
         vectors = self._embeddings.vectors([scored.wallpaper for scored in candidates])
         return draw(mix, candidates, size, self._random, vectors, wear=wear(connection, candidates))
+
+
+def _keepable(
+    keeping: Champion | None, candidates: Sequence[ScoredWallpaper]
+) -> tuple[Champion, ScoredWallpaper] | None:
+    """The champion and its candidate, if it is one: what could be drawn now is what may be kept."""
+    if keeping is None:
+        return None
+    for scored in candidates:
+        if scored.wallpaper.id == keeping.wallpaper_id:
+            return keeping, scored
+    return None
 
 
 def wear(connection: sqlite3.Connection, candidates: Sequence[ScoredWallpaper]) -> Wear:
@@ -475,6 +599,7 @@ def _lineup_from(connection: sqlite3.Connection, lineup: sqlite3.Row) -> Lineup:
     """A `lineups` row with its tiles, their stars and their ranks."""
     lineup_id = str(lineup["id"])
     rows = connection.execute(_SELECT_LINEUP_WALLPAPERS, (lineup_id,)).fetchall()
+    crowned = [row for row in rows if row["streak"] is not None]
     stars = connection.execute("SELECT wallpaper_id FROM lineup_stars WHERE lineup_id = ?", (lineup_id,))
     ranks = connection.execute(
         "SELECT wallpaper_id FROM lineup_ranks WHERE lineup_id = ? ORDER BY rank", (lineup_id,)
@@ -489,18 +614,24 @@ def _lineup_from(connection: sqlite3.Connection, lineup: sqlite3.Row) -> Lineup:
         ranking=None if lineup["ranking"] is None else evidence_log.stamp_from_text(lineup["ranking"]),
         starred=frozenset(str(row["wallpaper_id"]) for row in stars),
         ranked=tuple(str(row["wallpaper_id"]) for row in ranks),
+        champion=str(crowned[0]["id"]) if crowned else None,
+        streak=int(crowned[0]["streak"]) if crowned else 0,
     )
 
 
 def _provenance(lineup: Lineup, wallpaper_id: str) -> Provenance:
-    """Why a tile was on the **Line-up**: the **Zone** it was drawn from, its **Slot**'s and the **Mix**."""
+    """Why a tile was on the **Line-up**: the **Zone** it was drawn from, its **Slot**'s and the **Mix**, and
+    whether it was kept as a **Gauntlet**'s champion rather than drawn."""
     return evidence_log.provenance(
-        zone=lineup.zones[wallpaper_id], slot_zone=lineup.slots[wallpaper_id], mix=lineup.mix
+        zone=lineup.zones[wallpaper_id],
+        slot_zone=lineup.slots[wallpaper_id],
+        mix=lineup.mix,
+        champion=wallpaper_id == lineup.champion,
     )
 
 
 _SELECT_LINEUP_WALLPAPERS = """
-SELECT w.*, lw.zone AS zone, lw.slot_zone AS slot_zone
+SELECT w.*, lw.zone AS zone, lw.slot_zone AS slot_zone, lw.streak AS streak
 FROM lineup_wallpapers AS lw
 JOIN wallpapers AS w ON w.id = lw.wallpaper_id
 WHERE lw.lineup_id = ?

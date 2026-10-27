@@ -45,7 +45,7 @@ from wallpapi.batches import Batch, Batches, SubmissionRefused, Submitted
 from wallpapi.compose import Modules, compose
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
-from wallpapi.lineup import Lineup, LineupRefused, Lineups, Ordered, Picked
+from wallpapi.lineup import Champion, Gauntleted, Lineup, LineupRefused, Lineups, Ordered, Picked
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EMBED_BATCH, Embeddings
@@ -503,9 +503,10 @@ class LineupRig(BatchesRig):
             new_id=new_id,
         )
 
-    def lineup(self) -> Lineup:
-        """The live **Line-up**, minted if there is none, as an answer is followed by the next."""
-        shown = self.lineups.next(self.connection)
+    def lineup(self, *, keeping: Champion | None = None) -> Lineup:
+        """The live **Line-up**, minted if there is none, as an answer is followed by the next: after a
+        **Gauntlet**, `keeping` its champion."""
+        shown = self.lineups.next(self.connection, keeping=keeping)
         assert isinstance(shown, Lineup), shown
         return shown
 
@@ -521,6 +522,14 @@ class LineupRig(BatchesRig):
         """Answer the **Line-up** with `winner`, or "none of these" with `None`, in its own write."""
         with storage.write(self.connection) as write:
             return self.lineups.pick(write, lineup_id, winner, theme=theme)
+
+    def gauntlet(
+        self, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+    ) -> Gauntleted | LineupRefused:
+        """Answer the **Line-up** as a **Gauntlet** with `winner`, or "none of these" with `None`, in its own
+        write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.gauntlet(write, lineup_id, winner, theme=theme)
 
     def star(self, lineup_id: str, wallpaper_id: str, *, starred: bool = True) -> Lineup | LineupRefused:
         """Star one tile of the **Line-up**, or take its star off with `starred=False`, in its own write."""

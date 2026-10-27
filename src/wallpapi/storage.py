@@ -17,7 +17,7 @@ from wallpapi import evidence_log, settings
 from wallpapi.taste.judgement import Judgement, Shown, instant
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -183,6 +183,8 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         (*((statement, ()) for statement in _MIGRATION_15), *seed_settings),
         # 16: the ranks of an **Order** in progress, held against the live **Line-up** while it is live.
         (*((statement, ()) for statement in _MIGRATION_16), *seed_settings),
+        # 17: a **Gauntlet**'s champion and its streak, held on its tile of the live **Line-up**.
+        (*((statement, ()) for statement in _MIGRATION_17), *seed_settings),
     )
 
 
@@ -572,6 +574,18 @@ CREATE TABLE lineup_ranks (
 one back rewrites the rest closed up, so no gap and no order of clicks is kept. Dropped with the **Line-up**
 when it is answered (the **Judgement** then holding each rank), replaced by a visit (ADR 0029) or
 discarded.
+"""
+
+
+_MIGRATION_17 = (
+    "ALTER TABLE lineup_wallpapers ADD COLUMN streak INTEGER CHECK (streak IS NULL OR streak >= 1)",
+    "CREATE UNIQUE INDEX lineup_champion ON lineup_wallpapers (lineup_id) WHERE streak IS NOT NULL",
+)
+"""Migration 17's schema: a **Gauntlet**'s champion, the tile it kept from the screen before, is the one tile
+of the live **Line-up** with a `streak`, how many screens in a row it has won; every drawn tile has `NULL`.
+At most one per **Line-up**, by the partial unique index. On the tile rather than on `lineups`, so it keeps
+its place by the tile's own `position` and goes with the tile: dropped when the **Line-up** is answered (the
+next being drawn around the winner), replaced by a visit (ADR 0029) or discarded by a **Pool reset**.
 """
 
 
