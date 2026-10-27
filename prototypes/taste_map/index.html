@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Taste map</title>
+<!-- PROTOTYPE, throwaway: wallpapi-5tu. Not wallpapi's UI; no Pico, no htmx, on purpose. -->
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #d9d9dc;
+  --pos: #1e8f4e; --neg: #c8322b; --edge: rgba(60, 60, 70, .22); --accent: #4152d6;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121214; --panel: #1c1c1f; --ink: #ececef; --muted: #9a9aa2; --line: #333338;
+    --pos: #3ccf7a; --neg: #ff5a50; --edge: rgba(220, 220, 235, .2); --accent: #8f9bff;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+  font: 15px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+header { position: fixed; inset: 0 0 auto 0; z-index: 2; background: var(--panel);
+  border-bottom: 1px solid var(--line); padding: 8px 16px 10px; }
+h1 { font-size: 17px; margin: 0; }
+.counts { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.counts b { color: var(--ink); font-weight: 600; }
+.slider { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.slider label { font-size: 13px; white-space: nowrap; min-width: 92px; }
+.slider output { font-variant-numeric: tabular-nums; font-weight: 600; }
+input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); height: 28px; }
+.row { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+.seg { display: flex; flex: 1; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button, .btn { flex: 1; font: inherit; font-size: 13px; padding: 7px 4px; border: 0;
+  background: transparent; color: var(--ink); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed=true] { background: var(--accent); color: #fff; }
+.btn { flex: 0 0 auto; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; }
+#map { position: fixed; inset: 0; touch-action: none; overflow: hidden; cursor: grab; }
+#world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+#edges { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: visible; }
+#edges line { stroke: var(--edge); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.node { position: absolute; left: 0; top: 0; border-radius: 50%; overflow: hidden; padding: 0;
+  border: 3px solid var(--neg); background: var(--line);
+  transition: transform .35s ease, width .35s ease, height .35s ease; }
+.node.pos { border-color: var(--pos); border-width: 4px; }
+.node img, .card img, .hero img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.node .n { position: absolute; right: 12%; bottom: 8%; font-size: 11px; font-weight: 700; color: #fff;
+  background: rgba(0, 0, 0, .6); border-radius: 8px; padding: 0 5px; }
+#hint { position: fixed; left: 16px; right: 16px; bottom: 12px; text-align: center; font-size: 12px;
+  color: var(--muted); pointer-events: none; }
+#sheet { position: fixed; inset: 0; z-index: 3; background: var(--bg); overflow-y: auto; display: none;
+  padding: 0 16px 24px; }
+#sheet.open { display: block; }
+#sheet .top { position: sticky; top: 0; background: var(--bg); padding: 10px 0 8px; display: flex;
+  gap: 10px; align-items: center; border-bottom: 1px solid var(--line); z-index: 1; }
+#sheet .top div { font-size: 13px; color: var(--muted); }
+#sheet .top b { color: var(--ink); }
+.hero { margin: 12px 0; border-radius: 10px; overflow: hidden; border: 4px solid var(--neg);
+  aspect-ratio: 3 / 2; }
+.hero.pos { border-color: var(--pos); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.card { display: block; color: inherit; text-decoration: none; border-radius: 8px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--line); }
+.card .pic { aspect-ratio: 3 / 2; border-bottom: 3px solid var(--neg); }
+.card.pos .pic { border-bottom-color: var(--pos); }
+.card.proto { outline: 3px solid var(--accent); outline-offset: -1px; }
+.card .meta { display: flex; justify-content: space-between; gap: 4px; padding: 4px 6px; font-size: 12px; }
+.card .meta span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+.badge { font-size: 11px; font-weight: 700; color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="map"><div id="world"><svg id="edges"></svg></div></div>
+<header>
+  <h1>Taste map <span class="badge">prototype</span></h1>
+  <div class="counts" id="counts">Loading your Verdicts…</div>
+  <div class="slider">
+    <label for="merge">Merge distance <output id="mergeOut">0.050</output></label>
+    <input id="merge" type="range" min="0" max="40" step="1" value="10">
+  </div>
+  <div class="row">
+    <div class="seg" role="group" aria-label="Filter">
+      <button data-f="all" aria-pressed="true">All</button>
+      <button data-f="pos" aria-pressed="false">Positive</button>
+      <button data-f="neg" aria-pressed="false">Negative</button>
+    </div>
+    <button class="btn" id="fit">Fit</button>
+  </div>
+</header>
+<div id="hint">Pinch or drag to explore · tap a prototype to see its members</div>
+<section id="sheet" aria-label="Prototype members"></section>
+<script>
+const NAMES = { favourite: "Favourite", like: "Like", ignore: "Ignore", ban: "Ban" };
+const $ = (id) => document.getElementById(id);
+const map = $("map"), world = $("world"), edgesSvg = $("edges"), sheet = $("sheet");
+let data, level, filter = "all", view = { x: 0, y: 0, k: 1 };
+const nodes = new Map();
+
+function thumb(item) {
+  const img = document.createElement("img");
+  img.loading = "lazy";
+  img.alt = "";
+  img.src = "/thumb/" + item.id;
+  img.onerror = () => { img.onerror = null; img.src = item.thumb; };
+  return img;
+}
+
+function shown(g) {
+  const w = level.weight[g];
+  return filter === "all" || (filter === "pos" ? w > 0 : w < 0);
+}
+
+function headerTop() { return document.querySelector("header").getBoundingClientRect().bottom; }
+
+function render() {
+  const pos = level.weight.filter((w) => w > 0).length;
+  const neg = level.weight.length - pos;
+  const m = data.meta;
+  $("counts").innerHTML = `<b>${m.embedded}</b> decided → <b>${level.proto.length}</b> prototypes`
+    + ` · <b style="color:var(--pos)">${pos}</b> positive / <b style="color:var(--neg)">${neg}</b> negative`
+    + (m.noEmbedding ? ` · ${m.noEmbedding} without embedding left out` : "");
+  $("mergeOut").textContent = level.d.toFixed(3);
+  const live = new Set();
+  const sizes = new Map();
+  level.proto.forEach((p, g) => {
+    if (!shown(g)) return;
+    live.add(p);
+    let el = nodes.get(p);
+    if (!el) {
+      el = document.createElement("button");
+      el.className = "node";
+      el.appendChild(thumb(data.items[p]));
+      const n = document.createElement("span");
+      n.className = "n";
+      el.appendChild(n);
+      world.appendChild(el);
+      nodes.set(p, el);
+    }
+    sizes.set(p, 0);
+    const r = level.r[g];
+    el.dataset.g = g;
+    el.classList.toggle("pos", level.weight[g] > 0);
+    el.style.width = el.style.height = 2 * r + "px";
+    el.style.transform = `translate(${level.x[g] - r}px, ${level.y[g] - r}px)`;
+    el.style.display = "";
+  });
+  level.assign.forEach((g) => { const p = level.proto[g]; if (sizes.has(p)) sizes.set(p, sizes.get(p) + 1); });
+  for (const [p, el] of nodes) {
+    if (!live.has(p)) { el.style.display = "none"; continue; }
+    const n = sizes.get(p);
+    el.lastChild.textContent = n > 1 ? n : "";
+    el.lastChild.style.display = n > 1 ? "" : "none";
+  }
+  edgesSvg.innerHTML = level.edges.filter(([a, b]) => shown(a) && shown(b)).map(([a, b]) =>
+    `<line x1="${level.x[a]}" y1="${level.y[a]}" x2="${level.x[b]}" y2="${level.y[b]}"/>`).join("");
+}
+
+function apply() { world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`; }
+
+function fit() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  level.proto.forEach((p, g) => {
+    if (!shown(g)) return;
+    const r = level.r[g];
+    x0 = Math.min(x0, level.x[g] - r); y0 = Math.min(y0, level.y[g] - r);
+    x1 = Math.max(x1, level.x[g] + r); y1 = Math.max(y1, level.y[g] + r);
+  });
+  if (!isFinite(x0)) return;
+  const top = headerTop() + 8, w = map.clientWidth - 16, h = map.clientHeight - top - 32;
+  view.k = Math.min(w / (x1 - x0), h / (y1 - y0), 2);
+  view.x = 8 + (w - (x1 - x0) * view.k) / 2 - x0 * view.k;
+  view.y = top + (h - (y1 - y0) * view.k) / 2 - y0 * view.k;
+  apply();
+}
+
+// Pan, pinch and tap, by pointer events.
+const pointers = new Map();
+let downAt = null, moved = 0;
+map.addEventListener("pointerdown", (e) => {
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 1) { downAt = e.target.closest(".node"); moved = 0; } else { downAt = null; }
+});
+map.addEventListener("pointermove", (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const before = [...pointers.values()].map((p) => ({ ...p }));
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const after = [...pointers.values()];
+  if (after.length === 1) {
+    view.x += e.clientX - prev.x; view.y += e.clientY - prev.y;
+    moved += Math.abs(e.clientX - prev.x) + Math.abs(e.clientY - prev.y);
+  } else if (after.length === 2) {
+    const mid = (ps) => ({ x: (ps[0].x + ps[1].x) / 2, y: (ps[0].y + ps[1].y) / 2 });
+    const dist = (ps) => Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) || 1;
+    zoomAbout(mid(before), mid(after), dist(after) / dist(before));
+  }
+  apply();
+});
+function zoomAbout(from, to, ratio) {
+  const k = Math.min(Math.max(view.k * ratio, 0.05), 6);
+  ratio = k / view.k;
+  view.x = to.x - (from.x - view.x) * ratio;
+  view.y = to.y - (from.y - view.y) * ratio;
+  view.k = k;
+}
+function release(e) {
+  if (pointers.delete(e.pointerId) && pointers.size === 0 && downAt && moved < 10) open(+downAt.dataset.g);
+  if (pointers.size === 0) downAt = null;
+}
+map.addEventListener("pointerup", release);
+map.addEventListener("pointercancel", (e) => { downAt = null; release(e); });
+map.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const at = { x: e.clientX, y: e.clientY };
+  zoomAbout(at, at, Math.exp(-e.deltaY / 400));
+  apply();
+}, { passive: false });
+
+// Drill-down.
+function open(g, push = true) {
+  const members = [];
+  level.assign.forEach((h, i) => { if (h === g) members.push(i); });
+  members.sort((a, b) => level.toProto[a] - level.toProto[b] || a - b);
+  const p = level.proto[g], w = level.weight[g], positive = w > 0;
+  const tally = {};
+  members.forEach((i) => { const v = data.items[i].v; tally[v] = (tally[v] || 0) + 1; });
+  const parts = Object.keys(NAMES).filter((v) => tally[v]).map((v) => `${tally[v]} ${NAMES[v]}`);
+  sheet.innerHTML = `<div class="top"><button class="btn" id="back">← Map</button>`
+    + `<div><b>Weight ${w > 0 ? "+" : ""}${w}</b> · ${members.length} member${members.length > 1 ? "s" : ""}`
+    + `<br>${parts.join(", ")}</div></div>`;
+  const hero = document.createElement("div");
+  hero.className = "hero" + (positive ? " pos" : "");
+  hero.appendChild(thumb(data.items[p]));
+  sheet.appendChild(hero);
+  const grid = document.createElement("div");
+  grid.className = "grid";
+  for (const i of members) {
+    const item = data.items[i];
+    const a = document.createElement("a");
+    a.className = "card" + (item.val > 0 ? " pos" : "") + (i === p ? " proto" : "");
+    a.href = item.url; a.target = "_blank"; a.rel = "noopener";
+    const pic = document.createElement("div");
+    pic.className = "pic";
+    pic.appendChild(thumb(item));
+    a.appendChild(pic);
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = i === p ? `<span class="badge">Prototype</span><span>${NAMES[item.v]}</span>`
+      : `<span>${NAMES[item.v]}</span><span>d ${level.toProto[i].toFixed(3)}</span>`;
+    a.appendChild(meta);
+    grid.appendChild(a);
+  }
+  sheet.appendChild(grid);
+  $("back").onclick = () => history.back();
+  sheet.classList.add("open");
+  sheet.scrollTop = 0;
+  if (push) history.pushState({ g }, "");
+}
+window.addEventListener("popstate", () => sheet.classList.remove("open"));
+
+$("merge").addEventListener("input", (e) => { level = data.levels[+e.target.value]; render(); });
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+  filter = b.dataset.f;
+  document.querySelectorAll(".seg button").forEach((o) => o.setAttribute("aria-pressed", o === b));
+  render(); fit();
+}));
+$("fit").onclick = fit;
+
+fetch("/api/map").then((r) => r.json()).then((d) => {
+  data = d;
+  // ?d=0.15 starts at that merge distance; &g=3 opens that prototype (for links and screenshots).
+  const query = new URLSearchParams(location.search);
+  const wanted = query.has("d") ? +query.get("d") : d.meta.defaultD;
+  const start = Math.min(Math.max(Math.round(wanted / 0.005), 0), d.levels.length - 1);
+  $("merge").max = d.levels.length - 1;
+  $("merge").value = start;
+  level = d.levels[start];
+  render(); fit();
+  if (query.has("g") && level.proto[+query.get("g")] !== undefined) open(+query.get("g"), false);
+});
+</script>
+</body>
+</html>
