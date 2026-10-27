@@ -17,7 +17,7 @@ from wallpapi import evidence_log, settings
 from wallpapi.taste.judgement import Judgement, Shown, instant
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -181,6 +181,8 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         (*((statement, ()) for statement in _MIGRATION_14), *seed_settings),
         # 15: the stars held against the live **Line-up** while it is live.
         (*((statement, ()) for statement in _MIGRATION_15), *seed_settings),
+        # 16: the ranks of an **Order** in progress, held against the live **Line-up** while it is live.
+        (*((statement, ()) for statement in _MIGRATION_16), *seed_settings),
     )
 
 
@@ -550,6 +552,26 @@ opened preview beside a **Batch**. Keyed to the tile, not to an **Instrument**, 
 **Line-up** holds its stars the same way. Set and cleared, never toggled, and dropped with the **Line-up**
 when it is answered (the **Judgement** then holding each star as a **Favourite**), replaced by a visit (ADR
 0029) or discarded.
+"""
+
+
+_MIGRATION_16 = (
+    """
+CREATE TABLE lineup_ranks (
+    lineup_id    TEXT NOT NULL,
+    wallpaper_id TEXT NOT NULL,
+    rank         INTEGER NOT NULL CHECK (rank >= 1),
+    PRIMARY KEY (lineup_id, wallpaper_id),
+    UNIQUE (lineup_id, rank),
+    FOREIGN KEY (lineup_id, wallpaper_id) REFERENCES lineup_wallpapers (lineup_id, wallpaper_id)
+)
+""",
+)
+"""Migration 16's schema: a row per ranked tile of the live **Line-up**, an **Order** in progress, beside
+`lineup_stars` and keyed to the tile the same way. Holds the ranks as the screen shows them, 1 to k: taking
+one back rewrites the rest closed up, so no gap and no order of clicks is kept. Dropped with the **Line-up**
+when it is answered (the **Judgement** then holding each rank), replaced by a visit (ADR 0029) or
+discarded.
 """
 
 

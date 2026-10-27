@@ -45,7 +45,7 @@ from wallpapi.batches import Batch, Batches, SubmissionRefused, Submitted
 from wallpapi.compose import Modules, compose
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
-from wallpapi.lineup import Lineup, LineupRefused, Lineups, Picked
+from wallpapi.lineup import Lineup, LineupRefused, Lineups, Ordered, Picked
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EMBED_BATCH, Embeddings
@@ -529,6 +529,21 @@ class LineupRig(BatchesRig):
 
     def starred_rows(self) -> int:
         return int(self.connection.execute("SELECT COUNT(*) FROM lineup_stars").fetchone()[0])
+
+    def rank(
+        self, lineup_id: str, wallpaper_id: str, *, ranked: bool = True, theme: Theme | None = None
+    ) -> Lineup | Ordered | LineupRefused:
+        """Rank one tile next on the **Order**, or take it back with `ranked=False`, in its own write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.rank(write, lineup_id, wallpaper_id, ranked=ranked, theme=theme)
+
+    def order(self, lineup_id: str, *, theme: Theme | None = None) -> Ordered | LineupRefused:
+        """Submit the **Order** held against the **Line-up** as it stands, in its own write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.order(write, lineup_id, theme=theme)
+
+    def ranked_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM lineup_ranks").fetchone()[0])
 
     def discard_lineup(self) -> int:
         """Drop the live **Line-up**, as a **Pool reset** does."""
