@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from wallpapi.taste.judgement import Instrument, ItemResponse, JudgementResponse
+from wallpapi.taste.evidence import AbsoluteEvidence
+from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse
 
 VERDICT_GRID_V0: Final = Instrument("verdict grid", 0)
 """The converted **Decision log**: one `LegacyTileResponse` per tile and no judgement-level **Response**."""
@@ -90,3 +91,54 @@ class GridResponse(JudgementResponse):
     submitted **Batch** with nothing marked is told apart from it here. A **History** edit is submitted."""
 
     submitted: bool = False
+
+
+def reduce_converted(judgement: Judgement) -> list[AbsoluteEvidence]:
+    """Version 0: every tile its entry's old value, a **Clearance** 0."""
+    if judgement.response is not None:
+        raise _not_in_format(judgement, "a screen response")
+    return [
+        _absolute(judgement, shown.item, LEGACY_STRENGTHS[_converted_tile(judgement, shown.response).entry])
+        for shown in judgement.shown
+    ]
+
+
+def reduce_grid(judgement: Judgement) -> list[AbsoluteEvidence]:
+    """Version 1. A **Skip** emits nothing. A submitted screen gives each tile a **Favourite**'s 100, its
+    **Verdict**'s value, or an **Ignore**'s if it was left unmarked; a preview opened adds nothing."""
+    response = judgement.response
+    if not isinstance(response, GridResponse):
+        raise _not_in_format(judgement, f"a screen response of {response!r}")
+    tiles = [(shown.item, _grid_tile(judgement, shown.response)) for shown in judgement.shown]
+    if not response.submitted:
+        return []
+    return [_absolute(judgement, item, _tile_strength(tile)) for item, tile in tiles]
+
+
+def _tile_strength(tile: TileResponse) -> float:
+    if tile.favourite:
+        return FAVOURITE_STRENGTH
+    return VERDICT_STRENGTHS[tile.verdict or Verdict.IGNORE]
+
+
+def _absolute(judgement: Judgement, item: str, strength: float) -> AbsoluteEvidence:
+    return AbsoluteEvidence(
+        item=item, strength=strength, judgement_id=judgement.id, recorded_at=judgement.recorded_at
+    )
+
+
+def _converted_tile(judgement: Judgement, response: ItemResponse) -> LegacyTileResponse:
+    if not isinstance(response, LegacyTileResponse):
+        raise _not_in_format(judgement, f"a tile response of {response!r}")
+    return response
+
+
+def _grid_tile(judgement: Judgement, response: ItemResponse) -> TileResponse:
+    if not isinstance(response, TileResponse):
+        raise _not_in_format(judgement, f"a tile response of {response!r}")
+    return response
+
+
+def _not_in_format(judgement: Judgement, what: str) -> ValueError:
+    instrument = judgement.instrument
+    return ValueError(f"{what} is not in {instrument.name} version {instrument.version}'s format")
