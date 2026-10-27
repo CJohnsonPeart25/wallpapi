@@ -349,28 +349,36 @@ def test_an_order_answered_with_a_star_reconciles_the_library_whether_ranking_or
     db_path: Path, tmp_path: Path
 ) -> None:
     """**Order**'s tail, as a **Pick**'s: the rank that leaves only the last tile unranked answers it, and so
-    does a submit; either one with a star reconciles, after the **Judgement** commits, and an unstarred one
-    does not."""
+    does a submit. A starred answer reconciles after the **Judgement** commits, a failed download leaving it
+    standing; an unstarred one, answered either way, leaves the failed download alone, and the next starred
+    one picks it up beside its own."""
     harness = library_harness(db_path, tmp_path / "Library", 8)
     first = live_lineup(harness)
     a, b, c, d = (w.id for w in first.wallpapers)
+    harness.library.fail_for.add(d)
     workflows.star_lineup_tile(harness.modules, first.id, d, starred=True)
     for w in (b, a):
         assert isinstance(workflows.rank_lineup_tile(harness.modules, first.id, w, ranked=True), Lineup)
-    assert harness.library.written == [], "a rank is not an answer"
 
     assert workflows.rank_lineup_tile(harness.modules, first.id, c, ranked=True) == Ordered(
         lineup_id=first.id, ranked=(b, a, c, d), starred=(d,)
     )
-    assert [w.wallpaper_id for w in harness.library.written] == [d]
+    assert evidence_log.favourites(harness.connect()) == [d]
+    assert harness.library.written == []
 
-    unstarred = live_lineup(harness)
-    workflows.order(harness.modules, unstarred.id)
-    assert [w.wallpaper_id for w in harness.library.written] == [d]
+    harness.library.fail_for.clear()
+    submitted = live_lineup(harness)
+    workflows.order(harness.modules, submitted.id)
+    completed = live_lineup(harness)
+    for w in completed.wallpapers[:3]:
+        workflows.rank_lineup_tile(harness.modules, completed.id, w.id, ranked=True)
+
+    assert len(evidence_log.judgements(harness.connect())) == 3
+    assert harness.library.written == []
 
     starred = live_lineup(harness)
     workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[1].id, starred=True)
     assert workflows.order(harness.modules, starred.id) == Ordered(
         lineup_id=starred.id, ranked=(), starred=(starred.wallpapers[1].id,)
     )
-    assert [w.wallpaper_id for w in harness.library.written] == [d, starred.wallpapers[1].id]
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted([d, starred.wallpapers[1].id])
