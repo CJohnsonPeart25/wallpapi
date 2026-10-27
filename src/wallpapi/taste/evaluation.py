@@ -1,9 +1,12 @@
 """The evaluation: how well a **Score** orders what you said, by replaying the **Evidence log** in order.
 
-Each **Judgement** is marked against its **Instrument**'s evaluation reading, a frozen answer key kept apart
-from its **Reduction**: changing a **Reduction** must not change the test. The reading turns a **Judgement**
-into the pairs it ordered, each pair two **Items** of one **Shown set**, the one you put higher first. A
-**Judgement** that orders no pair is never a test answer.
+Each **Judgement** is marked against its **Instrument**'s evaluation reading, which turns it into the pairs
+it ordered, each pair two **Items** of one **Shown set**, the one you put higher first. A **Judgement** that
+orders no pair is never a test answer. The **Verdict grid**'s reading is a frozen answer key kept apart from
+its **Reduction**, which gives values rather than pairs: changing a weight must not change the test. A
+**Line-up**'s reading is the pairs its **Reduction** gives, each winner over its loser whatever the strength,
+so an **Instrument** gets its test answers the moment its **Reduction** is in the table; its pairs are its
+**Response** format, which a weight cannot change.
 
 The replay is prequential: the **Judgements** in recorded order, each predicted by `rank` from the Evidence
 of every **Judgement** before it and none after, then added. The first `WARM_UP` are never tested. A test
@@ -27,7 +30,7 @@ from typing import Final
 
 import numpy as np
 
-from wallpapi.taste.evidence import Evidence
+from wallpapi.taste.evidence import Evidence, RelativeEvidence
 from wallpapi.taste.judgement import Instrument, Judgement
 from wallpapi.taste.ranking import Similarity, rank
 from wallpapi.taste.reductions import evidence
@@ -123,20 +126,36 @@ def _pairs(standings: Sequence[tuple[str, int | None]]) -> tuple[Pair, ...]:
     return tuple(found)
 
 
+def _read_relative(judgement: Judgement) -> tuple[Pair, ...]:
+    """A **Line-up**'s reading: the relative Evidence its **Reduction** gives, each winner over its loser, in
+    the order given. A **Favourite** on a tile is absolute Evidence, a value set against nothing on its
+    screen, and gives no pair; "none of these" gives none at all."""
+    return tuple(
+        Pair(piece.winner, piece.loser)
+        for piece in evidence([judgement])
+        if isinstance(piece, RelativeEvidence)
+    )
+
+
 READINGS: Final[Mapping[Instrument, Reading]] = {
     VERDICT_GRID_V0: _read_converted,
     VERDICT_GRID_V1: _read_grid,
 }
-"""Evaluation reading version 1, one entry per **Instrument** name and version. A new **Instrument** is a new
-entry; one with no entry is never a test answer, though its Evidence still counts."""
+"""Evaluation reading version 1's answer keys of their own, one entry per **Instrument** name and version.
+Every other **Instrument** is read by its **Reduction**'s relative Evidence: **Pick** now, and **Order** and
+**Gauntlet** once their **Reductions** are in the table, with no entry here. One whose **Reduction** gives no
+relative Evidence is never a test answer, though its Evidence still counts."""
 
 
 def reading(judgement: Judgement) -> tuple[Pair, ...]:
     """The pairs a **Judgement** ordered, by what was said in it and nothing later: none for a **Skip**, a
-    **History** edit (a **Shown set** of one), a screen where everything stands alike, or an **Instrument**
-    with no reading."""
-    read = READINGS.get(judgement.instrument)
-    return () if read is None else read(judgement)
+    **History** edit (a **Shown set** of one), a screen where everything stands alike, "none of these", or
+    an **Instrument** whose **Reduction** gives no relative Evidence.
+
+    Raises `UnknownInstrument` for an **Instrument** with neither an entry in `READINGS` nor a
+    **Reduction**, as `evidence()` does: the replay reads every **Judgement**'s Evidence anyway.
+    """
+    return READINGS.get(judgement.instrument, _read_relative)(judgement)
 
 
 @dataclass(frozen=True, slots=True)
