@@ -29,7 +29,7 @@ from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict, Theme
-from wallpapi.lineup import Lineup, LineupRefused, LineupUnavailable
+from wallpapi.lineup import Lineup, LineupRefused, LineupUnavailable, Ordered, Picked
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import (
     FORM_FIELDS,
@@ -41,6 +41,7 @@ from wallpapi.settings import (
     form_values,
     mix_form,
 )
+from wallpapi.taste.order import ORDER_V1
 from wallpapi.taste.pick import PICK_V1
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -90,10 +91,10 @@ REFUSALS: dict[StrEnum, Refusal] = {
 refusals are not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds,
 so they stay beside the field (ADR 0004)."""
 
-COMPARE_INSTRUMENTS: Final = (PICK_V1.name,)
+COMPARE_INSTRUMENTS: Final = (PICK_V1.name, ORDER_V1.name)
 """The **Instruments** the compare tab offers, by the name each is recorded under, the first the default:
-the choice the URL carries (`?instrument=`). **Order** and **Gauntlet** join it, each with its own answer
-route at `/compare/<name>`."""
+the choice the URL carries (`?instrument=`), each answered at its own route, `/compare/<name>`. **Gauntlet**
+joins it as one more entry."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +240,19 @@ def _lineup_view(
         {**context, "unavailable": result},
         status_code=HTTPStatus.SERVICE_UNAVAILABLE,
     )
+
+
+def _next_lineup_view(
+    request: Request, modules: Modules, instrument: str, answered: Picked | Ordered | LineupRefused
+) -> HTMLResponse:
+    """What follows an answer: the next **Line-up**, at once. After a refusal, the one on screen now under
+    the words for why, or a bare status for one no control posts."""
+    refused = None
+    if isinstance(answered, LineupRefused):
+        refused = REFUSALS[answered.reason]
+        if not refused.banner:
+            raise HTTPException(status_code=refused.status, detail=refused.message)
+    return _lineup_view(request, instrument, modules.lineups.next(modules.connect()), refused=refused)
 
 
 def _pool_reset_context(connection: sqlite3.Connection) -> dict[str, object]:
@@ -492,12 +506,40 @@ def pick(
     """Answer the **Line-up** with a **Pick**, or "none of these" when no wallpaper is posted, and answer
     with the next one, so it comes at once. A stale answer gets the one on screen now, under the words."""
     picked = workflows.pick(modules, lineup_id, wallpaper_id or None, theme=parse_theme(theme))
-    refused = None
-    if isinstance(picked, LineupRefused):
-        refused = REFUSALS[picked.reason]
-        if not refused.banner:
-            raise HTTPException(status_code=refused.status, detail=refused.message)
-    return _lineup_view(request, PICK_V1.name, modules.lineups.next(modules.connect()), refused=refused)
+    return _next_lineup_view(request, modules, PICK_V1.name, picked)
+
+
+@router.post("/compare/order", response_class=HTMLResponse)
+def order(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Answer the **Line-up** with the **Order** held against it as it stands, partial or empty, from Enter
+    or the nav's Submit, and answer with the next one, as a **Pick** does."""
+    ordered = workflows.order(modules, lineup_id, theme=parse_theme(theme))
+    return _next_lineup_view(request, modules, ORDER_V1.name, ordered)
+
+
+@router.post("/compare/order/rank", response_class=HTMLResponse)
+def rank_lineup_tile(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()],
+    ranked: Annotated[bool, Form()],
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Rank one **Line-up** tile next on the **Order**, or take its rank back, and answer with the same
+    **Line-up** as it now stands; or, when that leaves only the last tile unranked, which answers the
+    **Order**, with the next one. A stale rank gets the one on screen now, under the words."""
+    held = workflows.rank_lineup_tile(
+        modules, lineup_id, wallpaper_id, ranked=ranked, theme=parse_theme(theme)
+    )
+    if isinstance(held, Lineup):
+        return _lineup_view(request, ORDER_V1.name, held)
+    return _next_lineup_view(request, modules, ORDER_V1.name, held)
 
 
 @router.post("/compare/star", response_class=HTMLResponse)
@@ -516,10 +558,7 @@ def star_lineup_tile(
     held = workflows.star_lineup_tile(modules, lineup_id, wallpaper_id, starred=starred)
     if isinstance(held, Lineup):
         return _lineup_view(request, chosen, held)
-    refused = REFUSALS[held.reason]
-    if not refused.banner:
-        raise HTTPException(status_code=refused.status, detail=refused.message)
-    return _lineup_view(request, chosen, modules.lineups.next(modules.connect()), refused=refused)
+    return _next_lineup_view(request, modules, chosen, held)
 
 
 @router.post("/compare/size", response_class=HTMLResponse)

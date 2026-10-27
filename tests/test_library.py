@@ -21,7 +21,7 @@ from wallpapi import evidence_log, settings, workflows
 from wallpapi.batches import Batch
 from wallpapi.evidence_log import HistoryEntry
 from wallpapi.library import Library
-from wallpapi.lineup import Lineup, Picked
+from wallpapi.lineup import Lineup, Ordered, Picked
 from wallpapi.model import Verdict
 
 ONE, TWO, THREE = (w.id for w in catalogue_of(3))
@@ -343,3 +343,34 @@ def test_a_lineup_answered_with_a_star_reconciles_the_library_after_the_evidence
     assert sorted(w.wallpaper_id for w in harness.library.written) == sorted(
         [failing, starred.wallpapers[0].id]
     )
+
+
+def test_an_order_answered_with_a_star_reconciles_the_library_whether_ranking_or_submitting_answered_it(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """**Order**'s tail, as a **Pick**'s: the rank that leaves only the last tile unranked answers it, and so
+    does a submit; either one with a star reconciles, after the **Judgement** commits, and an unstarred one
+    does not."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    first = live_lineup(harness)
+    a, b, c, d = (w.id for w in first.wallpapers)
+    workflows.star_lineup_tile(harness.modules, first.id, d, starred=True)
+    for w in (b, a):
+        assert isinstance(workflows.rank_lineup_tile(harness.modules, first.id, w, ranked=True), Lineup)
+    assert harness.library.written == [], "a rank is not an answer"
+
+    assert workflows.rank_lineup_tile(harness.modules, first.id, c, ranked=True) == Ordered(
+        lineup_id=first.id, ranked=(b, a, c, d), starred=(d,)
+    )
+    assert [w.wallpaper_id for w in harness.library.written] == [d]
+
+    unstarred = live_lineup(harness)
+    workflows.order(harness.modules, unstarred.id)
+    assert [w.wallpaper_id for w in harness.library.written] == [d]
+
+    starred = live_lineup(harness)
+    workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[1].id, starred=True)
+    assert workflows.order(harness.modules, starred.id) == Ordered(
+        lineup_id=starred.id, ranked=(), starred=(starred.wallpapers[1].id,)
+    )
+    assert [w.wallpaper_id for w in harness.library.written] == [d, starred.wallpapers[1].id]

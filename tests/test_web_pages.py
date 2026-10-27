@@ -201,6 +201,55 @@ def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_b
     assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
 
 
+def test_an_order_tile_ranks_on_a_click_or_its_number_and_submit_is_a_button_or_enter_with_0_unbound(
+    web: Web,
+) -> None:
+    """On an **Order**, each tile posts its rank on a click or its number key, an unranked one to be ranked
+    and a ranked one, its rank on it, to be taken back; the nav's Submit posts the **Order** as it stands on
+    a click or Enter, which a focused button or link keeps for itself. Every post carries the **Line-up** ID
+    and the theme, targets `#lineup` and is dropped while another is in flight, under the same key guard as
+    a **Pick**'s. 0 answers nothing, and the page has no "none of these"."""
+    _, client = web
+    shell = client.get("/compare?instrument=order").text
+    fragment = client.get("/compare/lineup?instrument=order").text
+    lineup_id = re.search(r'name="lineup_id" value="(\w+)"', fragment).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+    first = re.search(r'data-wallpaper-id="(\w+)"', fragment).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+    fragment = client.post(
+        "/compare/order/rank", data={"lineup_id": lineup_id, "wallpaper_id": first, "ranked": "true"}
+    ).text
+
+    tiles = re.findall(r"<button\b[^>]*data-wallpaper-id=[^>]*>", fragment)
+    submit = re.search(r"<form\b[^>]*data-submit-order[^>]*>", shell)
+    assert len(tiles) == 4
+    assert submit is not None
+    for number, tile in enumerate(tiles, start=1):
+        trigger = re.search(r'hx-trigger="([^"]*)"', tile)
+        assert trigger is not None
+        assert trigger.group(1).startswith(f"click, keydown[key=='{number}'&&")
+        assert trigger.group(1).endswith("] from:body")
+        for guard in ("!ctrlKey", "!metaKey", "!altKey", "!repeat", "input,select,textarea"):
+            assert guard in trigger.group(1)
+        wallpaper_id = re.search(r'data-wallpaper-id="(\w+)"', tile).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+        offered = "false" if wallpaper_id == first else "true"
+        assert 'hx-post="/compare/order/rank"' in tile
+        assert f'"wallpaper_id": "{wallpaper_id}", "ranked": "{offered}"' in html.unescape(tile)
+        assert 'hx-target="#lineup"' in tile
+        assert 'hx-sync="#lineup:drop"' in tile
+        assert 'hx-include="#lineup-id"' in tile
+    assert re.findall(r'<span class="rank">(\d)</span>', fragment) == ["1"]
+    assert 'hx-post="/compare/order"' in submit.group(0)
+    assert 'hx-target="#lineup"' in submit.group(0)
+    assert 'hx-sync="#lineup:drop"' in submit.group(0)
+    assert 'hx-include="#lineup-id"' in submit.group(0)
+    assert re.search(r'hx-vals="js:\{theme:', submit.group(0))
+    submit_trigger = html.unescape(re.search(r'hx-trigger="([^"]*)"', submit.group(0)).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+    assert submit_trigger.startswith("submit, keydown[key=='Enter'&&")
+    assert "!target.closest('button,a')" in submit_trigger
+    assert "key=='0'" not in shell + fragment
+    assert "data-none-of-these" not in shell
+    assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
+
+
 def test_every_lineup_tile_has_the_grids_star_beside_its_pick_never_inside_it(web: Web) -> None:
     """The same star as the grid's (star.html), by click or F, as a direct child of the tile so F finds it,
     and a sibling of the Pick rather than inside it, so a click on the star is never a click on the tile.

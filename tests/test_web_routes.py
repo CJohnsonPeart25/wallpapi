@@ -14,6 +14,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 
+import httpx2 as httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,6 +26,7 @@ from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.lineup import LineupRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
+from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.verdict_grid import GridResponse, TileResponse
 from wallpapi.web.app import REFUSALS
@@ -37,9 +39,11 @@ def test_every_page_boots_on_the_shell_and_tiles_come_from_the_cache(web: Web) -
     **Batch** and a **Line-up** of tiles are served from `/thumb`, never hotlinked (`thumbnails.py`)."""
     _, client = web
 
-    responses = {path: client.get(path) for path in ("/", "/compare", "/history", "/settings")}
+    pages = ("/", "/compare", "/compare?instrument=order", "/history", "/settings")
+    responses = {path: client.get(path) for path in pages}
     batch = client.get("/batch").text
     lineup = client.get("/compare/lineup?instrument=pick").text
+    ordered = client.get("/compare/lineup?instrument=order").text
 
     for path, response in responses.items():
         assert response.status_code == HTTPStatus.OK, path
@@ -48,9 +52,10 @@ def test_every_page_boots_on_the_shell_and_tiles_come_from_the_cache(web: Web) -
             assert link in response.text, path
     assert batch.count('data-wallpaper-id="') == 8
     assert batch.count('src="/thumb/') == 8
-    assert lineup.count('data-wallpaper-id="') == 4
-    assert lineup.count('src="/thumb/') == 4
-    assert "th.wallhaven.cc" not in batch + lineup
+    for fragment in (lineup, ordered):
+        assert fragment.count('data-wallpaper-id="') == 4
+        assert fragment.count('src="/thumb/') == 4
+    assert "th.wallhaven.cc" not in batch + lineup + ordered
 
 
 def test_a_thumbnail_is_fetched_once_and_then_served_off_disk(web: Web) -> None:
@@ -500,19 +505,31 @@ def lineup_of(body: str) -> tuple[str, list[str]]:
 
 
 def test_the_compare_shell_mints_nothing_and_fetches_the_lineup_for_its_instrument(web: Web) -> None:
-    """The **Instrument** is carried in the URL, **Pick** when none is named; one the tab does not offer is
-    a 404. A load, or a restore from the back-forward cache, is a visit (ADR 0029)."""
+    """The **Instrument** is carried in the URL, **Pick** when none is named, **Order** beside it; one the tab
+    does not offer is a 404. A load, or a restore from the back-forward cache, is a visit (ADR 0029). The
+    choice links each **Instrument** the tab offers and marks the one on screen."""
     _, client = web
 
     shell = client.get("/compare").text
     named = client.get("/compare?instrument=pick")
+    order = client.get("/compare?instrument=order")
 
     assert 'hx-get="/compare/lineup?instrument=pick"' in shell
     assert 'hx-trigger="load, pageshow[persisted] from:window"' in shell
     assert 'data-wallpaper-id="' not in shell
-    assert named.status_code == HTTPStatus.OK
-    assert client.get("/compare?instrument=order").status_code == HTTPStatus.NOT_FOUND
-    assert client.get("/compare/lineup?instrument=order").status_code == HTTPStatus.NOT_FOUND
+    assert named.status_code == order.status_code == HTTPStatus.OK
+    assert 'hx-get="/compare/lineup?instrument=order"' in order.text
+    choice = r'<a href="/compare\?instrument=(\w+)"( aria-current="page")?>'
+    assert [(name, bool(current)) for name, current in re.findall(choice, shell)] == [
+        ("pick", True),
+        ("order", False),
+    ]
+    assert [(name, bool(current)) for name, current in re.findall(choice, order.text)] == [
+        ("pick", False),
+        ("order", True),
+    ]
+    assert client.get("/compare?instrument=stream").status_code == HTTPStatus.NOT_FOUND
+    assert client.get("/compare/lineup?instrument=stream").status_code == HTTPStatus.NOT_FOUND
 
 
 def test_each_visit_fetches_a_new_lineup_and_records_nothing(web: Web) -> None:
@@ -591,6 +608,130 @@ def test_a_pick_of_a_wallpaper_the_lineup_does_not_show_is_a_bare_404(web: Web) 
 
     assert refused.status_code == HTTPStatus.NOT_FOUND
     assert evidence_log.judgements(harness.connect()) == []
+
+
+def _ranks(body: str) -> list[int | None]:
+    """The rank each **Line-up** tile shows on an **Order**, in on-screen order, `None` for unranked."""
+    tiles = re.findall(r'<li class="lineup-tile".*?</li>', body, flags=re.DOTALL)
+    shown = [re.search(r'<span class="rank">(\d+)</span>', tile) for tile in tiles]
+    return [None if rank is None else int(rank.group(1)) for rank in shown]
+
+
+def _rank(
+    client: TestClient, lineup_id: str, wallpaper_id: str, *, ranked: bool = True, **form: str
+) -> httpx.Response:
+    """Rank one tile next on the **Order**, or take it back, as the tile's click posts it."""
+    return client.post(
+        "/compare/order/rank",
+        data={"lineup_id": lineup_id, "wallpaper_id": wallpaper_id, "ranked": str(ranked).lower(), **form},
+    )
+
+
+def test_an_order_is_ranked_a_click_at_a_time_and_ranking_all_but_the_last_answers_it(web: Web) -> None:
+    """Each click answers with the same **Line-up**, the ranks on its tiles and a ranked tile offering to be
+    taken back, and records nothing; taking one back closes the ranks after it up. The click that leaves one
+    tile unranked records one **Order** with the theme, the last tile ranked last, and answers with the next
+    **Line-up**. Every tile stays in the **Pool**."""
+    harness, client = web
+    shown = lineup_of(client.get("/compare/lineup?instrument=order").text)
+    lineup_id, (a, _, c, d) = shown
+    members = pool.members(harness.connect())
+
+    first = _rank(client, lineup_id, c)
+    assert first.status_code == HTTPStatus.OK
+    assert lineup_of(first.text) == shown
+    assert _ranks(first.text) == [None, None, 1, None]
+    tile_c = re.search(rf'<button\b[^>]*data-wallpaper-id="{c}"[^>]*>', first.text)
+    assert tile_c is not None
+    assert f'"wallpaper_id": "{c}", "ranked": "false"' in html.unescape(tile_c.group(0))
+    assert 'hx-post="/compare/order/rank"' in first.text
+
+    assert _ranks(_rank(client, lineup_id, a).text) == [2, None, 1, None]
+    assert _ranks(_rank(client, lineup_id, c, ranked=False).text) == [1, None, None, None]
+    assert _ranks(_rank(client, lineup_id, c).text) == [1, None, 2, None]
+    assert evidence_log.judgements(harness.connect()) == []
+
+    answered = _rank(client, lineup_id, d, theme="dark")
+
+    assert answered.status_code == HTTPStatus.OK
+    following, _ = lineup_of(answered.text)
+    assert following != lineup_id
+    assert _ranks(answered.text) == [None] * 4, "the next starts unranked"
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert (judgement.instrument, judgement.screen, judgement.response) == (ORDER_V1, "compare", None)
+    assert [s.response for s in judgement.shown] == [OrderTile(rank=r) for r in (1, 4, 2, 3)]
+    assert judgement.context == {"theme": "dark"}
+    assert pool.members(harness.connect()) == members
+
+
+def test_submit_records_a_partial_order_and_with_nothing_ranked_a_blank_one(web: Web) -> None:
+    """Enter, or the nav's Submit: the ranks held as they stand, the rest unranked, and the next **Line-up**
+    at once, as a **Pick** answers."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=order").text)
+    _rank(client, lineup_id, tiles[1])
+
+    partial = client.post("/compare/order", data={"lineup_id": lineup_id, "theme": "light"})
+
+    assert partial.status_code == HTTPStatus.OK
+    following, _ = lineup_of(partial.text)
+    assert following != lineup_id
+    assert 'hx-post="/compare/order/rank"' in partial.text, "the next answers the same Instrument"
+
+    blank = client.post("/compare/order", data={"lineup_id": following})
+
+    assert blank.status_code == HTTPStatus.OK
+    first, second = evidence_log.judgements(harness.connect())
+    assert [s.response for s in first.shown] == [OrderTile(rank=1 if n == 1 else None) for n in range(4)]
+    assert first.context == {"theme": "light"}
+    assert [s.response for s in second.shown] == [OrderTile()] * 4
+    assert second.instrument == ORDER_V1
+
+
+def test_star_then_order_records_the_favourite_and_it_reaches_the_library(web: Web) -> None:
+    """The star on an **Order** is the star on a **Pick**: posted for the **Instrument** on screen, it swaps
+    back tiles that still rank, and the **Order** that records it puts the starred **Wallpaper** in the
+    **Library** and out of the **Pool**, every other tile staying in it."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=order").text)
+    members = [w.id for w in pool.members(harness.connect())]
+    _rank(client, lineup_id, tiles[0])
+
+    starred = client.post(
+        "/compare/star?instrument=order",
+        data={"lineup_id": lineup_id, "wallpaper_id": tiles[3], "starred": "true"},
+    )
+
+    assert _lineup_starred(starred.text) == [n == 3 for n in range(4)]
+    assert _ranks(starred.text) == [1, None, None, None], "a star keeps the ranks"
+    assert 'hx-post="/compare/order/rank"' in starred.text
+    client.post("/compare/order", data={"lineup_id": lineup_id})
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert [s.response for s in judgement.shown] == [
+        OrderTile(rank=1 if n == 0 else None, favourite=n == 3) for n in range(4)
+    ]
+    assert [written.wallpaper_id for written in harness.library.written] == [tiles[3]]
+    assert [w.id for w in pool.members(harness.connect())] == [w for w in members if w != tiles[3]]
+
+
+def test_a_stale_rank_or_order_is_refused_in_words_and_a_tile_not_shown_is_a_bare_404(web: Web) -> None:
+    """A second tab, or a key pressed twice: a rank or a submit on a **Line-up** already answered is a 409
+    that swaps in the one on screen now, as a stale **Pick** is; a rank of a tile the **Line-up** does not
+    show is a bare 404. Only the first answer is recorded."""
+    harness, client = web
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=order").text)
+    live_now = lineup_of(client.post("/compare/order", data={"lineup_id": lineup_id}).text)
+
+    stale_rank = _rank(client, lineup_id, tiles[0])
+    stale_order = client.post("/compare/order", data={"lineup_id": lineup_id})
+    unknown = _rank(client, live_now[0], "never-shown")
+
+    for stale in (stale_rank, stale_order):
+        assert stale.status_code == HTTPStatus.CONFLICT
+        assert "That line-up is no longer on screen" in " ".join(stale.text.split())
+        assert lineup_of(stale.text) == live_now
+    assert unknown.status_code == HTTPStatus.NOT_FOUND
+    assert len(evidence_log.judgements(harness.connect())) == 1
 
 
 def _lineup_stars(body: str) -> list[str]:

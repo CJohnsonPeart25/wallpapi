@@ -21,7 +21,7 @@ from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload
-from wallpapi.lineup import Lineup, LineupRefused, Picked
+from wallpapi.lineup import Lineup, LineupRefused, Ordered, Picked
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
 from wallpapi.thumbnails import ThumbnailEviction
@@ -98,6 +98,33 @@ def pick(
     if isinstance(picked, Picked) and picked.starred:
         modules.library.reconcile(connection, settings.get(connection).library_path)
     return picked
+
+
+def rank_lineup_tile(
+    modules: Modules, lineup_id: str, wallpaper_id: str, *, ranked: bool, theme: Theme | None = None
+) -> Lineup | Ordered | LineupRefused:
+    """Rank one tile of the live **Line-up** next on its **Order**, or take its rank back. Held while the
+    **Line-up** is live, as a star is, with no tail; but the rank that leaves only the last tile unranked
+    answers the **Order** with the page's `theme`, and then, if a tile was starred, the **Library** is
+    reconciled, as after a **Pick**."""
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        ranked_or_ordered = modules.lineups.rank(write, lineup_id, wallpaper_id, ranked=ranked, theme=theme)
+    if isinstance(ranked_or_ordered, Ordered) and ranked_or_ordered.starred:
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return ranked_or_ordered
+
+
+def order(modules: Modules, lineup_id: str, *, theme: Theme | None = None) -> Ordered | LineupRefused:
+    """Answer the live **Line-up** with the **Order** held against it as it stands, partial or empty, with
+    the page's `theme`; then, if a tile was starred, reconcile the **Library**, as after a **Pick**, and for
+    the same reasons: no network call for an unstarred answer, and no eviction."""
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        ordered = modules.lineups.order(write, lineup_id, theme=theme)
+    if isinstance(ordered, Ordered) and ordered.starred:
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return ordered
 
 
 def choose_lineup_size(modules: Modules, size: str) -> Settings | SettingsRefused:
