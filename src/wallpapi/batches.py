@@ -4,9 +4,10 @@
 
 A **Batch** persists until it is submitted (ADR 0002), skipped (ADR 0026) or discarded by a **Pool reset**
 (ADR 0025). Submitting and skipping each record one **Judgement**, and only submitting decides anything; a
-reset records nothing. Tile posts set a **Draft Batch** row and never toggle; absence
-is an unmarked tile, which a submitted **Judgement** reads as an **Ignore**, and an **Ignore** is never
-drafted. A **Batch** is submitted once. Every write takes the caller's write handle, behind one claim check.
+reset records nothing. Tile posts set a **Draft Batch** row and never toggle; absence is an unmarked
+tile, which a submitted **Judgement** reads as an **Ignore**, and an **Ignore** is never drafted. Opening a
+tile's preview sets a row of its own beside the mark. A **Batch** is submitted once. Every write takes the
+caller's write handle, behind one claim check.
 """
 
 from __future__ import annotations
