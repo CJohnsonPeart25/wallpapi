@@ -586,6 +586,40 @@ def test_a_mark_is_set_rather_than_toggled_and_comes_back_on_the_batch(rig: Batc
     assert rig.drafted_rows() == 0
 
 
+def test_a_star_and_a_like_or_ban_replace_each_other_and_the_tile_is_submitted_as_one(
+    rig: BatchesRig,
+) -> None:
+    """The star is the **Favourite** in the **Draft Batch**'s one value per tile, so the last of a star and a
+    **Like** or **Ban** stands and the submitted tile says one of them, never both (100 and -100 at once)."""
+    batch = rig.next()
+    liked, starred, starred_over_ban, banned, *_ = [w.id for w in batch.wallpapers]
+    for wallpaper_id, marks in {
+        liked: (Verdict.FAVOURITE, Verdict.LIKE),
+        starred: (Verdict.LIKE, Verdict.FAVOURITE),
+        starred_over_ban: (Verdict.BAN, Verdict.FAVOURITE),
+        banned: (Verdict.FAVOURITE, Verdict.BAN),
+    }.items():
+        for verdict in marks:
+            rig.set_draft(batch.id, wallpaper_id, verdict)
+
+    assert rig.next().drafts == {
+        liked: Verdict.LIKE,
+        starred: Verdict.FAVOURITE,
+        starred_over_ban: Verdict.FAVOURITE,
+        banned: Verdict.BAN,
+    }
+
+    rig.submit(batch.id)
+
+    tiles = _tiles(rig)
+    assert [tiles[w] for w in (liked, starred, starred_over_ban, banned)] == [
+        TileResponse(verdict=GridVerdict.LIKE),
+        TileResponse(favourite=True),
+        TileResponse(favourite=True),
+        TileResponse(verdict=GridVerdict.BAN),
+    ]
+
+
 def test_select_all_replaces_every_mark_and_select_none_deletes_them(rig: BatchesRig) -> None:
     """One transaction for the whole **Batch**, not one per tile. "All" is every tile shown, marked or not."""
     batch = rig.next()
