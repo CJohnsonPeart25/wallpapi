@@ -221,7 +221,10 @@ def _lineup_view(
 ) -> HTMLResponse:
     """The **Line-up** fragment, or the words for why there is none; after a refused answer, the one on
     screen now under the words for why, at the refusal's status."""
-    context: dict[str, object] = {"instrument": instrument, "refused": refused and refused.message}
+    context: dict[str, object] = {
+        "instrument": instrument,
+        "refused": None if refused is None else refused.message,
+    }
     if isinstance(result, Lineup):
         status = HTTPStatus.OK if refused is None else refused.status
         return templates.TemplateResponse(
