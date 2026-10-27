@@ -239,14 +239,74 @@ def test_a_new_batch_size_applies_to_the_next_batch_minted_and_not_the_live_one(
     assert (following.size, len(following.wallpapers)) == (2, 2)
 
 
-def test_asking_again_hands_back_the_live_batch_rather_than_minting_another(rig: BatchesRig) -> None:
-    """A refresh is not a decision (ADR 0002). Read back from storage, so the **Zones** come back too."""
+def test_asking_for_the_next_hands_back_the_live_batch_rather_than_minting_another(rig: BatchesRig) -> None:
+    """What the page asks after a refused answer: the live **Batch**, not a new one (ADR 0029). Read back
+    from storage, so the **Zones** come back too."""
     first = rig.next()
 
     again = rig.next()
 
     assert again == first
     assert rig.minted == ["batch-1"]
+
+
+# -- a visit draws a new Batch (ADR 0029)
+
+
+def test_two_visits_draw_two_batches_and_the_first_is_never_recorded(rig: BatchesRig) -> None:
+    """A visit replaces the live **Batch**: the first is gone, nothing is recorded, and its tiles stay in the
+    **Pool**, so the second may show some of them again."""
+    first = rig.fresh()
+
+    second = rig.fresh()
+
+    assert (first.id, second.id) == ("batch-1", "batch-2")
+    assert [w.id for w in second.wallpapers] != [w.id for w in first.wallpapers]
+    assert rig.next() == second
+    assert rig.batch_rows() == 1
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == list(catalogue_of(24))
+
+
+def test_a_visit_drops_the_marks_and_previews_of_the_batch_it_replaces(rig: BatchesRig) -> None:
+    """Marks live only while their screen does: the **Draft Batch** goes with the replaced **Batch**, and the
+    new one starts unmarked."""
+    first = rig.fresh()
+    rig.set_all_drafts(first.id, Verdict.LIKE)
+    rig.open_preview(first.id, first.wallpapers[0].id)
+
+    second = rig.fresh()
+
+    assert (second.drafts, second.previewed) == ({}, frozenset())
+    assert (rig.drafted_rows(), rig.previewed_rows()) == (0, 0)
+    assert rig.logged() == []
+
+
+def test_a_visit_after_a_submission_draws_from_what_is_left(rig: BatchesRig) -> None:
+    """The live **Batch** submitted, a visit draws as the next would: nothing submitted is touched."""
+    submitted = rig.fresh()
+    rig.submit(submitted.id)
+
+    visited = rig.fresh()
+
+    assert not {w.id for w in visited.wallpapers} & {w.id for w in submitted.wallpapers}
+    assert [j.screen for j in rig.logged()] == ["batch"]
+    kept = rig.connection.execute("SELECT id FROM batches WHERE submitted_at IS NOT NULL").fetchall()
+    assert [row["id"] for row in kept] == [submitted.id]
+
+
+def test_a_visit_with_nothing_to_draw_still_drops_the_live_batch(rig: BatchesRig) -> None:
+    """Nothing in the **Pool** to draw from: a visit says why there is nothing, and the screen before it has
+    ended all the same, its **Draft Batch** with it."""
+    stale = rig.fresh()
+    rig.set_draft(stale.id, stale.wallpapers[0].id, Verdict.LIKE)
+    rig.empty_the_pool()
+
+    result = rig.batches.fresh(rig.connection)
+
+    assert result == BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
+    assert (rig.batch_rows(), rig.drafted_rows()) == (0, 0)
+    assert batches.live(rig.connection) is None
 
 
 def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_from(rig: BatchesRig) -> None:
@@ -316,17 +376,19 @@ def test_a_pool_too_small_for_a_batch_is_not_blamed_on_the_radius(rig: BatchesRi
     assert batch.unknown_short is None
 
 
-def test_the_unknown_zone_is_judged_at_mint_and_not_on_a_reload(rig: BatchesRig) -> None:
+def test_the_unknown_zone_is_judged_at_mint_and_not_when_the_live_batch_is_read_back(rig: BatchesRig) -> None:
     """Derived from the classification the mint computes and never stored (ADR 0023): the live **Batch**
-    read back has nothing to say."""
+    read back has nothing to say, and a visit, which mints, says it again (ADR 0029)."""
     _ban_near_everything(rig)
     minted = rig.next()
 
-    reloaded = rig.next()
+    read_back = rig.next()
+    visited = rig.fresh()
 
     assert minted.unknown_short is not None
-    assert reloaded.unknown_short is None
-    assert reloaded == minted, "not part of what the Batch is"
+    assert read_back.unknown_short is None
+    assert read_back == minted, "not part of what the Batch is"
+    assert visited.unknown_short == minted.unknown_short
 
 
 def test_an_empty_pool_with_no_refill_yet_says_so(rig: BatchesRig) -> None:
@@ -507,18 +569,18 @@ def test_the_stamp_names_the_newest_judgement_ranking_read(rig: BatchesRig) -> N
 
 def test_the_stamp_is_what_ranked_the_batch_at_mint_not_what_stands_at_submission(rig: BatchesRig) -> None:
     """Minted under one radius and decay over an empty log; the settings change and a **Judgement** lands
-    before the submission. A reload and the **Judgement** both carry the mint's stamp."""
+    before the submission. The live **Batch** read back and the **Judgement** both carry the mint's stamp."""
     rig.configure(similarity_radius=0.3, similarity_decay=2.5)
     minted = rig.next()
     rig.configure(similarity_radius=0.2, similarity_decay=4.0)
     rig.stock([wallpaper("elsewhere")])
     rig.decide(Verdict.LIKE, "elsewhere")
 
-    reloaded = rig.next()
+    read_back = rig.next()
     rig.submit(minted.id)
 
     stamp = RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.3, decay=2.5)
-    assert (minted.ranking, reloaded.ranking, rig.logged()[-1].ranking) == (stamp, stamp, stamp)
+    assert (minted.ranking, read_back.ranking, rig.logged()[-1].ranking) == (stamp, stamp, stamp)
 
 
 def _favour_one_with_both_embedded(rig: BatchesRig) -> None:
@@ -680,7 +742,7 @@ def test_bulk_marking_one_batch_leaves_an_earlier_batchs_record_alone(rig: Batch
 # -- the preview opened, on the Draft Batch
 
 
-def test_a_preview_opened_survives_a_reload_and_a_bulk_mark_and_is_submitted_beside_its_mark(
+def test_a_preview_opened_is_held_through_a_bulk_mark_and_is_submitted_beside_its_mark(
     rig: BatchesRig,
 ) -> None:
     """Opened on one tile and that tile starred, then the whole **Batch** marked **Like**: the mark is
@@ -691,10 +753,10 @@ def test_a_preview_opened_survives_a_reload_and_a_bulk_mark_and_is_submitted_bes
     rig.set_draft(batch.id, opened, Verdict.FAVOURITE)
     rig.set_all_drafts(batch.id, Verdict.LIKE)
 
-    reloaded = rig.next()
+    held = rig.next()
     rig.submit(batch.id)
 
-    assert reloaded.previewed == {opened}
+    assert held.previewed == {opened}
     assert _tiles(rig) == {
         w.id: TileResponse(verdict=GridVerdict.LIKE, preview_opened=w.id == opened) for w in batch.wallpapers
     }
@@ -741,6 +803,11 @@ def _shown_twice(rig: BatchesRig, batch: Batch) -> None:
     rig.next()
 
 
+def _replaced_by_a_visit(rig: BatchesRig, batch: Batch) -> None:
+    rig.set_draft(batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
+    rig.fresh()
+
+
 def _three_marked(rig: BatchesRig, batch: Batch) -> None:
     for w, verdict in zip(batch.wallpapers, (Verdict.FAVOURITE, Verdict.LIKE, Verdict.BAN), strict=False):
         rig.set_draft(batch.id, w.id, verdict)
@@ -756,8 +823,8 @@ def _previewed(rig: BatchesRig, batch: Batch) -> None:
 
 @pytest.mark.parametrize(
     "act",
-    [_shown_twice, _three_marked, _all_banned, _previewed],
-    ids=["shown and reloaded", "tiles marked", "all banned", "a preview opened"],
+    [_shown_twice, _replaced_by_a_visit, _three_marked, _all_banned, _previewed],
+    ids=["shown twice", "marked and replaced by a visit", "tiles marked", "all banned", "a preview opened"],
 )
 def test_a_batch_that_is_never_submitted_records_nothing(
     rig: BatchesRig, act: Callable[[BatchesRig, Batch], None]
@@ -806,6 +873,22 @@ def test_an_unknown_or_already_submitted_batch_is_refused_and_records_nothing(
     )
     assert refusal == SubmissionRefused(reason=reason)
     assert (rig.logged(), rig.drafted_rows()) == before
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
+def test_anything_posted_against_a_replaced_batch_is_refused_as_unknown_and_records_nothing(
+    rig: BatchesRig, operation: str
+) -> None:
+    """Two tabs on the **Batches** page: the second visit replaced the first tab's **Batch**, so its marks,
+    its submission and its **Skip** are refused, and the **Batch** live now is untouched."""
+    stale = rig.fresh()
+    now_live = rig.fresh()
+
+    refusal = OPERATIONS[operation](rig, stale.id)
+
+    assert refusal == SubmissionRefused(reason=SubmissionRefused.Reason.UNKNOWN_BATCH)
+    assert rig.logged() == []
+    assert rig.next() == now_live
 
 
 # -- submitting
@@ -912,7 +995,7 @@ def test_after_a_shortfall_each_tiles_provenance_names_its_slot_zone_beside_its_
     rig: BatchesRig,
 ) -> None:
     """An all-**Unknown** **Pool** under half and half: four **Banger** slots fall short and are made up from
-    **Unknown**. Each tile says both, read back from storage, so a reload keeps the slot."""
+    **Unknown**. Each tile says both, read back from storage, so the live **Batch** keeps the slot."""
     with storage.write(rig.connection) as write:
         settings.save_mix(write, "halves", unknown=50, banger=50, dud=0)
     rig.configure(active_mix="halves")
@@ -1178,7 +1261,7 @@ def test_a_reshown_wallpaper_comes_up_marked_with_its_latest_verdict(rig: Batche
     assert reshown.drafts == {liked: Verdict.LIKE, favourite: Verdict.FAVOURITE, overturned: Verdict.LIKE}
     assert ignored in {w.id for w in reshown.wallpapers}
     assert banned not in {w.id for w in reshown.wallpapers}, "a Ban is never reshown"
-    assert reshown == rig.next(), "read back from storage, so a reload keeps it"
+    assert reshown == rig.next(), "read back from storage while it is live"
 
 
 def test_leaving_a_reshown_wallpaper_alone_records_its_verdict_again(rig: BatchesRig) -> None:

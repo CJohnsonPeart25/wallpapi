@@ -7,9 +7,9 @@ the data: every refusal, filter and policy is a module's; a workflow orders the 
 
 A workflow owns every transaction that spans more than one module's tables or has a post-commit tail. A
 module may open its own short write over only its own tables when nothing composes it into a larger
-transaction: `Batches.next` minting a **Batch** (re-read under the lock, ADR 0002), `Refill.step` admitting a
-page after its network call, `EmbeddingCache` in its own file, and the **Library**'s per-file records (ADR
-0006).
+transaction: `Batches` and `Lineups` drawing a screen and dropping the one it replaces (ADR 0029),
+`Refill.step` admitting a page after its network call, `EmbeddingCache` in its own file, and the
+**Library**'s per-file records (ADR 0006).
 """
 
 from __future__ import annotations
@@ -75,8 +75,8 @@ def skip(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> Subm
 def star_lineup_tile(
     modules: Modules, lineup_id: str, wallpaper_id: str, *, starred: bool
 ) -> Lineup | LineupRefused:
-    """Star one tile of the live **Line-up**, or take its star off. Held until the **Line-up** is answered,
-    so nothing is decided yet and there is no tail."""
+    """Star one tile of the live **Line-up**, or take its star off. Held while the **Line-up** is live and
+    recorded only when it is answered, so nothing is decided yet and there is no tail."""
     with storage.write(modules.connect()) as write:
         return lineup.star(write, lineup_id, wallpaper_id, starred=starred)
 

@@ -1,4 +1,4 @@
-"""The **Line-up**: drawing one for the compare tab, keeping it and its stars until it is answered, and
+"""The **Line-up**: drawing one for each visit to the compare tab, holding its stars while it is live, and
 answering it with a **Pick** into the **Evidence log**. Nothing else reads or writes `lineups`,
 `lineup_wallpapers` or `lineup_stars`.
 
@@ -8,14 +8,15 @@ about on both tabs at once. The allocation and the **Shortfall** are a **Batch**
 decides which **Wallpaper** fills each **Slot**, so a **Pick**, which moves no **Score**, does not bring the
 same best **Banger** back on every screen. `wear` is the one place wear is worked out.
 
-There is one live **Line-up**, kept until it is answered (ADR 0002's rule) or discarded by a **Pool reset**
-(ADR 0025), so a reload shows the same one. Answering records one **Judgement** and drops the **Line-up**,
-whose **Judgement** then holds all of it; the next is drawn when it is asked for.
+There is one live **Line-up**. Each visit draws a new one (`Lineups.fresh`), and the one it replaces is
+dropped with its stars and records nothing (ADR 0029); a **Pool reset** discards it too (ADR 0025).
+Answering records one **Judgement** and drops the **Line-up**, whose **Judgement** then holds all of it; the
+next is drawn when it is asked for.
 
 A **Pick** says one tile beat the others, which is relative Evidence, and a "none of these" says nothing:
 neither decides anything (ADR 0027). The star is the one thing on a **Line-up** that does. Any tile may be
-starred, and a star is held against its tile of the live **Line-up** (`star`) until the **Line-up** is
-answered, so a reload keeps it; held per tile, not per **Instrument**, so every **Instrument** on a
+starred, and a star is held against its tile of the live **Line-up** (`star`) for as long as the
+**Line-up** is live, which a reload ends; held per tile, not per **Instrument**, so every **Instrument** on a
 **Line-up** stars the same way. Answering records each star in the **Judgement** as a **Favourite** and
 retires that **Wallpaper** from the **Pool** (ADR 0016); every other tile stays.
 """
@@ -53,7 +54,7 @@ class Lineup:
     `zones` is the **Zone** each was drawn from at mint time and `slots` the **Zone** its **Slot** was meant
     for; `mix` the name of the **Mix** it was drawn with; `ranking` the **Ranking stamp** it was drawn under,
     `None` when nothing ranked it. All recorded at mint, never recomputed. `starred` is every tile starred
-    so far, held until the **Line-up** is answered.
+    so far, held while the **Line-up** is live.
     """
 
     id: str
@@ -91,7 +92,8 @@ class LineupRefused:
 
     class Reason(StrEnum):
         UNKNOWN_LINEUP = "unknown_lineup"
-        """Not the live **Line-up**: already answered, discarded by a **Pool reset**, or never drawn here."""
+        """Not the live **Line-up**: already answered, replaced by a later visit (ADR 0029), discarded by a
+        **Pool reset**, or never drawn here."""
 
         NOT_IN_LINEUP = "not_in_lineup"
         """A winner, or a star, on a tile the **Line-up** does not show: no control posts it."""
@@ -135,20 +137,38 @@ class Lineups:
         self._random = random_source
         self._new_id = new_id
 
-    def next(self, connection: sqlite3.Connection) -> Lineup | LineupUnavailable:
-        """The live **Line-up**, drawing one only if there is none. No **API call**.
+    def fresh(self, connection: sqlite3.Connection) -> Lineup | LineupUnavailable:
+        """A new **Line-up** for a visit to the compare tab, replacing the live one (ADR 0029). No **API
+        call**.
 
-        Ranked outside the write transaction, which stays short, then re-read under the write lock so two
-        tabs opened at once cannot each draw one.
+        The **Line-up** it replaces is dropped with its stars in the transaction that writes its successor,
+        and records nothing: it adds no **Wear**, and its tiles stay in the **Pool**. With too few to draw,
+        the live one is still dropped: a visit always ends the screen before it.
         """
+        return self._mint(connection, replacing=True)
+
+    def next(self, connection: sqlite3.Connection) -> Lineup | LineupUnavailable:
+        """The live **Line-up**, drawing one only if there is none: what follows an answer, or a refused one,
+        never a visit. No **API call**."""
         existing = live(connection)
         if existing is not None:
             return existing
+        return self._mint(connection, replacing=False)
 
+    def _mint(self, connection: sqlite3.Connection, *, replacing: bool) -> Lineup | LineupUnavailable:
+        """Draw a **Line-up** and store it, `replacing` the live one or, if another request drew one first,
+        handing that back.
+
+        Ranked outside the write transaction, which stays short; without `replacing`, re-read under the
+        write lock so two requests at once cannot each draw one.
+        """
         ranked = self._ranked(connection)
         on_the_batch = batches.showing(connection)
         candidates = [scored for scored in ranked.scored if scored.wallpaper.id not in on_the_batch]
         if len(candidates) < FEWEST:
+            if replacing:
+                with storage.write(connection) as write:
+                    discard_live(write)
             return self._too_few()
         mix = settings.active_mix(connection)
         chosen = self._drawn(connection, mix, candidates, settings.get(connection).lineup_size)
@@ -156,9 +176,12 @@ class Lineups:
         lineup_id = self._new_id()
 
         with storage.write(connection) as write:
-            contended = live(write)
-            if contended is not None:
-                return contended
+            if replacing:
+                discard_live(write)
+            else:
+                contended = live(write)
+                if contended is not None:
+                    return contended
             write.execute(
                 "INSERT INTO lineups (id, created_at, mix, ranking) VALUES (?, ?, ?, ?)",
                 (
@@ -286,7 +309,8 @@ def star(
     written.
 
     Sets rather than toggles, so a replayed click cannot flip it. Not an answer: nothing is recorded, nothing
-    leaves the **Pool**, and the **Line-up** stays on screen until it is answered.
+    leaves the **Pool**, and the star is recorded only if the **Line-up** is answered before a visit
+    replaces it.
     """
     claimed = _claim(write, lineup_id)
     if claimed is None:
@@ -306,8 +330,9 @@ def star(
 
 
 def discard_live(write: sqlite3.Connection) -> int:
-    """Drop the live **Line-up** inside the caller's transaction, and say how many were dropped: a **Pool
-    reset**'s share (ADR 0025). Housekeeping, not an answer: nothing is recorded."""
+    """Drop the live **Line-up** with its stars inside the caller's transaction, and say how many were
+    dropped: a **Pool reset**'s share (ADR 0025), and what a visit replaces (ADR 0029). Housekeeping, not an
+    answer: nothing is recorded."""
     return _drop(write, "SELECT id FROM lineups")
 
 
