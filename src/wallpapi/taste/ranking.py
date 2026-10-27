@@ -47,16 +47,17 @@ def rank(
     """**Score** every candidate against the decided Items.
 
     Absolute Evidence resolves latest-wins per Item (`resolution.resolve`), and the decided Items are those
-    standing at a non-zero value, as columns in the order the Evidence first names them. `similarity` is
-    called exactly once, for the whole candidates x decided matrix (Invariant 2), even when nothing is
-    decided; a matrix of any other shape raises `ValueError`. Relative Evidence is accepted and, in the MVP,
-    ignored.
+    standing at a non-zero value, as columns in **Item** key order, whatever order the Evidence names them in:
+    a **Score** is a sum over the columns, and the same floats summed in another order can differ in the last
+    bit. `similarity` is called exactly once, for the whole candidates x decided matrix (Invariant 2), even
+    when nothing is decided; a matrix of any other shape raises `ValueError`. Relative Evidence is accepted
+    and, in the MVP, ignored.
 
     A candidate that is itself decided is scored against its own Evidence, at distance 0. Holding it out is
     the caller's choice.
     """
     standing = resolve(evidence)
-    decided = [item for item, piece in standing.items() if piece.strength != 0]
+    decided = sorted(item for item, piece in standing.items() if piece.strength != 0)
     similarities = similarity(candidates, decided)
     if similarities.shape != (len(candidates), len(decided)):
         raise ValueError(
