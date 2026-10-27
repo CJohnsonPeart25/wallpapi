@@ -3,7 +3,8 @@
 `draft_batch` or `draft_preview`.
 
 A **Batch** persists until it is submitted (ADR 0002), skipped (ADR 0026) or discarded by a **Pool reset**
-(ADR 0025); only submitting records anything. Tile posts set a **Draft Batch** row and never toggle; absence
+(ADR 0025). Submitting and skipping each record one **Judgement**, and only submitting decides anything; a
+reset records nothing. Tile posts set a **Draft Batch** row and never toggle; absence
 is an unmarked tile, which a submitted **Judgement** reads as an **Ignore**, and an **Ignore** is never
 drafted. A **Batch** is submitted once. Every write takes the caller's write handle, behind one claim check.
 """
@@ -32,7 +33,7 @@ from wallpapi.taste.judgement import Judgement, LogPosition, Provenance, Ranking
 from wallpapi.taste.ranking import rank
 from wallpapi.taste.reductions import evidence
 from wallpapi.taste.rng import SeededRandom
-from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,15 +302,60 @@ class Batches:
         transaction.
 
         Claim the **Batch**; append a submitted verdict grid **Judgement** of every tile in on-screen order,
-        each with its mark or unmarked, the **Zone** it was drawn from and the **Mix** as **Provenance**, its
-        mint time as first shown and the clock's local offset; retire everything shown from the **Pool** (ADR
-        0016); clear the **Draft Batch**. An unmarked tile is recorded as one, and read as an **Ignore**.
-        `BEGIN IMMEDIATE` took the write lock before the claim is read, so a second tab cannot split them.
+        each with its mark or unmarked and whether its preview was opened (`_record` says what else); retire
+        everything shown from the **Pool** (ADR 0016); clear the **Draft Batch**. An unmarked tile is
+        recorded as one, and read as an **Ignore**. `BEGIN IMMEDIATE` took the write lock before the claim
+        is read, so a second tab cannot split them.
         """
         claimed = _claim(write, batch_id)
         if isinstance(claimed, SubmissionRefused):
             return claimed
+        recorded_at = self._record(
+            write,
+            claimed,
+            {
+                w.id: evidence_log.tile_response(
+                    claimed.drafts.get(w.id), preview_opened=w.id in claimed.previewed
+                )
+                for w in claimed.wallpapers
+            },
+            GridResponse(submitted=True),
+        )
         shown = [w.id for w in claimed.wallpapers]
+        pool.retire(write, shown)
+        write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
+        write.execute("DELETE FROM draft_preview WHERE batch_id = ?", (batch_id,))
+        write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (iso_utc(recorded_at), batch_id))
+        ignored = sum(1 for w in shown if w not in claimed.drafts)
+        return Submitted(batch_id=batch_id, recorded=len(shown), ignored=ignored)
+
+    def skip(self, write: sqlite3.Connection, batch_id: str) -> SubmissionRefused | None:
+        """Record a **Skip** of the live **Batch** `batch_id` and drop it with its tiles and **Draft Batch**
+        inside the caller's transaction, or say why not (ADR 0026).
+
+        The **Judgement** has every **Response** blank: no tile carries its mark or its preview, and the
+        screen was not submitted, so its **Reduction** gives nothing. What describes the screen is kept, as
+        `_record` writes it for a submission. Nothing leaves the **Pool**, so its tiles may be drawn again.
+        Behind the same claim as a submission, so a stale tab cannot skip what another has submitted.
+        """
+        claimed = _claim(write, batch_id)
+        if isinstance(claimed, SubmissionRefused):
+            return claimed
+        self._record(write, claimed, {w.id: TileResponse() for w in claimed.wallpapers}, GridResponse())
+        _drop(write, "?", (batch_id,))
+        return None
+
+    def _record(
+        self,
+        write: sqlite3.Connection,
+        batch: Batch,
+        tiles: Mapping[str, TileResponse],
+        response: GridResponse,
+    ) -> dt.datetime:
+        """Append the verdict grid **Judgement** of `batch` answered with `tiles` and `response`, and say
+        when it was recorded. Every tile in on-screen order with its **Provenance**, the **Ranking stamp**
+        the **Batch** was minted under, its mint time as first shown, and the clock's local offset."""
+        shown = [w.id for w in batch.wallpapers]
         now = self._clock.now()
         recorded_at = evidence_log.recorded_time(write, shown, now)
         evidence_log.append(
@@ -317,31 +363,17 @@ class Batches:
             Judgement(
                 instrument=VERDICT_GRID_V1,
                 screen=evidence_log.SCREEN_BATCH,
-                shown=tuple(
-                    Shown(
-                        evidence_log.item_key(w),
-                        evidence_log.tile_response(
-                            claimed.drafts.get(w), preview_opened=w in claimed.previewed
-                        ),
-                        _provenance(claimed, w),
-                    )
-                    for w in shown
-                ),
+                shown=tuple(Shown(evidence_log.item_key(w), tiles[w], _provenance(batch, w)) for w in shown),
                 recorded_at=recorded_at,
                 app=evidence_log.APP,
                 app_version=evidence_log.APP_VERSION,
-                response=GridResponse(submitted=True),
+                response=response,
                 utc_offset=self._clock.utc_offset(now),
-                first_shown_at=claimed.created_at,
-                ranking=claimed.ranking,
+                first_shown_at=batch.created_at,
+                ranking=batch.ranking,
             ),
         )
-        pool.retire(write, shown)
-        write.execute("DELETE FROM draft_batch WHERE batch_id = ?", (batch_id,))
-        write.execute("DELETE FROM draft_preview WHERE batch_id = ?", (batch_id,))
-        write.execute("UPDATE batches SET submitted_at = ? WHERE id = ?", (iso_utc(recorded_at), batch_id))
-        ignored = sum(1 for w in shown if w not in claimed.drafts)
-        return Submitted(batch_id=batch_id, recorded=len(shown), ignored=ignored)
+        return recorded_at
 
     def _nothing_to_show(self) -> BatchUnavailable:
         """Why the **Pool** had nothing. A recorded refill failure outranks "nothing yet"."""
@@ -477,24 +509,10 @@ def discard_live(write: sqlite3.Connection) -> int:
     """Drop every unsubmitted **Batch** with its tiles and **Draft Batch** inside the caller's transaction,
     and say how many: a **Pool reset**'s half (ADR 0025). All of them, so nothing is left showing.
 
-    An unsubmitted **Batch** has no **Judgement**, so nothing is recorded or left dangling. A
-    submitted one is never touched.
+    Housekeeping, not a **Judgement**: nothing is recorded, and an unsubmitted **Batch** has no
+    **Judgement** to leave dangling. A submitted one is never touched.
     """
     return _drop(write, _SELECT_UNSUBMITTED)
-
-
-def skip(write: sqlite3.Connection, batch_id: str) -> SubmissionRefused | None:
-    """Drop the live **Batch** `batch_id` with its tiles and **Draft Batch** inside the caller's
-    transaction, or say why not: a **Skip** (ADR 0026).
-
-    Nothing is recorded and nothing leaves the **Pool**, so its tiles may be drawn again. Behind the same
-    claim as a submission, so a stale tab cannot skip what another has submitted.
-    """
-    claimed = _claim(write, batch_id)
-    if isinstance(claimed, SubmissionRefused):
-        return claimed
-    _drop(write, "?", (batch_id,))
-    return None
 
 
 def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] = ()) -> int:

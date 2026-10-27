@@ -58,11 +58,11 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
 
 
 def skip(modules: Modules, batch_id: str) -> SubmissionRefused | None:
-    """Drop the live **Batch** unrecorded, or say why not (ADR 0026). No tail: nothing left the **Pool**,
-    so there is nothing to reconcile or evict.
+    """Record a **Skip** and drop the live **Batch**, or say why not (ADR 0026). No tail: nothing left the
+    **Pool** and nothing was decided, so there is nothing to reconcile or evict.
     """
     with storage.write(modules.connect()) as write:
-        return batches.skip(write, batch_id)
+        return modules.batches.skip(write, batch_id)
 
 
 def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:

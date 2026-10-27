@@ -977,19 +977,52 @@ def test_the_live_batch_is_read_without_minting_one(rig: BatchesRig) -> None:
 # -- skipping (ADR 0026)
 
 
-def test_skipping_drops_the_batch_and_its_draft_records_nothing_and_leaves_the_pool(rig: BatchesRig) -> None:
-    """A **Skip** says "not now" rather than giving a **Verdict**: nothing is retired, so its tiles may be
-    drawn again, and the next **Batch** is a new one."""
+def test_skipping_records_a_blank_judgement_drops_the_batch_and_its_draft_and_leaves_the_pool(
+    rig: BatchesRig,
+) -> None:
+    """A **Skip** says "not now" rather than giving a **Verdict** (ADR 0026): one **Judgement** of the screen
+    with every **Response** blank, the star and the preview on it not carried, but what describes the screen
+    kept: why each tile was there, the stamp, when it was first shown. Nothing is retired or decided, so its
+    tiles may be drawn again, and the next **Batch** is a new one."""
+    rig.clock.offset = dt.timedelta(hours=1)
     batch = rig.next()
-    rig.set_draft(batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
+    starred = batch.wallpapers[0].id
+    rig.set_draft(batch.id, starred, Verdict.FAVOURITE)
+    rig.open_preview(batch.id, starred)
     members = pool.members(rig.connection)
+    rig.clock.advance(30)
 
     assert rig.skip(batch.id) is None
 
-    assert rig.logged() == []
-    assert rig.drafted_rows() == 0
+    assert rig.logged() == [
+        Judgement(
+            instrument=VERDICT_GRID_V1,
+            screen="batch",
+            shown=tuple(
+                Shown(
+                    f"wallhaven:{w.id}",
+                    TileResponse(),
+                    {
+                        "zone": batch.zones[w.id].value,
+                        "slot_zone": batch.slots[w.id].value,
+                        "mix": EXPLORE_MIX.name,
+                    },
+                )
+                for w in batch.wallpapers
+            ),
+            recorded_at=FIXED_NOW + dt.timedelta(seconds=30),
+            app="wallpapi",
+            app_version=evidence_log.APP_VERSION,
+            response=GridResponse(submitted=False),
+            utc_offset=dt.timedelta(hours=1),
+            first_shown_at=FIXED_NOW,
+            ranking=RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0),
+        )
+    ]
+    assert (rig.drafted_rows(), rig.previewed_rows()) == (0, 0)
     assert batches.showing(rig.connection) == set()
     assert pool.members(rig.connection) == members
+    assert {s.verdict for s in evidence_log.resolve(rig.connection, [starred]).values()} == {None}
     assert rig.next().id != batch.id
 
 

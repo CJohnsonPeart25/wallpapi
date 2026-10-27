@@ -24,6 +24,7 @@ from wallpapi.batches import SubmissionRefused
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
+from wallpapi.taste.verdict_grid import GridResponse
 from wallpapi.web.app import REFUSALS
 
 Web = tuple[Harness, TestClient]
@@ -179,8 +180,9 @@ def test_posting_the_same_batch_twice_is_refused_and_still_refetches(web: Web) -
     assert [len(j.shown) for j in evidence_log.judgements(harness.connect())] == [8]
 
 
-def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None:
-    """ADR 0026: the same refetch as a submission, and a new **Batch** behind it, but nothing in the log."""
+def test_a_skip_decides_nothing_says_so_and_triggers_a_refetch(web: Web) -> None:
+    """ADR 0026: the same refetch as a submission, and a new **Batch** behind it; the log holds the screen,
+    passed over, and nothing in it is decided."""
     harness, client = web
     shown = batch_id_of(client.get("/batch").text)
 
@@ -189,9 +191,9 @@ def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None
 
     assert response.status_code == HTTPStatus.OK
     assert response.headers["HX-Trigger"] == "batch-submitted"
-    assert "Skipped — nothing was recorded." in response.text
+    assert "Skipped — nothing was decided." in response.text
     assert batch_id_of(following) != shown
-    assert evidence_log.judgements(harness.connect()) == []
+    assert [j.response for j in evidence_log.judgements(harness.connect())] == [GridResponse(submitted=False)]
 
 
 def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(web: Web) -> None:

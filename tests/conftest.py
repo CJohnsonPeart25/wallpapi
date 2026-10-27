@@ -433,7 +433,7 @@ class BatchesRig:
 
     def skip(self, batch_id: str) -> SubmissionRefused | None:
         with storage.write(self.connection) as write:
-            return batches.skip(write, batch_id)
+            return self.batches.skip(write, batch_id)
 
     def discard(self) -> int:
         """Drop every unsubmitted **Batch**, as a **Pool reset** does."""
