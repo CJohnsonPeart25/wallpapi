@@ -5,7 +5,10 @@ Date: 2026-10-02
 ## Status
 
 Superseded by ADR 0016, under which nothing decided is shown again, so pre-marking is dormant. The resolution
-rule — the latest entry decides — stands, as does its supersession of ADR 0008.
+rule — the latest entry decides — stands, as does its supersession of ADR 0008, re-based by ADR 0027 from
+sequence to recorded time: the **Judgement** with the latest recorded time decides, and an exact tie falls to
+the lower **Judgement** id. The rule and its example cases live in `taste/`, and the SQL fragment **History**
+pages with is tested against them.
 
 ## Context
 

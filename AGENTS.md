@@ -26,8 +26,11 @@ Locked. The original spec issue lists it under "Technology"; if the two disagree
   `uv run python scripts/vendor_assets.py`. `.gitattributes` stops checkout rewriting them.
 - **Synchronous throughout** (ADR 0001): `httpx2.Client`, standard library `sqlite3`, background work on
   `threading.Thread`s started in the FastAPI lifespan. Migrations are `user_version` plus numbered steps.
-- **onnxruntime** with **pillow** for the **Similarity provider** (ADR 0013): CPU, image tower only, the model
-  fetched once into `~/.wallpapi/models/` and checksummed.
+- **onnxruntime** with **pillow** for the **Similarity provider** (ADR 0013): CPU, image tower only, the maths
+  in `taste/`, the model fetched once by wallpapi into `~/.wallpapi/models/` and checksummed.
+- **`taste/`**, a folder inside wallpapi, holds the **Taste engine** as code only: data in, data out, no file,
+  connection, thread or network call. It imports nothing from the rest of wallpapi, and a test reading the
+  imports with `ast` fails if it does. wallpapi conforms to its data shapes and owns every table and thread.
 - **Pydantic at the edges only**; dataclasses and enums inside. **pytest**, **pyright** strict, **ruff**.
 - Excluded: TypeScript/React/Svelte, SQLAlchemy/Alembic, pydantic-settings, FastHTML, Electron/Tauri, vector DBs.
 
@@ -47,13 +50,14 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 1 -> 14 (ADR 0019); 3 -> `storage.py`; 5 -> `decisions.py`, `pool.py`, `batches.py`, `library.py`; 6, 7 ->
 `batches.py`; 8 -> `thumbnails.py`; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
 
-- **2. Scores are never stored.** Always derived from the **Decision log** in one array operation over the
+- **2. Scores are never stored.** Always derived from the **Evidence log** in one array operation over the
   whole **Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never
   **Pool** x **Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. ADR 0007.
-- **4. The Decision log is append-only and resolves by sequence.** One transaction's rows, or two **History**
-  clicks in a second, share a timestamp, so "the latest entry decides" orders by autoincrement sequence.
-  The rule is one SQL fragment in `decisions.py`; build on it. A submitted **Batch** is never retracted.
-  ADR 0015.
+- **4. The Evidence log is append-only and the latest recorded time decides.** A screen answered is one
+  **Judgement**, nothing in it is updated or deleted, and an exact tie in time falls to the lower id. The rule
+  and its example cases live in `taste/`; the Evidence log module's one SQL fragment, which **History** pages
+  with, is tested against those cases. Build on them. A submitted **Batch** is never retracted. ADR 0015,
+  ADR 0027.
 - **9. The Library is confined.** Every write and deletion goes through `library.confined_to_library` and
   uses the path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks
   regular files only; a recorded path that fails the guard is dropped from the record and left on disk.
@@ -63,8 +67,9 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 - **12. Every wait is cancellable**: `stop_event.wait(n)`, never `time.sleep(n)`, and the HTTP timeout below
   the shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
 - **14. Modules have their own seams.** Every module exposes a small interface taking a connection and its
-  collaborators. Tests build one module with a real in-memory database and fake only the external
-  collaborator it talks to: the Wallhaven client, the **Library** writer, the clock or the embedder.
+  collaborators; `taste/` takes data, not a connection, and is tested with plain data. Tests build one
+  module with a real in-memory database and fake only the external collaborator it talks to: the Wallhaven
+  client, the **Library** writer, the clock or the embedder.
   `compose.py` is the only place that knows the whole graph; `workflows.py` owns every write transaction and
   its post-commit tail and decides nothing about the data. ADR 0019.
 
@@ -94,9 +99,9 @@ Decided, not built. Defer explicitly; do not quietly forget.
 - Restarting a dead refill thread: no supervisor until something is seen to kill one.
 - Throttling full-resolution fetches: needs **Favourite** downloads off the request thread first.
 - Renaming a **Mix**: delete and add covers it; a rename must move `active_mix` in the same transaction.
-- **Decision log** backup: `VACUUM INTO`, the database being one file.
+- **Evidence log** backup: `VACUUM INTO`, the database being one file.
 - Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (`thumbnails.py`).
-- Fading old **Verdicts**: a half-life in log sequence, not time; nothing real to tune it against yet.
+- Fading old **Verdicts**: a half-life in **Judgements** since, not time; nothing real to tune it against yet.
 - Showing decided **Wallpapers** again: must answer near-duplicates; dormant pre-marking waits for it.
 - **Dud** build-up in the **Pool**: for now, **Ignore** a page of them and submit, or reset the **Pool**
   (`reset-pool`, ADR 0025). Not **Ban**: it spreads −100 and grows the **Dud** zone (ADR 0023).
