@@ -16,8 +16,8 @@ from numpy.typing import NDArray
 from tests.fakes import catalogue_of
 from wallpapi.allocation import ScoredWallpaper, draw, varied_order
 from wallpapi.model import Mix, Wallpaper, Zone
-from wallpapi.rng import SeededRandom
 from wallpapi.settings import EXPLORE_MIX
+from wallpapi.taste.rng import SeededRandom
 
 WIDTH = 32
 """Wide enough that random group directions are nearly orthogonal."""

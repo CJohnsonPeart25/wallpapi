@@ -18,7 +18,6 @@ import pytest
 from wallpapi import settings, storage
 from wallpapi.allocation import ZONE_ORDER, allocate
 from wallpapi.model import Mix, Zone
-from wallpapi.rng import SeededRandom
 from wallpapi.settings import (
     EXPLORE_MIX,
     MAX_MIX_NAME_LENGTH,
@@ -27,6 +26,7 @@ from wallpapi.settings import (
     Settings,
     SettingsRefused,
 )
+from wallpapi.taste.rng import SeededRandom
 
 ROLLS = 4000
 """Seeded **Allocations** a distribution is read off: a 50/40/10 split is unmistakable at the tolerance."""

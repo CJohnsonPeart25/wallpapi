@@ -23,11 +23,11 @@ from numpy.typing import NDArray
 
 from wallpapi import decisions, storage
 from wallpapi import settings as settings_module
-from wallpapi.clock import Clock, iso_utc
 from wallpapi.model import Wallpaper
-from wallpapi.rng import SeededRandom
 from wallpapi.settings import Settings
 from wallpapi.similarity import Similarity
+from wallpapi.taste.clock import Clock, iso_utc
+from wallpapi.taste.rng import SeededRandom
 from wallpapi.wallhaven import REQUEST_TIMEOUT, RateLimited, SearchPage, Wallhaven
 
 SFW_PURITY = "100"

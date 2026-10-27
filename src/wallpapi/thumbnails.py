@@ -21,9 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wallpapi import batches, decisions, pool, settings
-from wallpapi.clock import Clock
 from wallpapi.files import url_suffix, write_atomically
 from wallpapi.model import Wallpaper
+from wallpapi.taste.clock import Clock
 from wallpapi.wallhaven import REQUEST_TIMEOUT, RateLimited, ThumbnailUnavailable, Wallhaven
 
 GAP_SECONDS = 0.25

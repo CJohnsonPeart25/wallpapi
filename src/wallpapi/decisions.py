@@ -12,8 +12,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from wallpapi.clock import iso_utc
 from wallpapi.model import Clearance, DecisionEntry, Verdict
+from wallpapi.taste.clock import iso_utc
 
 HISTORY_PAGE_SIZE = 100
 """Rows on one page of **History**: it grows by thousands of **Ignores** a week and needs *a* bound."""

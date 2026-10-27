@@ -14,10 +14,10 @@ from pathlib import Path
 from wallpapi import pool, similarity, storage, thumbnails
 from wallpapi.background import BackgroundLoop
 from wallpapi.batches import Batches
-from wallpapi.clock import Clock
 from wallpapi.library import Library, LibraryWriter
-from wallpapi.rng import SeededRandom
 from wallpapi.similarity import Embeddings
+from wallpapi.taste.clock import Clock
+from wallpapi.taste.rng import SeededRandom
 from wallpapi.wallhaven import Wallhaven
 
 

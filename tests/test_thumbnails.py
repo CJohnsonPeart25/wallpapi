@@ -37,8 +37,8 @@ from wallpapi import batches, decisions, pool, settings, storage, workflows
 from wallpapi.batches import Batch, Batches
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
-from wallpapi.rng import SeededRandom
 from wallpapi.similarity import Embeddings
+from wallpapi.taste.rng import SeededRandom
 from wallpapi.thumbnails import (
     BACKOFF_SECONDS,
     BYTES_IN_A_MEGABYTE,

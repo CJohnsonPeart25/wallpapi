@@ -25,9 +25,9 @@ from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused, Submitt
 from wallpapi.decisions import HistoryEntry, ResolvedVerdict
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
-from wallpapi.rng import SeededRandom
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
 from wallpapi.similarity import NEAR_DUPLICATE_SIMILARITY
+from wallpapi.taste.rng import SeededRandom
 
 SCORE = 50.0
 """A **Score** well clear of zero either way, for an arranged **Banger** or **Dud**."""

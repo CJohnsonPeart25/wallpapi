@@ -19,12 +19,12 @@ from uuid import uuid4
 
 from wallpapi import decisions, pool, settings, storage
 from wallpapi.allocation import PERCENT, ScoredWallpaper, draw
-from wallpapi.clock import Clock, iso_utc
 from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
-from wallpapi.rng import SeededRandom
 from wallpapi.scoring import classify
 from wallpapi.similarity import Embeddings
+from wallpapi.taste.clock import Clock, iso_utc
+from wallpapi.taste.rng import SeededRandom
 
 
 @dataclass(frozen=True, slots=True)

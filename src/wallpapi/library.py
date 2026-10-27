@@ -21,8 +21,8 @@ from typing import Protocol
 import httpx2
 
 from wallpapi import decisions, storage
-from wallpapi.clock import Clock, iso_utc
 from wallpapi.files import url_suffix, write_atomically
+from wallpapi.taste.clock import Clock, iso_utc
 
 REQUEST_TIMEOUT = 10.0
 """Seconds. Below the shutdown join timeout, so shutdown cannot hang mid-download (invariant 12)."""
