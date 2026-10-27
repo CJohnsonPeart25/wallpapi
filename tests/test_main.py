@@ -19,6 +19,7 @@ from tests.conftest import Harness, live, make_harness, submit_with
 from tests.fakes import catalogue_of
 from wallpapi import batches, lineup, pool, settings, workflows
 from wallpapi.compose import Modules
+from wallpapi.lineup import Lineup, Picked
 from wallpapi.main import main
 from wallpapi.model import Verdict
 
@@ -177,6 +178,61 @@ def test_evaluate_with_a_candidate_prints_both_the_difference_and_the_verdict(
         "verdict grid v1      2      -0.500  -0.500 to -0.500  candidate worse\n"
         "\n"
         "Tested Wallpapers with no Embedding: 1 of 4\n"
+    )
+
+
+def answer_a_lineup(harness: Harness, *, winner_at: int | None) -> Lineup:
+    """Draw the **Line-up** and answer it with its tile at `winner_at`, or "none of these" with `None`."""
+    shown = harness.modules.lineups.next(harness.connect())
+    assert isinstance(shown, Lineup), shown
+    winner = None if winner_at is None else shown.wallpapers[winner_at].id
+    assert isinstance(workflows.pick(harness.modules, shown.id, winner), Picked)
+    harness.clock.advance(1)
+    return shown
+
+
+def test_evaluate_prints_a_pick_row_beside_the_grid_row_and_compares_each(
+    db_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`Judged`'s twelve **Batches**, then a **Line-up** of four answered with its first tile and one
+    answered "none of these". Every warm-up **Like** at `LIKED`, the **Pick**'s winner at `NEAR_LIKED`,
+    nothing else embedded.
+
+    The grid as in the first test: each test **Batch** a tie, 0.5, at either radius. The **Pick**: the
+    winner sits 0.05 from ten **Likes** and scores above 0, the other three tiles 0, so three pairs right,
+    1.0. "None of these" is no test answer. A candidate radius of 0.01 reaches nothing: three ties, 0.5,
+    and a difference of -0.5 on the one **Pick**. Tested: the grid's four and the **Pick**'s four, the
+    winner the one embedded."""
+    harness = make_harness(db_path, catalogue=catalogue_of(32), page_size=32)
+    workflows.save_settings(harness.modules, batch_size=2)
+    log = Judged(harness)
+    harness.store.vector_by_id.update({w: LIKED for w in log.liked[:10]})
+    shown = answer_a_lineup(harness, winner_at=0)
+    answer_a_lineup(harness, winner_at=None)
+    harness.store.vector_by_id[shown.wallpapers[0].id] = NEAR_LIKED
+
+    main(["evaluate", "--radius", "0.01"], build=lambda: harness.modules, serve=never_serve)
+
+    assert len(shown.wallpapers) == 4
+    assert capsys.readouterr().out == (
+        "Evaluation reading 1: 10 warm-up Judgements, 95% ranges from 2000 resamples (seed 20261027).\n"
+        "\n"
+        "Current settings: radius 0.1, decay 4\n"
+        "Instrument       Tests  Accuracy  95% range\n"
+        "pick v1              1     1.000  1.000 to 1.000\n"
+        "verdict grid v1      2     0.500  0.500 to 0.500\n"
+        "\n"
+        "Candidate: radius 0.01, decay 4\n"
+        "Instrument       Tests  Accuracy  95% range\n"
+        "pick v1              1     0.500  0.500 to 0.500\n"
+        "verdict grid v1      2     0.500  0.500 to 0.500\n"
+        "\n"
+        "Candidate minus current\n"
+        "Instrument       Tests  Difference  95% range         Verdict\n"
+        "pick v1              1      -0.500  -0.500 to -0.500  candidate worse\n"
+        "verdict grid v1      2      +0.000  +0.000 to +0.000  no difference shown\n"
+        "\n"
+        "Tested Wallpapers with no Embedding: 7 of 8\n"
     )
 
 
