@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Final
 
-from wallpapi.taste import verdict_grid
+from wallpapi.taste import pick, verdict_grid
 from wallpapi.taste.evidence import Evidence
 from wallpapi.taste.judgement import Instrument, Judgement
 
@@ -19,6 +19,7 @@ type Reduction = Callable[[Judgement], Sequence[Evidence]]
 REDUCTIONS: Final[Mapping[Instrument, Reduction]] = {
     verdict_grid.VERDICT_GRID_V0: verdict_grid.reduce_converted,
     verdict_grid.VERDICT_GRID_V1: verdict_grid.reduce_grid,
+    pick.PICK_V1: pick.reduce_pick,
 }
 
 
