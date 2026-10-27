@@ -14,14 +14,16 @@ Answering records one **Judgement** and drops the **Line-up**, whose **Judgement
 next is drawn when it is asked for.
 
 A **Pick** says one tile beat the others and an **Order** which beat which, both relative Evidence, and a
-"none of these" or an empty **Order** says nothing: none of them decides anything (ADR 0027). An **Order** is
-built a click at a time, each rank held against its tile of the live **Line-up** (`Lineups.rank`) as a star
-is, and answered when all but the last tile are ranked, the last place implied, or when it is submitted as
-it stands (`Lineups.order`). The star is the one thing on a **Line-up** that does. Any tile may be
-starred, and a star is held against its tile of the live **Line-up** (`star`) for as long as the
-**Line-up** is live, which a reload ends; held per tile, not per **Instrument**, so every **Instrument** on a
-**Line-up** stars the same way. Answering records each star in the **Judgement** as a **Favourite** and
-retires that **Wallpaper** from the **Pool** (ADR 0016); every other tile stays.
+"none of these" or an empty **Order** says nothing: none of them decides anything (ADR 0027). The star is the
+one thing on a **Line-up** that does. Any tile may be starred, and a star is held against its tile of the
+live **Line-up** (`star`) for as long as the **Line-up** is live, which a reload ends; held per tile, not
+per **Instrument**, so every **Instrument** on a **Line-up** stars the same way. Answering records each
+star in the **Judgement** as a **Favourite** and retires that **Wallpaper** from the **Pool** (ADR 0016);
+every other tile stays.
+
+An **Order** is built a click at a time, each rank held against its tile of the live **Line-up**
+(`Lineups.rank`) as a star is, and goes with it the same way. It is answered when all but the last tile are
+ranked, the last place implied, or when it is submitted as it stands (`Lineups.order`).
 """
 
 from __future__ import annotations
