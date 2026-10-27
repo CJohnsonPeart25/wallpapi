@@ -179,7 +179,7 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         # 14: the **Line-up** on screen, and a place in the **Evidence log** for the **Response** fields no
         # SQL reads; the **Line-up** size is seeded with the other settings.
         (*((statement, ()) for statement in _MIGRATION_14), *seed_settings),
-        # 15: the stars held against the live **Line-up** until it is answered.
+        # 15: the stars held against the live **Line-up** while it is live.
         (*((statement, ()) for statement in _MIGRATION_15), *seed_settings),
     )
 
@@ -548,7 +548,8 @@ CREATE TABLE lineup_stars (
 """Migration 15's schema: a row per starred tile of the live **Line-up**, as `draft_preview` is a row per
 opened preview beside a **Batch**. Keyed to the tile, not to an **Instrument**, so every **Instrument** on a
 **Line-up** holds its stars the same way. Set and cleared, never toggled, and dropped with the **Line-up**
-when it is answered (the **Judgement** then holding each star as a **Favourite**) or discarded.
+when it is answered (the **Judgement** then holding each star as a **Favourite**), replaced by a visit (ADR
+0029) or discarded.
 """
 
 

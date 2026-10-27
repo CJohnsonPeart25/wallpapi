@@ -6,7 +6,9 @@ Date: 2026-10-24
 
 Accepted. Amends ADR 0002: a **Batch** persists until it is submitted *or a **Pool reset** discards it*.
 ADR 0002's "there is no skip" stands, and so does invariant 4's "a submitted **Batch** is never retracted".
-ADR 0016's "decide once" stands: a reset decides nothing.
+ADR 0016's "decide once" stands: a reset decides nothing. Amended by ADR 0029, which supersedes ADR 0002: a
+visit also replaces the live **Batch** and **Line-up**, unrecorded, so a reset is one of three ways past an
+unanswered screen. A reset still discards both, and records nothing.
 
 ## Context
 

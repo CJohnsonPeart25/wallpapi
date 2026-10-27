@@ -393,7 +393,7 @@ def draft(
 def draft_all(
     request: Request, modules: Wired, batch_id: Annotated[str, Form()], verdict: Annotated[str, Form()] = ""
 ) -> HTMLResponse:
-    """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction (ADR 0002)."""
+    """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction."""
     live = workflows.set_all_drafts(modules, batch_id, parse_verdict(verdict, required=False))
     if isinstance(live, SubmissionRefused):
         return _refuse(request, live.reason)

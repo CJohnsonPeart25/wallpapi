@@ -55,7 +55,7 @@ One continuous sweep of search pages for one refill strategy. A random walk carr
 _Avoid_: crawl, scan, sweep, pass
 
 **Batch**:
-The n wallpapers shown at once on the verdict grid, each answered with a verdict or a favourite. A pair is simply a batch of 2.
+The n wallpapers shown at once on the verdict grid, each answered with a verdict or a favourite. A pair is simply a batch of 2. Drawn afresh on each visit to the batches page, a reload included, and live until it is submitted, skipped or replaced by the next visit's; a replaced batch records nothing, and its draft batch goes with it.
 _Avoid_: page, set, round, grid, line-up
 
 ### Judging
@@ -69,7 +69,7 @@ A favourite, like or ban — a standing the user actively chose, as opposed to a
 _Avoid_: manual verdict, active verdict
 
 **Favourite**:
-An act on any tile of any instrument, given from the star on it or with F: the wallpaper goes into the library, and it is the strongest positive. Not a verdict: it does not move the screen on, and it is recorded with the rest of the screen's judgement. On the verdict grid it is exclusive with a like or ban on the same tile. It retires the wallpaper from the pool, and a later like, ignore or ban from history overturns it, as one verdict overturns another.
+An act on any tile of any instrument, given from the star on it or with F: the wallpaper goes into the library, and it is the strongest positive. Not a verdict: it does not move the screen on, and it is recorded with the rest of the screen's judgement, so a star on a screen replaced before it is answered is never recorded. On the verdict grid it is exclusive with a like or ban on the same tile. It retires the wallpaper from the pool, and a later like, ignore or ban from history overturns it, as one verdict overturns another.
 _Avoid_: star, keep, save
 
 **Like**:
@@ -85,11 +85,11 @@ The strongest negative verdict. The wallpaper is never shown again, and neither 
 _Avoid_: block, hide, reject, dislike
 
 **Skip**:
-Passing over the batch on screen without deciding anything. It is recorded as a judgement with every response blank, which its reduction gives zero weight; then it and its draft batch are thrown away and a new batch is drawn. Not a verdict and not an ignore: the skipped wallpapers stay in the pool, teach nothing, and may be drawn again — the best bangers straight away, since a skip changes no score.
+Passing over the batch on screen without deciding anything. It is recorded as a judgement with every response blank, which its reduction gives zero weight; then it and its draft batch are thrown away and a new batch is drawn. Not a verdict and not an ignore: the skipped wallpapers stay in the pool, teach nothing, and may be drawn again — the best bangers straight away, since a skip changes no score. Nor is it leaving the page: a batch left unanswered is replaced on the next visit and records nothing at all.
 _Avoid_: reroll, reset, pass, dismiss
 
 **Draft Batch**:
-The marks against a batch that hasn't been submitted yet: a verdict or a favourite per tile, and which tiles' previews were opened. Held against the batch, replaced outright rather than toggled, and discarded on submit, skip or pool reset. It is not part of the evidence log.
+The marks against a batch that hasn't been submitted yet: a verdict or a favourite per tile, and which tiles' previews were opened. Held against the batch while it is live, replaced outright rather than toggled, and discarded on submit, skip, pool reset or the next visit, so a reload loses it. It is not part of the evidence log.
 _Avoid_: pending verdicts, staged verdicts, selection, basket
 
 **Verdict resolution**:
@@ -161,11 +161,11 @@ _Avoid_: undo, reset, delete, revert
 ### Comparing
 
 **Line-up**:
-The n wallpapers shown side by side on the compare tab to be compared, n a setting from 2 to 8, 4 by default. Drawn by the active mix and wear, from the pool minus the live batch's tiles, and kept until answered, so a reload shows the same one. The mix allocates its slots as for a batch; wear decides which wallpaper fills each, and an instrument may add its own rule, as gauntlet keeps its winner. Answering it takes nothing out of the pool except a wallpaper given a favourite.
+The n wallpapers shown side by side on the compare tab to be compared, n a setting from 2 to 8, 4 by default. Drawn by the active mix and wear, from the pool minus the live batch's tiles, afresh on each visit to the compare tab, a reload included: the one it replaces records nothing, and the stars on it go with it. The mix allocates its slots as for a batch; wear decides which wallpaper fills each, and an instrument may add its own rule, as gauntlet keeps its winner. Answering it takes nothing out of the pool except a wallpaper given a favourite.
 _Avoid_: batch, comparison, matchup, grid
 
 **Wear**:
-How many times a wallpaper was on a line-up that was answered, "none of these" included, read from the evidence log as each line-up is drawn and never stored. Each showing makes a wallpaper wait longer to be lined up again: a banger is drawn by its score divided by one plus its wear, and an unknown or a dud fewest wear first. A line-up a pool reset discarded adds none, and a batch neither adds nor reads it. A stand-in for showing the comparison that teaches the most.
+How many times a wallpaper was on a line-up that was answered, "none of these" included, read from the evidence log as each line-up is drawn and never stored. Each showing makes a wallpaper wait longer to be lined up again: a banger is drawn by its score divided by one plus its wear, and an unknown or a dud fewest wear first. A line-up a visit replaced or a pool reset discarded adds none, and a batch neither adds nor reads it. A stand-in for showing the comparison that teaches the most.
 _Avoid_: exposure, views, impressions, fatigue
 
 **Compare tab**:

@@ -21,6 +21,9 @@ layer spell every setting's bounds a second time.
 Amended in wallpapi-81: the `Field` table also says how the settings form shows each field (its `Section`,
 label, hint and step), so the form is rendered from the table and adding a setting needs no template edit.
 
+Amended by ADR 0029: the **Batch** on screen keeps its size until it is left, and the next visit, not only
+the next submission, draws at the new one. ADR 0002, which the Consequences cite for it, is superseded.
+
 ## Context
 
 Settings existed from #2 as two string-keyed methods over a `settings` table: `get_setting(key) -> str` and
