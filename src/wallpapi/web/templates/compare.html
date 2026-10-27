@@ -26,7 +26,7 @@
   the answer the page has to show, so `#lineup` says so for those two.
 #}
 {% set theme_value | trim %}{% include "theme_value.html" %}{% endset %}
-{% set answer_keys | trim %}{% include "answer_keys.html" %}{% endset %}
+{% set key_guard | trim %}{% include "key_guard.html" %}{% endset %}
 {% block actions %}
   <li>
     {% include "lineup_size.html" %}
@@ -40,7 +40,7 @@
         hx-vals="{{ theme_value }}"
         hx-target="#lineup"
         hx-sync="#lineup:drop"
-        hx-trigger="submit, keydown[key=='Enter'&&{{ answer_keys }}&&!target.closest('button,a')] from:body"
+        hx-trigger="submit, keydown[key=='Enter'&&{{ key_guard }}&&!target.closest('button,a')] from:body"
       >
         <button type="submit" class="secondary outline">Submit (Enter)</button>
       </form>
@@ -52,7 +52,7 @@
         hx-vals="{{ theme_value }}"
         hx-target="#lineup"
         hx-sync="#lineup:drop"
-        hx-trigger="submit, keydown[key=='0'&&{{ answer_keys }}] from:body"
+        hx-trigger="submit, keydown[key=='0'&&{{ key_guard }}] from:body"
       >
         <button type="submit" class="secondary outline">None of these (0)</button>
       </form>

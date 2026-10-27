@@ -32,7 +32,7 @@
 {% endif %}
 {% if lineup %}
   {% set theme_value | trim %}{% include "theme_value.html" %}{% endset %}
-  {% set answer_keys | trim %}{% include "answer_keys.html" %}{% endset %}
+  {% set key_guard | trim %}{% include "key_guard.html" %}{% endset %}
   <input type="hidden" id="lineup-id" name="lineup_id" value="{{ lineup.id }}" />
   <ul class="lineup" data-size="{{ lineup.wallpapers | length }}" hx-vals="{{ theme_value }}">
     {% for wallpaper in lineup.wallpapers %}
@@ -59,7 +59,7 @@
           hx-include="#lineup-id"
           hx-target="#lineup"
           hx-sync="#lineup:drop"
-          hx-trigger="click, keydown[key=='{{ loop.index }}'&&{{ answer_keys }}] from:body"
+          hx-trigger="click, keydown[key=='{{ loop.index }}'&&{{ key_guard }}] from:body"
         >
           <img src="/thumb/{{ wallpaper.id }}" alt="" />
           <kbd class="key">{{ loop.index }}</kbd>

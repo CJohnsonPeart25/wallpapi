@@ -196,12 +196,12 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
   filter: drop-shadow(0 1px 3px rgb(0 0 0 / 55%));
 }
 
-:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="favourite"]::before { content: "⭐"; }
+:is(.preview-verdict, .history-verdicts button)[data-verdict="favourite"]::before { content: "⭐"; }
 :is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="like"]::before { content: "👍"; }
 :is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="ban"]::before { content: "💩"; }
 
 /* Only the segment under the pointer takes colour, the colour its ring will be once clicked. */
-:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="favourite"]:hover {
+:is(.preview-verdict, .history-verdicts button)[data-verdict="favourite"]:hover {
   background-color: var(--favourite);
 }
 :is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="like"]:hover {

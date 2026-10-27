@@ -33,7 +33,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
     # Per-connection and not persisted: a second connection reads 0 until it turns them on.
     connection.execute("PRAGMA foreign_keys = ON")
     # `synchronous` stays at its default FULL, never NORMAL: in WAL, NORMAL loses recent commits on power
-    # loss, and the Decision log is irreplaceable.
+    # loss, and the Evidence log is irreplaceable.
     return connection
 
 

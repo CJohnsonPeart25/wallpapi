@@ -10,7 +10,9 @@ consequence: thumbnail fetches are now paced, and full resolution is still not. 
 `thumbnail_thread.py` is gone, the loop is `core.thumbnail_loop` run by `background.BackgroundLoop`, and
 `gap_needed` and `THUMBNAIL_GAP_SECONDS` moved from `ratelimit` to `core`, until the thumbnails module lands.
 Amended again (#66): the loop is `thumbnails.download_loop` over `Thumbnails.wait` and `Thumbnails.step`, and
-the gap is `thumbnails.gap_needed` and `GAP_SECONDS`.
+the gap is `thumbnails.gap_needed` and `GAP_SECONDS`. Amended 2026-10-27 by the taste engine MVP
+(wallpapi-8pa): `OnnxClipEmbedder.warm`, timed in the measurements below, is gone; the session opens on the
+first embed, and the CLIP maths is `taste/clip.py`.
 
 ## Context
 

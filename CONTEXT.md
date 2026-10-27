@@ -107,7 +107,7 @@ The append-only record of every judgement, one per screen answered. It is the si
 _Avoid_: decision log, history table, audit log, events
 
 **Judgement**:
-One screen answered, recorded whole: what was shown, how it was asked, what you did, and when. It carries the instrument and its version, the screen, the shown set, the response, each item's provenance, the ranking stamp, when the screen was first shown, when it was submitted (the recorded time) with the local UTC offset then, and a context of named fields, whose first is the page's theme, light or dark. Identified by a hash of its content, so the same judgement has the same id wherever it is kept. A verdict is part of a judgement's response, not a judgement of its own.
+One screen answered, recorded whole: what was shown, how it was asked, what you did, and when. It carries the instrument and its version, the screen, the shown set, the response, each item's provenance, the ranking stamp, when the screen was first shown, when it was submitted (the recorded time) with the local UTC offset then, and a context of named fields, whose first is the page's theme, light or dark. Identified by a hash of what was shown, what was done and when, so the same judgement has the same id wherever it is kept. A verdict is part of a judgement's response, not a judgement of its own.
 _Avoid_: decision, event, entry, rating
 
 **Screen**:
@@ -119,11 +119,11 @@ The items on screen when a judgement was made, in on-screen order: a batch's til
 _Avoid_: selection, candidates, set, page
 
 **Response**:
-What you did on a judgement's screen, in the shape its instrument gives it: fields per item (a verdict, a favourite, a preview opened, a rank) and optional fields for the whole judgement (none of these, a streak). The evidence log keeps it and never reads it; only a reduction does.
+What you did on a judgement's screen, in the shape its instrument gives it: fields per item (a verdict, a favourite, a preview opened, a rank) and optional fields for the whole judgement (submitted, none of these, a streak). The evidence log keeps it and never reads it; only a reduction does.
 _Avoid_: result, input, reaction, outcome
 
 **Provenance**:
-Why each item in a shown set was there, as labels the taste engine keeps and never interprets. wallpapi records the zone it was drawn from, the zone its slot was meant for, and the mix, so that a later analysis can correct for the mix choosing what you saw.
+Why each item in a shown set was there, as labels the taste engine keeps and never interprets. wallpapi records the zone it was drawn from, the zone its slot was meant for, the mix, and on a gauntlet's champion that it was kept rather than drawn, so that a later analysis can correct for the mix choosing what you saw.
 _Avoid_: source, origin, reason, tags
 
 **Ranking stamp**:
@@ -161,7 +161,7 @@ _Avoid_: undo, reset, delete, revert
 ### Comparing
 
 **Line-up**:
-The n wallpapers shown side by side on the compare tab to be compared, n a setting from 2 to 8, 4 by default. Drawn by the active mix and wear, from the pool minus the live batch's tiles, afresh on each visit to the compare tab, a reload included: the one it replaces records nothing, and the stars on it go with it. The mix allocates its slots as for a batch; wear decides which wallpaper fills each, and an instrument may add its own rule, as gauntlet keeps its winner. Answering it takes nothing out of the pool except a wallpaper given a favourite.
+The n wallpapers shown side by side on the compare tab to be compared, n a setting from 2 to 8, 4 by default. Drawn by the active mix and wear, from the pool minus the live batch's tiles, afresh on each visit to the compare tab, a reload included: the one it replaces records nothing, and the stars and ranks held against it go with it. The mix allocates its slots as for a batch; wear decides which wallpaper fills each, and an instrument may add its own rule, as gauntlet keeps its winner. Answering it takes nothing out of the pool except a wallpaper given a favourite.
 _Avoid_: batch, comparison, matchup, grid
 
 **Wear**:
@@ -191,11 +191,11 @@ A wallpaper's derived value, calculated from the absolute evidence in the eviden
 _Avoid_: rating, weight, rank, affinity
 
 **Space**:
-What places an item for similarity, named in every ranking stamp: the CLIP model's id, or the colour-and-category fallback. A different model is a different space, and nothing derived in one is compared with another.
+What places an item for similarity, named in every ranking stamp: the CLIP model's id, the colour-and-category fallback, or the blend of the two, for a matrix that mixed them before the model was open. A different model is a different space, and nothing derived in one is compared with another.
 _Avoid_: model, embedding space, vector space
 
 **Similarity provider**:
-The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded until the model is ready. After that an unembedded wallpaper counts for nothing: it is an Unknown, and as a decided wallpaper it moves no score. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
+The component that measures how alike wallpapers are. It is asked for a whole matrix at once — every pool wallpaper against every decided one — and never about a single pair. It is a CLIP image encoder run locally over the cached thumbnails, with the colour-and-category measure as the fallback for anything not yet embedded until the model is ready. After that an unembedded wallpaper is as far from everything as can be, so at any radius below 1 it counts for nothing: it is an Unknown, and as a decided wallpaper it moves no score. Still called the similarity provider whichever one is running — the word names the seam, not the method behind it.
 _Avoid_: embedder, model, comparator, CLIP
 
 **Embedding**:
@@ -229,11 +229,11 @@ _Avoid_: new, unseen, undecided
 ### Evaluating
 
 **Evaluation reading**:
-An instrument's frozen, versioned answer key for the evaluation, separate from its reduction. Version 1 reads the verdict grid as ban below ignore below like below favourite, as pairs between items of one shown set that stand differently, and a line-up as the pairs its reduction gives. A skip, a preview opened and a history edit are never test answers, and an answer is what was said then, never a later edit.
+An instrument's frozen, versioned answer key for the evaluation: the pairs a judgement ordered. Version 1 reads the verdict grid by a key of its own, kept apart from its reduction so a changed weight never changes the test: ban below ignore below like below favourite, as pairs between items of one shown set that stand differently. It reads a line-up by its reduction's relative evidence, each winner over its loser whatever the strength. A skip, a preview opened and a history edit, which shows one item, are never test answers, and an answer is what was said then, never a later edit.
 _Avoid_: exam, ground truth, label
 
 **Pairwise accuracy**:
-The evaluation's one number: of the pairs shown together and treated differently, the share the score orders the way you did. Ties count half and random is 0.5, and each judgement weighs once whatever its size. Given per instrument, with how many test judgements it rests on and a 95% range, by replaying the evidence log in order and predicting each judgement only from those before it.
+The evaluation's one number: of the pairs shown together and treated differently, the share the score orders the way you did. Ties count half and random is 0.5, and each judgement weighs once whatever its size. Given per instrument, with how many test judgements it rests on and a 95% range, by replaying the evidence log in order and predicting each judgement only from those before it. The first ten judgements, of any kind, are warm-up and never tested.
 _Avoid_: precision, hit rate, AUC
 
 ### Building a batch
@@ -285,7 +285,7 @@ Making the library agree with the evidence log: every favourite with no file get
 _Avoid_: sync, download queue, flush, refresh
 
 **Thumbnail cache**:
-The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails, not full-resolution favourites — one for every pool member, fetched in the background before it is ever shown, as well as for anything shown or decided. It is also what the CLIP image encoder embeds, so the whole pool has embeddings and not only what has been on screen. A thumbnail is kept for as long as any page might show it — for ever, once the wallpaper has an explicit verdict, because history renders one. The background fetching holds off while the cache is at its size cap.
+The locally stored thumbnails wallpapi serves to its own pages, so batches never hotlink Wallhaven. Distinct from the library: it holds thumbnails, not full-resolution favourites — one for every pool member, fetched in the background before it is ever shown, as well as for anything decided. It is also what the CLIP image encoder embeds, so the whole pool has embeddings and not only what has been on screen. A thumbnail is kept while a page might show it — in the pool, or on the live batch or line-up — and for ever once the wallpaper has an explicit verdict, because history renders one. The background fetching holds off while the cache is at its size cap.
 _Avoid_: image cache, thumbs, local store, static files
 
 **Core service**:

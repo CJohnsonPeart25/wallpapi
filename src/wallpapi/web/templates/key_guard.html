@@ -1,0 +1,8 @@
+{#
+  When a key pressed on a page is meant for it, as the rest of an htmx trigger filter after the key itself:
+  not while a field has the focus (the size switcher in the nav), not with a modifier held, so the browser
+  keeps Ctrl+F, Ctrl+1 and the like, and not on a key held down, which would answer every line-up it brought.
+  Captured with `{% set %}` by compare.html and lineup_view.html for the answers (the number keys, 0 and
+  Enter), and by star.html for F.
+#}
+!ctrlKey&&!metaKey&&!altKey&&!repeat&&!target.closest('input,select,textarea')

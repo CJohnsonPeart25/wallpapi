@@ -12,13 +12,14 @@
 
   F stars the tile with keyboard focus, or else the one under the pointer, as an htmx trigger on the body:
   each star asks whether the key is for its own tile, so no script decides it. Never while typing in a
-  field, with a modifier held (Ctrl+F is the browser's find), or as a held key repeats. The child
-  combinator is written `&gt;` so that nothing reading the tag stops at it; the browser decodes it.
+  field, with a modifier held (Ctrl+F is the browser's find), or as a held key repeats: key_guard.html, as
+  for the compare tab's answer keys. The child combinator is written `&gt;` so that nothing reading the tag
+  stops at it; the browser decodes it.
 #}
 {% macro star(starred) -%}
+  {%- set key_guard | trim %}{% include "key_guard.html" %}{% endset -%}
   {%- set f_pressed -%}
-    click, keydown[(key == 'f' || key == 'F') && !repeat && !ctrlKey && !metaKey && !altKey
-      && !target.closest('input, select, textarea')
+    click, keydown[(key == 'f' || key == 'F') && {{ key_guard }}
       && (this.parentElement.matches(':has(:focus-visible)')
         || (!document.querySelector(':has(&gt; .star):has(:focus-visible)')
           && this.parentElement.matches(':hover')))] from:body

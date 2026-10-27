@@ -96,6 +96,7 @@ def test_every_tile_has_one_star_beside_its_rail_that_f_presses_on_the_focused_o
         assert trigger.endswith("] from:body")
         for condition in ("'f'", "!repeat", "!ctrlKey", "!metaKey", "!altKey", "this.parentElement"):
             assert condition in trigger
+        assert "!target.closest('input,select,textarea')" in trigger
         for state in (":focus-visible", ":hover"):
             assert state in trigger
 
@@ -510,7 +511,10 @@ def test_the_settings_page_counts_what_a_pool_reset_would_throw_away(web: Web) -
 
     assert "The pool holds 24 wallpapers." in before
     assert "No batch is on screen." in before
-    assert "The batch on screen has 2 marks, which a reset throws away." in after
+    assert (
+        "The batch on screen has 2 marks. A reset throws them away, as your next visit to the batches page"
+        " would." in after
+    )
     assert 'hx-post="/settings/pool/reset"' in after
     assert (
         'hx-confirm="Reset the pool? 24 wallpapers leave it, and the batch on screen goes with its 2 marks.'

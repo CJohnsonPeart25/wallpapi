@@ -9,6 +9,13 @@ to recorded time. Amends ADR 0016: an **Item** is decided by a **Verdict** or a 
 shown. Amends ADR 0026: a **Skip** is recorded, at zero weight. Rewrites invariant 4. Invariant 2 stands, and
 so do ADR 0007 and ADR 0021.
 
+Amended 2026-10-27 by the taste engine MVP (wallpapi-8pa), naming what wallpapi records (`evidence_log.py`
+and `similarity.py`). **Provenance** keys: `zone`, `slot_zone`, `mix`, and `kept: champion` on a
+**Gauntlet**'s champion, which was kept rather than drawn. The context key: `theme`, `light` or `dark`. Three
+**Spaces**: the CLIP model's id (`CLIP_SPACE`), `colour-and-category` (`FALLBACK_SPACE`), and the two joined
+by `+` (`BLENDED_SPACE`), for a matrix that held both before the model opened. A converted **Batch** does
+record a first-shown time, its mint time; the Consequences are corrected to say so.
+
 ## Context
 
 The **Decision log** holds one row per **Wallpaper** per **Verdict**. That is all it can hold, and it forgets
@@ -93,8 +100,9 @@ Every reader of the old table moves to **Judgements**: **History** paging, filte
 Invariant 2 holds. The **Ranking stamp** records what ranking read, never what it scored, so a past screen can
 be replayed as that day's ranking saw it without a stored **Score**.
 
-Converted **Judgements** lack what was never recorded: first-shown time, local offset, theme, **Ranking
-stamp**, **Mix**. Absent means unknown, and every reader must allow for it.
+Converted **Judgements** lack what was never recorded: local offset, theme, **Ranking stamp**, **Mix**, and a
+**History** edit's first-shown time. A converted **Batch** has its mint time as first-shown. Absent means
+unknown, and every reader must allow for it.
 
 Asking SQL about one **Item** now joins the **Item** rows to their **Judgement** for its recorded time. That
 is the price of the screen as the unit, and the reason the **Response** fields SQL reads are columns rather

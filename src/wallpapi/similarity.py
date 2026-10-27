@@ -253,7 +253,7 @@ class Embeddings:
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
         """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`. A pair without two **Embeddings**
-        is the fallback's until the model is open and 0.0 after, beyond every radius (ADR 0024).
+        is the fallback's until the model is open and 0.0 after, beyond every radius below 1 (ADR 0024).
         """
         return self.measure(pool, decided).matrix
 

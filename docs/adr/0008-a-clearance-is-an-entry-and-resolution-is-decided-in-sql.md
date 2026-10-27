@@ -5,7 +5,10 @@ Date: 2026-09-27
 ## Status
 
 Superseded by ADR 0015, which replaces the resolution rule and the **Clearance**: the latest entry decides.
-Resolution living in one SQL fragment, and edits carrying `batch_id = NULL`, stand.
+Resolution living in one SQL fragment stands. Amended 2026-10-27 by the taste engine MVP (wallpapi-8pa), after
+ADR 0027: `_RESOLUTION_CTE` and `_resolved_from` keep their names in `evidence_log.py`; `model.Clearance` and
+`DecisionEntry.entry` are gone, and a legacy **Clearance** is `taste.verdict_grid.LegacyEntry.CLEARED`; and
+an edit is told apart from a **Batch** by its **Screen**, `history`, no longer by `batch_id = NULL`.
 
 ## Context
 

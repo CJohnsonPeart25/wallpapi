@@ -91,7 +91,7 @@ DEFAULT_SIMILARITY_RADIUS = 0.10
 """How far a decided **Wallpaper**'s influence reaches, as a distance in `[0, 1]`.
 
 Sized to leave an **Unknown** zone, which is what **Explore** draws from. A fixed radius covers more of the
-space with every decision, so this decays as the **Decision log** grows: 0.15 left none at 692 decided. See
+space with every decision, so this decays as the **Evidence log** grows: 0.15 left none at 692 decided. See
 ADR 0023.
 """
 
@@ -120,7 +120,7 @@ and never will if it is never shown.
 """
 
 DEFAULT_ACTIVE_MIX = EXPLORE_MIX.name
-"""**Explore**, because an empty **Decision log** has no **Bangers** to refine towards."""
+"""**Explore**, because an empty **Evidence log** has no **Bangers** to refine towards."""
 
 MIX_TOTAL = 100
 """What a **Mix** must sum to, exactly: a **Mix** summing to 99 would make the leftover roll systematic."""
