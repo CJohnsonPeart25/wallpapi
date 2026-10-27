@@ -24,6 +24,7 @@ from numpy.typing import NDArray
 
 from wallpapi import evidence_log, pool, settings, storage
 from wallpapi.allocation import PERCENT, ScoredWallpaper, draw
+from wallpapi.evidence_log import Theme
 from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.similarity import Embeddings
@@ -297,15 +298,17 @@ class Batches:
         )
         return Ranked(scored=scored, stamp=stamp)
 
-    def submit(self, write: sqlite3.Connection, batch_id: str) -> Submitted | SubmissionRefused:
+    def submit(
+        self, write: sqlite3.Connection, batch_id: str, *, theme: Theme | None = None
+    ) -> Submitted | SubmissionRefused:
         """Record the **Batch** in the **Evidence log** as one **Judgement**, inside the caller's write
         transaction.
 
         Claim the **Batch**; append a submitted verdict grid **Judgement** of every tile in on-screen order,
         each with its mark or unmarked and whether its preview was opened (`_record` says what else); retire
         everything shown from the **Pool** (ADR 0016); clear the **Draft Batch**. An unmarked tile is
-        recorded as one, and read as an **Ignore**. `BEGIN IMMEDIATE` took the write lock before the claim
-        is read, so a second tab cannot split them.
+        recorded as one, and read as an **Ignore**. `theme` is the page's, into the **Context**. `BEGIN
+        IMMEDIATE` took the write lock before the claim is read, so a second tab cannot split them.
         """
         claimed = _claim(write, batch_id)
         if isinstance(claimed, SubmissionRefused):
@@ -320,6 +323,7 @@ class Batches:
                 for w in claimed.wallpapers
             },
             GridResponse(submitted=True),
+            theme,
         )
         shown = [w.id for w in claimed.wallpapers]
         pool.retire(write, shown)
@@ -329,7 +333,9 @@ class Batches:
         ignored = sum(1 for w in shown if w not in claimed.drafts)
         return Submitted(batch_id=batch_id, recorded=len(shown), ignored=ignored)
 
-    def skip(self, write: sqlite3.Connection, batch_id: str) -> SubmissionRefused | None:
+    def skip(
+        self, write: sqlite3.Connection, batch_id: str, *, theme: Theme | None = None
+    ) -> SubmissionRefused | None:
         """Record a **Skip** of the live **Batch** `batch_id` and drop it with its tiles and **Draft Batch**
         inside the caller's transaction, or say why not (ADR 0026).
 
@@ -341,7 +347,9 @@ class Batches:
         claimed = _claim(write, batch_id)
         if isinstance(claimed, SubmissionRefused):
             return claimed
-        self._record(write, claimed, {w.id: TileResponse() for w in claimed.wallpapers}, GridResponse())
+        self._record(
+            write, claimed, {w.id: TileResponse() for w in claimed.wallpapers}, GridResponse(), theme
+        )
         _drop(write, "?", (batch_id,))
         return None
 
@@ -351,10 +359,12 @@ class Batches:
         batch: Batch,
         tiles: Mapping[str, TileResponse],
         response: GridResponse,
+        theme: Theme | None,
     ) -> dt.datetime:
         """Append the verdict grid **Judgement** of `batch` answered with `tiles` and `response`, and say
         when it was recorded. Every tile in on-screen order with its **Provenance**, the **Ranking stamp**
-        the **Batch** was minted under, its mint time as first shown, and the clock's local offset."""
+        the **Batch** was minted under, its mint time as first shown, the clock's local offset, and the page's
+        `theme` in the **Context** where it sent one."""
         shown = [w.id for w in batch.wallpapers]
         now = self._clock.now()
         recorded_at = evidence_log.recorded_time(write, shown, now)
@@ -371,6 +381,7 @@ class Batches:
                 utc_offset=self._clock.utc_offset(now),
                 first_shown_at=batch.created_at,
                 ranking=batch.ranking,
+                context=evidence_log.context(theme=theme),
             ),
         )
         return recorded_at

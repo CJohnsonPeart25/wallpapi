@@ -22,7 +22,7 @@ from tests.fakes import catalogue_of, wallpaper
 from wallpapi import batches, evidence_log, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
-from wallpapi.evidence_log import HistoryEntry, ResolvedVerdict
+from wallpapi.evidence_log import HistoryEntry, ResolvedVerdict, Theme
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
@@ -894,6 +894,27 @@ def test_after_a_shortfall_each_tiles_provenance_names_its_slot_zone_beside_its_
         ("unknown", "banger"): 4,
     }
     assert {p["mix"] for p in provenance} == {"halves"}
+
+
+@pytest.mark.parametrize("end", ["submit", "skip"])
+@pytest.mark.parametrize(
+    ("theme", "context"),
+    [
+        pytest.param(Theme.DARK, {"theme": "dark"}, id="dark"),
+        pytest.param(Theme.LIGHT, {"theme": "light"}, id="light"),
+        pytest.param(None, {}, id="none sent"),
+    ],
+)
+def test_the_page_theme_goes_into_the_context_and_none_sent_is_none_stored(
+    rig: BatchesRig, end: str, theme: Theme | None, context: dict[str, str]
+) -> None:
+    """The page's resolved theme is a fact about the moment, never a setting: absent means unknown."""
+    batch = rig.next()
+
+    with storage.write(rig.connection) as write:
+        getattr(rig.batches, end)(write, batch.id, theme=theme)
+
+    assert rig.logged()[-1].context == context
 
 
 def _tiles(rig: BatchesRig) -> dict[str, ItemResponse]:

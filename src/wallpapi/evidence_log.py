@@ -71,6 +71,18 @@ PROVENANCE_SLOT_ZONE: Final = "slot_zone"
 PROVENANCE_MIX: Final = "mix"
 """The name of the **Mix** the screen was drawn with."""
 
+CONTEXT_THEME: Final = "theme"
+"""The **Context** field naming the page's theme as the browser resolved it: `Theme`'s values."""
+
+
+class Theme(StrEnum):
+    """The page's theme when a screen was answered, `system` already resolved by the browser. Never a
+    setting: it describes the moment, and is recorded only where the page sent it."""
+
+    LIGHT = "light"
+    DARK = "dark"
+
+
 HISTORY_PAGE_SIZE = 100
 """Rows on one page of **History**: it grows by hundreds of **Ignores** a week and needs *a* bound."""
 
@@ -153,6 +165,12 @@ def provenance(*, zone: Zone | None, slot_zone: Zone | None, mix: str | None) ->
     from a **Mix**, a **Batch** or a **Line-up**."""
     labels = {PROVENANCE_ZONE: zone, PROVENANCE_SLOT_ZONE: slot_zone, PROVENANCE_MIX: mix}
     return {name: str(label) for name, label in labels.items() if label is not None}
+
+
+def context(*, theme: Theme | None) -> Context:
+    """The **Context** of a screen answered on the page: the theme where the page sent one, and nothing for
+    what it did not. For every screen the page answers, a **Batch** or a **Line-up**."""
+    return {} if theme is None else {CONTEXT_THEME: theme.value}
 
 
 def tile_response(verdict: Verdict | None, *, preview_opened: bool = False) -> TileResponse:
