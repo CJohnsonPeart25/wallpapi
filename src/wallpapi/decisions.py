@@ -12,8 +12,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from wallpapi.clock import iso_utc
 from wallpapi.model import Clearance, DecisionEntry, Verdict
+from wallpapi.taste.clock import iso_utc
 
 HISTORY_PAGE_SIZE = 100
 """Rows on one page of **History**: it grows by thousands of **Ignores** a week and needs *a* bound."""
@@ -199,16 +199,50 @@ def entries(
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     rows = connection.execute(f"{query} ORDER BY seq", parameters).fetchall()
-    return [
-        DecisionEntry(
-            seq=int(row["seq"]),
-            wallpaper_id=str(row["wallpaper_id"]),
-            batch_id=None if row["batch_id"] is None else str(row["batch_id"]),
-            entry=_entry_from(row["verdict"]),
-            recorded_at=dt.datetime.fromisoformat(str(row["recorded_at"])),
-        )
-        for row in rows
-    ]
+    return [_decision_entry_from(row) for row in rows]
+
+
+def deciding_entries(
+    connection: sqlite3.Connection, wallpaper_ids: Sequence[str]
+) -> dict[str, DecisionEntry]:
+    """The entry each **Wallpaper**'s resolution stands on, in one query: its latest by sequence, a legacy
+    **Clearance** included. Only for the ids with an entry.
+
+    What ranking's Evidence is stamped with until the Evidence log records **Judgements**: the sequence
+    stands in for a **Judgement** id and the entry's time is its recorded time.
+    """
+    requested = list(dict.fromkeys(wallpaper_ids))
+    if not requested:
+        return {}
+    placeholders = ",".join("?" * len(requested))
+    query = _resolution_query(
+        "SELECT log.seq, log.wallpaper_id, log.batch_id, log.verdict, log.recorded_at FROM resolution"
+        " JOIN decision_log AS log ON log.seq = resolution.latest_seq",
+        restriction=f"WHERE wallpaper_id IN ({placeholders})",
+    )
+    rows = connection.execute(query, requested).fetchall()
+    return {str(row["wallpaper_id"]): _decision_entry_from(row) for row in rows}
+
+
+def item_key(wallpaper_id: str) -> str:
+    """The key `taste/` names a Wallhaven **Wallpaper** by: its id namespaced by source. wallpapi's own
+    tables keep the bare id; this is the one place the two meet.
+    """
+    return f"{ITEM_SOURCE}:{wallpaper_id}"
+
+
+ITEM_SOURCE = "wallhaven"
+"""The only Item source built: every Item key is `wallhaven:<id>`."""
+
+
+def _decision_entry_from(row: sqlite3.Row) -> DecisionEntry:
+    return DecisionEntry(
+        seq=int(row["seq"]),
+        wallpaper_id=str(row["wallpaper_id"]),
+        batch_id=None if row["batch_id"] is None else str(row["batch_id"]),
+        entry=_entry_from(row["verdict"]),
+        recorded_at=dt.datetime.fromisoformat(str(row["recorded_at"])),
+    )
 
 
 _ABSENT = ResolvedVerdict(verdict=None, value=0)

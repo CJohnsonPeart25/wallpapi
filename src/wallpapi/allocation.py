@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from wallpapi.model import Mix, Wallpaper, Zone
-from wallpapi.rng import SeededRandom
+from wallpapi.taste.rng import SeededRandom
 
 ZONE_ORDER: tuple[Zone, ...] = (Zone.UNKNOWN, Zone.BANGER, Zone.DUD)
 """The order the **Zones** are visited in and a shortfall is filled from; fixed so a seed allocates the same

@@ -133,6 +133,26 @@ def test_two_entries_sharing_a_timestamp_resolve_by_sequence(connection: sqlite3
     assert resolved(connection, SUBJECT).verdict is Verdict.FAVOURITE
 
 
+def test_the_deciding_entry_is_the_one_resolution_stands_on(connection: sqlite3.Connection) -> None:
+    """What ranking's Evidence is stamped with until the Evidence log has **Judgements**: the latest entry by
+    sequence, a shared timestamp included, and its time. Nothing for a **Wallpaper** with no entries."""
+    append(connection, {SUBJECT: Verdict.LIKE, "wp0001": Verdict.BAN})
+    append(connection, {SUBJECT: Verdict.FAVOURITE})
+    append(connection, {"wp0001": Verdict.IGNORE}, at=LATER)
+    latest = {entry.wallpaper_id: entry for entry in decisions.entries(connection)}
+
+    deciding = decisions.deciding_entries(connection, [SUBJECT, "wp0001", "wp0002"])
+
+    assert deciding == {SUBJECT: latest[SUBJECT], "wp0001": latest["wp0001"]}
+    assert (deciding[SUBJECT].entry, deciding[SUBJECT].recorded_at) == (Verdict.FAVOURITE, AT)
+    assert (deciding["wp0001"].entry, deciding["wp0001"].recorded_at) == (Verdict.IGNORE, LATER)
+    assert decisions.deciding_entries(connection, []) == {}
+
+
+def test_an_item_key_is_a_wallhaven_id_namespaced_by_its_source() -> None:
+    assert decisions.item_key("94x38z") == "wallhaven:94x38z"
+
+
 def test_an_ignore_after_a_favourite_resolves_to_ignore(connection: sqlite3.Connection) -> None:
     """The latest entry decides, whatever it is (ADR 0015), and an **Ignore** counts once."""
     append(connection, {SUBJECT: Verdict.FAVOURITE})

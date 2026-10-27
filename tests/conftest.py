@@ -47,8 +47,8 @@ from wallpapi.decisions import HistoryEntry, HistoryRefused
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
 from wallpapi.model import Clearance, DecisionEntry, Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
-from wallpapi.rng import SeededRandom
 from wallpapi.similarity import EMBED_BATCH, Embeddings
+from wallpapi.taste.rng import SeededRandom
 from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)

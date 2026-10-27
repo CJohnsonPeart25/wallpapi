@@ -15,11 +15,11 @@ import uvicorn
 from fastapi import FastAPI
 
 from wallpapi import workflows
-from wallpapi.clock import SystemClock
 from wallpapi.compose import Modules, compose
 from wallpapi.library import DownloadingLibraryWriter
-from wallpapi.rng import SeededRandom
 from wallpapi.similarity import DownloadedModel, EmbeddingCache, Embeddings, OnnxClipEmbedder
+from wallpapi.taste.clock import SystemClock
+from wallpapi.taste.rng import SeededRandom
 from wallpapi.wallhaven import WallhavenClient
 from wallpapi.web.app import create_app
 

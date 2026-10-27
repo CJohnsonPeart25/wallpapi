@@ -41,8 +41,8 @@ from wallpapi.pool import (
     similar_groups,
     wait_needed,
 )
-from wallpapi.rng import SeededRandom
 from wallpapi.similarity import Similarity
+from wallpapi.taste.rng import SeededRandom
 
 
 @dataclass
