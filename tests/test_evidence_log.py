@@ -571,6 +571,35 @@ def test_the_lookalike_subjects_are_what_resolves_to_favourite_or_like_now(
     assert evidence_log.lookalike_subjects(connection) == ["wp0000", "wp0001", "wp0004", "wp0005"], "by id"
 
 
+def test_times_compared_counts_compare_screens_alone_whatever_was_answered(
+    connection: sqlite3.Connection,
+) -> None:
+    """A **Line-up**'s wear (ADR 0028): picked, passed over, starred or "none of these" each count once per
+    **Judgement**. A submitted **Batch**, a **Skip** and a **History** edit are not compare **Screens**."""
+    append(
+        connection,
+        pick(("wp0000", PICKED), ("wp0001", PASSED)),
+        pick(("wp0001", PASSED), ("wp0002", PASSED), none_of_these=True, at=LATER),
+        pick(("wp0002", PickTile(favourite=True)), ("wp0001", PICKED), at=LATER + dt.timedelta(seconds=1)),
+        grid(("wp0000", LIKED), ("wp0003", BLANK)),
+        grid(("wp0003", BLANK), ("wp0004", STARRED), at=LATER, submitted=False),
+        grid(("wp0005", BANNED), screen="history"),
+    )
+
+    asked = ["wp0001", "wp0000", "wp0002", "wp0003", "wp0004", "wp0005", "wp0006", "wp0001"]
+
+    assert evidence_log.times_compared(connection, asked) == {
+        "wp0000": 1,
+        "wp0001": 3,
+        "wp0002": 2,
+        "wp0003": 0,
+        "wp0004": 0,
+        "wp0005": 0,
+        "wp0006": 0,
+    }
+    assert evidence_log.times_compared(connection, []) == {}
+
+
 # -- history -----------------------------------------------------------------------------------------------
 
 
