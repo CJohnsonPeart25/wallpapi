@@ -6,6 +6,8 @@ Date: 2026-10-06
 
 Accepted. Amends ADR 0007: "**Bans** are excluded from the rows" now covers their near-duplicates too.
 The −100 spread at the **Similarity radius**, the **Score** formula and the **Zone** rule are unchanged.
+Amended 2026-10-27 by the taste engine MVP (wallpapi-8pa): the threshold is `NEAR_DUPLICATE_SIMILARITY` in
+`taste/clip.py`, no longer a constant in `similarity.py`; still a constant, not a setting.
 
 ## Context
 

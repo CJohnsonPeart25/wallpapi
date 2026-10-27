@@ -12,7 +12,8 @@ mentions" becomes "the **Pool** holds no **Item** that has ever had a **Verdict*
 recorded", a legacy **Clearance** included. Only a **Verdict** or a **Favourite** drains the **Pool**, and a
 **Favourite** can be given on any tile. Being shown never does: a **Line-up** answered by **Pick**,
 **Order** or **Gauntlet**, and a skipped **Batch**, leave their **Items** in the **Pool**, bar any given a
-**Favourite**.
+**Favourite**. The two mechanisms below are renamed: `Batches.submit` appends one **Judgement** and calls
+`pool.retire` in the same transaction, and `pool._ADMIT_TO_POOL` refuses by `evidence_log.DECIDED`.
 
 ## Context
 

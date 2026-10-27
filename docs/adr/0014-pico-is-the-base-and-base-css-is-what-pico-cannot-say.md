@@ -8,6 +8,14 @@ Accepted. Supersedes the implementation detail in ADR 0003 that `wallpapi.js` se
 the decision in 0003 — full resolution loaded from Wallhaven, on demand, never cached — stands, and the
 Alpine component on the preview dialog is now what sets and removes it.
 
+Amended 2026-10-27 by the taste engine MVP (wallpapi-8pa). Four pages share the shell; the compare tab is the
+fourth. A tile's **Favourite** is its star, so a tile's rail is two segments, **Like** and **Ban**; the
+preview's rail keeps all three, and its footer's **Favourite** clicks the star. `base.css` also holds the
+star, the **Line-up**'s grid, and its key, rank and crown. Alpine owns four islands: each settings **Mix**
+row's total is the fourth. The theme choice still stays in the browser, but the theme it resolves to rides on
+an answered screen into its **Judgement**'s context (ADR 0027). A key is bound as an htmx trigger on the
+body, `keydown[...] from:body` behind the guard in `key_guard.html`, never by script.
+
 ## Context
 
 Every template stood alone. `batch.html`, `history.html` and `settings.html` each wrote their own head

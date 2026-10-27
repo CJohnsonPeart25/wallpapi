@@ -6,7 +6,10 @@ Date: 2026-10-06
 
 Accepted. Amends ADR 0013: the colour-and-category baseline is the floor only while the model is not open.
 Settles the masking question that ADR 0017 left open. The **Similarity radius**, the **Similarity decay**,
-the **Score** formula and the **Zone** rule are unchanged.
+the **Score** formula and the **Zone** rule are unchanged. Corrected 2026-10-27 by the taste engine MVP
+(wallpapi-8pa): a distance of 1.0 is beyond every radius below 1 only. The radius may be set to exactly 1,
+and a pair counts while its distance is at most the radius, so there an unembedded pair weighs
+`exp(-decay)`, like any pair at distance 1.
 
 ## Context
 
@@ -24,8 +27,8 @@ could not be read, and on a cache stalled at its cap. Those are where the baseli
 ## Decision
 
 **Once the model is open, a pair where either side has no Embedding scores 0.0.** A similarity of 0.0 is a
-distance of 1.0, beyond every radius, so the weight is exactly 0. An unembedded **Pool** member with no
-other reach scores exactly 0.0 and is an honest **Unknown**. An unembedded decided **Wallpaper** contributes
+distance of 1.0, beyond every radius below 1, so the weight is exactly 0. An unembedded **Pool** member with
+no other reach scores exactly 0.0 and is an honest **Unknown**. An unembedded decided **Wallpaper** contributes
 nothing to any **Score**.
 
 **While the model is not open, the baseline still answers those pairs.** "Not open" covers pending, failed,
