@@ -20,6 +20,10 @@ class Clock(Protocol):
         """Seconds from an arbitrary fixed point."""
         ...
 
+    def utc_offset(self, at: dt.datetime) -> dt.timedelta:
+        """The local offset from UTC at the moment `at`, which daylight saving can move."""
+        ...
+
 
 class SystemClock:
     def now(self) -> dt.datetime:
@@ -27,6 +31,10 @@ class SystemClock:
 
     def monotonic(self) -> float:
         return time.monotonic()
+
+    def utc_offset(self, at: dt.datetime) -> dt.timedelta:
+        offset = at.astimezone().utcoffset()
+        return dt.timedelta(0) if offset is None else offset
 
 
 def iso_utc(at: dt.datetime) -> str:

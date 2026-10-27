@@ -2,8 +2,8 @@
 the background downloader that fills it with every **Pool** member (ADR 0017).
 
 A real in-memory database, a temporary directory handed to the constructor, the fake Wallhaven client and the
-fake clock. **Wallpapers** are admitted, retired and decided as `pool` and `decisions` do. The downloader is
-driven by hand, as the refill is: `wait` says how long the thread would wait and `step` does at most one
+fake clock. **Wallpapers** are admitted, retired and decided as `pool` and `evidence_log` do. The downloader
+is driven by hand, as the refill is: `wait` says how long the thread would wait and `step` does at most one
 fetch. The rule ADR 0009 recorded is held here: a size cap never evicts a **Wallpaper** with an **Explicit
 Verdict**. One test uses `make_harness`, because its subject is a workflow's tail: eviction after a
 submission.
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import FIXED_NOW, live, make_harness
+from tests.conftest import FIXED_NOW, decide, live, make_harness
 from tests.fakes import (
     THUMBNAIL_BYTES,
     FakeClock,
@@ -33,7 +33,7 @@ from tests.fakes import (
     WallhavenUnreachable,
     wallpaper,
 )
-from wallpapi import batches, decisions, pool, settings, storage, workflows
+from wallpapi import batches, pool, settings, storage, workflows
 from wallpapi.batches import Batch, Batches
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
@@ -79,8 +79,7 @@ class Rig:
             pool.retire(write, wallpaper_ids)
 
     def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
-        with storage.write(self.connection) as write:
-            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+        decide(self.connection, self.clock, verdict, *wallpaper_ids)
 
     def configure(self, **fields: object) -> None:
         with storage.write(self.connection) as write:
@@ -504,7 +503,7 @@ def test_the_thumbnail_gap(last: float | None, now: float, wait: float) -> None:
 
 
 def test_a_submission_evicts_what_it_retired_without_a_verdict(db_path: Path) -> None:
-    """Eviction runs at the tail of a submission, after the **Decision log** commits."""
+    """Eviction runs at the tail of a submission, after the **Evidence log** commits."""
     harness = make_harness(db_path, catalogue=(wallpaper("liked"), wallpaper("ignored")))
     workflows.save_settings(harness.modules, batch_size=2)
     batch = live(harness)

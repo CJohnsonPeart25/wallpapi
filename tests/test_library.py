@@ -3,7 +3,7 @@
 The **Library** is derived from the **Decision log**: a **Favourite** with no file gets one, and a file whose
 **Wallpaper** is no longer a **Favourite** loses it. That makes `reconcile` idempotent, which is what lets a
 failed download simply be retried. A real in-memory database; **Wallpapers** are admitted and **Verdicts**
-appended as `pool` and `decisions` do. The last section is the workflows calling it at the right moments,
+recorded as `pool` and `evidence_log` do. The last section is the workflows calling it at the right moments,
 on `make_harness`, because what it checks is a workflow's post-commit tail.
 """
 
@@ -17,9 +17,9 @@ import pytest
 
 from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, live, make_harness
 from tests.fakes import FakeLibraryWriter, catalogue_of, wallpaper
-from wallpapi import decisions, settings, workflows
+from wallpapi import evidence_log, settings, workflows
 from wallpapi.batches import Batch
-from wallpapi.decisions import HistoryEntry
+from wallpapi.evidence_log import HistoryEntry
 from wallpapi.library import Library
 from wallpapi.model import Verdict
 
@@ -245,10 +245,10 @@ def library_harness(db_path: Path, library_path: Path, count: int) -> Harness:
     return harness
 
 
-def test_a_submitted_favourite_is_written_after_the_decision_log_commits(
+def test_a_submitted_favourite_is_written_after_the_evidence_log_commits(
     db_path: Path, tmp_path: Path
 ) -> None:
-    """A failed download cannot roll the **Decision log** back; the next submission's reconciliation picks
+    """A failed download cannot roll the **Evidence log** back; the next submission's reconciliation picks
     the **Favourite** up."""
     harness = library_harness(db_path, tmp_path / "Library", 2)
     batch = live(harness)
@@ -259,9 +259,7 @@ def test_a_submitted_favourite_is_written_after_the_decision_log_commits(
     workflows.submit(harness.modules, batch.id)
 
     assert [w.wallpaper_id for w in harness.library.written] == [written]
-    assert [e.entry for e in decisions.entries(harness.connect(), batch_id=batch.id)] == [
-        Verdict.FAVOURITE
-    ] * 2
+    assert evidence_log.favourites(harness.connect()) == sorted([failing, written])
 
     harness.library.fail_for.clear()
 
@@ -301,5 +299,5 @@ def test_unmarking_a_reshown_favourite_takes_its_file_away(
         assert isinstance(workflows.set_draft(harness.modules, batch.id, ONE, None), Batch)
     workflows.submit(harness.modules, batch.id)
 
-    assert decisions.resolve(harness.connect(), [ONE])[ONE].verdict is Verdict.IGNORE
+    assert evidence_log.resolve(harness.connect(), [ONE])[ONE].verdict is Verdict.IGNORE
     assert harness.library.removed == [written]

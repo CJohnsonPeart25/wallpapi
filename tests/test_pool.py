@@ -3,7 +3,7 @@ and the fake clock. No `compose` and no thread, so the whole 45-calls-a-minute b
 real time. Searches are asserted against the fake's record because the client is an injected seam and
 "searched with these parameters" has no other observable.
 
-**Favourites** are appended to the **Decision log** directly and the **Filters** changed through `settings`,
+**Favourites** are recorded in the **Evidence log** directly and the **Filters** changed through `settings`,
 as their callers do; a **Batch** retiring what it showed is `test_batches.py`'s. The last two sections use
 `make_harness` because their subjects are workflows: that the settings save prunes the **Pool** at all, and
 the **Pool reset**'s one transaction with its eviction tail.
@@ -23,11 +23,11 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import FIXED_NOW, judge, live, make_harness, submit_with
+from tests.conftest import FIXED_NOW, decide, judge, live, make_harness, record_legacy_clearance, submit_with
 from tests.fakes import FakeClock, FakeSimilarities, FakeWallhavenClient, catalogue_of, wallpaper
-from wallpapi import decisions, pool, settings, storage, workflows
+from wallpapi import evidence_log, pool, settings, storage, workflows
 from wallpapi.batches import SubmissionRefused
-from wallpapi.model import Clearance, Verdict, Wallpaper
+from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import (
     CALLS_PER_MINUTE,
     ERROR_BACKOFF_SECONDS,
@@ -42,7 +42,9 @@ from wallpapi.pool import (
     wait_needed,
 )
 from wallpapi.similarity import Similarity
+from wallpapi.taste.judgement import Judgement, Shown
 from wallpapi.taste.rng import SeededRandom
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 
 
 @dataclass
@@ -66,8 +68,7 @@ class Rig:
             pool.prune(write, updated)
 
     def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
-        with storage.write(self.connection) as write:
-            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+        decide(self.connection, self.clock, verdict, *wallpaper_ids)
 
     def favourite(self, *wallpaper_ids: str) -> None:
         self.decide(Verdict.FAVOURITE, *wallpaper_ids)
@@ -203,7 +204,7 @@ def test_the_same_wallpaper_met_twice_joins_the_pool_once(connection: sqlite3.Co
 
 
 def test_a_decided_wallpaper_met_again_is_not_admitted(connection: sqlite3.Connection) -> None:
-    """ADR 0016: decided once. Any entry at all refuses it, a legacy **Clearance** included, because that
+    """ADR 0016: decided once. Any decision at all refuses it, a legacy **Clearance** included, because that
     resolves to nothing yet was a decision; the `wallpapers` row is still refreshed."""
     rig = rig_over(connection, catalogue=catalogue_of(4), target=None)
     with storage.write(connection) as write:
@@ -214,16 +215,47 @@ def test_a_decided_wallpaper_met_again_is_not_admitted(connection: sqlite3.Conne
         )
     rig.decide(Verdict.IGNORE, "wp0000")
     with storage.write(connection) as write:
-        write.execute(
-            "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
-            ("wp0001", Clearance.CLEARED.value, FIXED_NOW.isoformat()),
-        )
+        record_legacy_clearance(write, "wp0001", FIXED_NOW)
 
     rig.step()
 
     assert rig.members() == ["wp0002", "wp0003"]
     refreshed = connection.execute("SELECT width FROM wallpapers WHERE id = 'wp0000'").fetchone()
     assert refreshed["width"] == 3840
+
+
+def test_a_wallpaper_only_ever_shown_without_a_verdict_or_favourite_is_admitted(
+    connection: sqlite3.Connection,
+) -> None:
+    """ADR 0027: being shown is not deciding. A **Skip** records its tiles and decides none of them, a mark
+    drafted on it included; an unmarked tile on a submitted **Batch** is an **Ignore**, and is refused."""
+    rig = rig_over(connection, catalogue=catalogue_of(3), target=None)
+    with storage.write(connection) as write:
+        write.executemany(
+            "INSERT INTO wallpapers (id, width, height, ratio, category, purity, favourites, colours, "
+            "thumbnail_url, full_url, page_url) VALUES (?, 1, 1, '', '', 'sfw', 0, '', '', '', '')",
+            [("wp0000",), ("wp0001",), ("wp0002",)],
+        )
+        for tiles, submitted in [
+            ((("wp0000", TileResponse()), ("wp0001", TileResponse(favourite=True))), False),
+            ((("wp0002", TileResponse()),), True),
+        ]:
+            evidence_log.append(
+                write,
+                Judgement(
+                    instrument=VERDICT_GRID_V1,
+                    screen="batch",
+                    shown=tuple(Shown(evidence_log.item_key(w), response) for w, response in tiles),
+                    recorded_at=FIXED_NOW,
+                    app="wallpapi",
+                    app_version="0.1.0",
+                    response=GridResponse(submitted=submitted),
+                ),
+            )
+
+    rig.step()
+
+    assert rig.members() == ["wp0000", "wp0001"]
 
 
 def test_admission_stamps_the_first_arrival_as_utc_from_the_clock(connection: sqlite3.Connection) -> None:
@@ -256,7 +288,7 @@ def test_changing_the_filters_prunes_the_members_that_no_longer_pass(connection:
     rig.configure(min_width=3840, min_height=2160)
 
     assert rig.members() == ["huge"]
-    assert decisions.resolve(connection, ["judged"])["judged"].verdict is Verdict.LIKE
+    assert evidence_log.resolve(connection, ["judged"])["judged"].verdict is Verdict.LIKE
 
 
 def test_retiring_drops_only_the_named_members_and_keeps_their_rows(connection: sqlite3.Connection) -> None:
@@ -284,7 +316,7 @@ def test_a_member_is_contained_until_it_is_retired(connection: sqlite3.Connectio
 
 
 def test_clearing_empties_the_pool_and_keeps_every_row_and_entry(connection: sqlite3.Connection) -> None:
-    """A **Pool reset**'s half in `pool`: membership only, so the `wallpapers` rows and the **Decision log**
+    """A **Pool reset**'s half in `pool`: membership only, so the `wallpapers` rows and the **Evidence log**
     carry over and every **Score** with them."""
     rig = rig_over(connection, catalogue=catalogue_of(3), steps=1)
     rig.decide(Verdict.LIKE, "wp0001")
@@ -295,7 +327,7 @@ def test_clearing_empties_the_pool_and_keeps_every_row_and_entry(connection: sql
     assert cleared == 3
     assert rig.members() == []
     assert connection.execute("SELECT COUNT(*) FROM wallpapers").fetchone()[0] == 3
-    assert decisions.resolve(connection, ["wp0001"])["wp0001"].verdict is Verdict.LIKE
+    assert evidence_log.resolve(connection, ["wp0001"])["wp0001"].verdict is Verdict.LIKE
 
 
 def test_any_recorded_wallpaper_is_looked_up_member_or_not(connection: sqlite3.Connection) -> None:
@@ -1113,7 +1145,7 @@ def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_evicts_what_i
     db_path: Path,
 ) -> None:
     """Both halves in one write, then eviction after the commit: a purged thumbnail goes, a **Like**'s stays.
-    The **Decision log** carries over."""
+    The **Evidence log** carries over."""
     harness = make_harness(db_path, catalogue=catalogue_of(6))
     workflows.save_settings(harness.modules, batch_size=2)
     liked = submit_with(harness, {}).wallpapers[0].id
@@ -1131,11 +1163,11 @@ def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_evicts_what_i
         reason=SubmissionRefused.Reason.UNKNOWN_BATCH
     )
     assert {p.stem for p in harness.modules.thumbnails.directory.iterdir()} == {liked}
-    assert decisions.resolve(harness.connect(), [liked])[liked].verdict is Verdict.LIKE
+    assert evidence_log.resolve(harness.connect(), [liked])[liked].verdict is Verdict.LIKE
 
 
 def test_what_a_pool_reset_purged_may_be_admitted_again(db_path: Path) -> None:
-    """A purged **Wallpaper** leaves no trace in the **Decision log**, so the refill may bring it back. Two
+    """A purged **Wallpaper** leaves no trace in the **Evidence log**, so the refill may bring it back. Two
     steps: the walk in progress finds its next page empty, and the fresh one starts at page one."""
     harness = make_harness(db_path, catalogue=catalogue_of(6))
 

@@ -31,7 +31,7 @@ MODEL_FILENAME = "clip-vit-b32-vision-quantized.onnx"
 
 
 def wallpapi_home() -> Path:
-    """Where the **Decision log**, the **Thumbnail cache** and the model live."""
+    """Where the **Evidence log**, the **Thumbnail cache** and the model live."""
     configured = os.environ.get("WALLPAPI_HOME")
     return Path(configured) if configured else Path.home() / ".wallpapi"
 

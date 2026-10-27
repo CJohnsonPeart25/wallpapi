@@ -296,17 +296,23 @@ class StubEmbed:
 class FakeClock:
     """A clock that only moves when a test moves it."""
 
-    def __init__(self, at: dt.datetime) -> None:
+    def __init__(self, at: dt.datetime, offset: dt.timedelta = dt.timedelta(0)) -> None:
         if at.tzinfo is not dt.UTC:
             raise ValueError("FakeClock must be given a UTC-aware datetime")
         self._now = at
         self._monotonic = 0.0
+        self.offset = offset
+        """The local offset from UTC this clock reports, whatever the moment: a test sets it."""
 
     def now(self) -> dt.datetime:
         return self._now
 
     def monotonic(self) -> float:
         return self._monotonic
+
+    def utc_offset(self, at: dt.datetime) -> dt.timedelta:
+        del at
+        return self.offset
 
     def advance(self, seconds: float) -> None:
         self._now += dt.timedelta(seconds=seconds)

@@ -47,7 +47,7 @@ by hand. No test touches the network.
 ## Invariants
 
 Design intent no test can hold. Numbers are stable and never reused, because ADRs cite them. Retired:
-1 -> 14 (ADR 0019); 3 -> `storage.py`; 5 -> `decisions.py`, `pool.py`, `batches.py`, `library.py`; 6, 7 ->
+1 -> 14 (ADR 0019); 3 -> `storage.py`; 5 -> `evidence_log.py`, `pool.py`, `batches.py`, `library.py`; 6, 7 ->
 `batches.py`; 8 -> `thumbnails.py`; 11 -> ADR 0005 and Traps; 13 -> ADR 0013.
 
 - **2. Scores are never stored.** Always derived from the **Evidence log** in one array operation over the
