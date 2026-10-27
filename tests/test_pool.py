@@ -27,6 +27,7 @@ from tests.conftest import FIXED_NOW, decide, judge, live, make_harness, record_
 from tests.fakes import FakeClock, FakeSimilarities, FakeWallhavenClient, catalogue_of, wallpaper
 from wallpapi import evidence_log, pool, settings, storage, workflows
 from wallpapi.batches import SubmissionRefused
+from wallpapi.lineup import Lineup, LineupRefused
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import (
     CALLS_PER_MINUTE,
@@ -1141,27 +1142,35 @@ def test_changing_the_filters_prunes_the_pool_in_the_same_save(db_path: Path) ->
 # -- the workflow: a Pool reset ------------------------------------------------------------------------
 
 
-def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_evicts_what_it_purged(
+def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_lineup_and_evicts_what_it_purged(
     db_path: Path,
 ) -> None:
-    """Both halves in one write, then eviction after the commit: a purged thumbnail goes, a **Like**'s stays.
-    The **Evidence log** carries over."""
+    """Every part in one write, then eviction after the commit: a purged thumbnail goes, a **Like**'s stays.
+    The **Evidence log** carries over, and gains nothing for the **Line-up** thrown away."""
     harness = make_harness(db_path, catalogue=catalogue_of(6))
-    workflows.save_settings(harness.modules, batch_size=2)
+    workflows.save_settings(harness.modules, batch_size=2, lineup_size=2)
     liked = submit_with(harness, {}).wallpapers[0].id
     judge(harness, **{liked: Verdict.LIKE})
     batch = live(harness)
     workflows.set_draft(harness.modules, batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
+    shown = harness.modules.lineups.next(harness.connect())
+    assert isinstance(shown, Lineup)
+    logged = len(evidence_log.judgements(harness.connect()))
     for w in catalogue_of(6):
         harness.modules.thumbnails.get(harness.connect(), w.id)
 
     reset = workflows.reset_pool(harness.modules)
 
-    assert (reset.members, reset.batches_discarded, len(reset.eviction.evicted)) == (4, 1, 5)
+    assert (reset.members, reset.batches_discarded, reset.lineups_discarded) == (4, 1, 1)
+    assert len(reset.eviction.evicted) == 5
     assert pool.members(harness.connect()) == []
     assert workflows.submit(harness.modules, batch.id) == SubmissionRefused(
         reason=SubmissionRefused.Reason.UNKNOWN_BATCH
     )
+    assert workflows.pick(harness.modules, shown.id, None) == LineupRefused(
+        reason=LineupRefused.Reason.UNKNOWN_LINEUP
+    )
+    assert len(evidence_log.judgements(harness.connect())) == logged
     assert {p.stem for p in harness.modules.thumbnails.directory.iterdir()} == {liked}
     assert evidence_log.resolve(harness.connect(), [liked])[liked].verdict is Verdict.LIKE
 

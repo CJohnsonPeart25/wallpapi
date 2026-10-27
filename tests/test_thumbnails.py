@@ -35,6 +35,7 @@ from tests.fakes import (
 )
 from wallpapi import batches, pool, settings, storage, workflows
 from wallpapi.batches import Batch, Batches
+from wallpapi.lineup import Lineup, Lineups
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import Embeddings
@@ -206,6 +207,23 @@ def test_a_wallpaper_in_the_live_batch_keeps_its_thumbnail(tmp_path: Path) -> No
         assert rig.evict() == tuple({"shown", "other"} - {shown})
 
         assert rig.cached() == {shown}
+
+
+def test_a_wallpaper_on_the_live_lineup_keeps_its_thumbnail(tmp_path: Path) -> None:
+    """A **Batch** submitted beside the **Line-up** can retire a tile the **Line-up** still shows."""
+    with rig_over(tmp_path, (wallpaper("one"), wallpaper("two"), wallpaper("gone"))) as rig:
+        rig.configure(lineup_size=2)
+        embeddings = Embeddings(MemoryStore(), StubEmbed(), ModelOnDisk(), fallback=FakeSimilarities())
+        ranked = Batches(embeddings, lambda: QUIET, rig.clock, SeededRandom(1)).ranked
+        rig.retire("gone")
+        live = Lineups(ranked, embeddings, lambda: QUIET, rig.clock, SeededRandom(1)).next(rig.connection)
+        assert isinstance(live, Lineup)
+        rig.fill("one", "two", "gone")
+        rig.retire("one", "two")
+
+        assert rig.evict() == ("gone",)
+
+        assert rig.cached() == {"one", "two"}
 
 
 def test_a_file_belonging_to_no_wallpaper_is_swept_up(tmp_path: Path) -> None:

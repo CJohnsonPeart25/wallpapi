@@ -3,8 +3,8 @@ cap behind it, and the background downloader that fetches every **Pool** member'
 
 The cache directory is handed in. Each file is named by its **Wallpaper** id, which is the whole mapping
 from a file to a **Wallpaper**, and the **Similarity provider** reads the same directory by the same rule.
-What is still to be shown and what has an **Explicit Verdict** standing are asked of `pool`, `batches` and
-`evidence_log`; nothing here reads their tables.
+What is still to be shown and what has an **Explicit Verdict** standing are asked of `pool`, `batches`,
+`lineup` and `evidence_log`; nothing here reads their tables.
 
 Eviction runs at the tail of a submission and never on a **History** edit. A **Wallpaper** with an
 **Explicit Verdict** is never evicted, by either pass, because **History** renders its thumbnail: a cache
@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from wallpapi import batches, evidence_log, pool, settings
+from wallpapi import batches, evidence_log, lineup, pool, settings
 from wallpapi.files import url_suffix, write_atomically
 from wallpapi.model import Wallpaper
 from wallpapi.taste.clock import Clock
@@ -128,19 +128,24 @@ class Thumbnails:
     def evict(self, connection: sqlite3.Connection, cap_bytes: int) -> ThumbnailEviction:
         """Clear out the cache, by **Verdict** first and by size only as a backstop.
 
-        First, every thumbnail with no **Explicit Verdict** standing, not in the **Pool** and not in the live
-        **Batch**: nothing will ask for it again. Then, over `cap_bytes`, the oldest of those still to be
-        shown. Neither pass evicts an **Explicit Verdict**, so a cache over the cap on **Favourites** alone
-        says so in `over_cap`. A file that vanishes mid-pass, or that something holds open, is skipped: this
-        runs after a submission has committed and must not raise.
+        First, every thumbnail with no **Explicit Verdict** standing, not in the **Pool** and not on the live
+        **Batch** or **Line-up**: nothing will ask for it again. Then, over `cap_bytes`, the oldest of those
+        still to be shown. Neither pass evicts an **Explicit Verdict**, so a cache over the cap on
+        **Favourites** alone says so in `over_cap`. A file that vanishes mid-pass, or that something holds
+        open, is skipped: this runs after a submission has committed and must not raise.
         """
         cached = _cached_thumbnails(self.directory)
         if not cached:
             return _NOTHING_EVICTED
 
         decided = evidence_log.explicitly_decided(connection)
-        # The live **Batch** is named apart from the **Pool**: a **Filter** change prunes only the **Pool**.
-        awaiting = {w.id for w in pool.members(connection)} | batches.showing(connection)
+        # The live **Batch** and **Line-up** are named apart from the **Pool**: a **Filter** change prunes
+        # only the **Pool**, and a submission retires a tile the **Line-up** may still show.
+        awaiting = (
+            {w.id for w in pool.members(connection)}
+            | batches.showing(connection)
+            | lineup.showing(connection)
+        )
         evicted: list[str] = []
         capped: list[_CachedThumbnail] = []
         remaining = 0

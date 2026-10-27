@@ -15,6 +15,7 @@ from wallpapi import pool, similarity, storage, thumbnails
 from wallpapi.background import BackgroundLoop
 from wallpapi.batches import Batches
 from wallpapi.library import Library, LibraryWriter
+from wallpapi.lineup import Lineups
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock
 from wallpapi.taste.rng import SeededRandom
@@ -30,6 +31,7 @@ class Modules:
     clock: Clock
     refill: pool.Refill
     batches: Batches
+    lineups: Lineups
     library: Library
     thumbnails: thumbnails.Thumbnails
     similarity: Embeddings
@@ -44,19 +46,24 @@ def compose(
     similarity: Embeddings,
     random_source: SeededRandom,
     refill_random_source: SeededRandom,
+    lineup_random_source: SeededRandom,
     clock: Clock,
 ) -> Modules:
-    """Open and migrate the database, then build each module with its collaborators. The draw and the
-    Refill get separate random sources, so a refill step never changes which **Batch** a seed draws.
+    """Open and migrate the database, then build each module with its collaborators. The **Batch** draw,
+    the **Line-up** draw and the Refill get separate random sources, so neither a refill step nor a
+    **Line-up** changes which **Batch** a seed draws. The **Line-up** is ranked by the **Batches**' own
+    ranking, so the two tabs draw from one classification.
     """
     connect = storage.ThreadConnections(db_path).get
     storage.migrate(connect())
     refill = pool.Refill(connect, wallhaven, similarity.similarities, clock, refill_random_source)
+    batches = Batches(similarity, refill.status, clock, random_source)
     return Modules(
         connect=connect,
         clock=clock,
         refill=refill,
-        batches=Batches(similarity, refill.status, clock, random_source),
+        batches=batches,
+        lineups=Lineups(batches.ranked, similarity, refill.status, clock, lineup_random_source),
         library=Library(library_writer, clock),
         thumbnails=thumbnails.Thumbnails(thumbnail_dir, wallhaven, clock),
         similarity=similarity,
