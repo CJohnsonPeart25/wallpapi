@@ -90,6 +90,39 @@ def test_the_preview_fetches_nothing_until_it_is_opened(web: Web) -> None:
         assert f'href="{shown.page_url}"' not in body, "the tile renders no link of its own"
 
 
+def test_opening_the_preview_posts_from_the_dialog_which_no_swap_replaces(web: Web) -> None:
+    """The preview-opened post is an htmx form inside the shell's `<dialog>`, carrying the **Batch** ID the
+    last fetch left and swapping nothing; the **Batch** fragment htmx replaces holds none of it."""
+    _, client = web
+    shell = client.get("/").text
+    fragment = client.get("/batch").text
+
+    dialog = shell[shell.index("<dialog") : shell.index("</dialog>")]
+    form = re.search(r'<form\b[^>]*hx-post="/draft/preview"[^>]*>', dialog)
+    assert form is not None
+    for attribute in ('hx-trigger="preview-opened"', 'hx-include="#batch-id"', 'hx-swap="none"'):
+        assert attribute in form.group(0)
+    assert 'name="wallpaper_id"' in dialog
+    assert "preview-opened" in dialog[: dialog.index("<form")], "the dialog's open() must fire it"
+    assert "/draft/preview" not in fragment
+
+
+def test_submit_and_skip_post_the_theme_the_browser_resolved(web: Web) -> None:
+    """`system` is no `data-theme` at all, so the page asks the OS the way Pico does; the value goes as an
+    htmx value with the **Batch** ID."""
+    _, client = web
+    shell = client.get("/").text
+
+    for path in ("/submit", "/skip"):
+        form = re.search(rf'<form\b[^>]*hx-post="{path}"[^>]*>', shell)
+        assert form is not None
+        vals = re.search(r'hx-vals="([^"]*)"', form.group(0))
+        assert vals is not None
+        assert vals.group(1).lstrip().startswith("js:{theme:")
+        assert "dataset.theme" in vals.group(1)
+        assert "matchMedia('(prefers-color-scheme: dark)')" in vals.group(1)
+
+
 def test_each_tile_says_its_zone_in_words(db_path: Path) -> None:
     """`data-zone` for the stylesheet, and the word itself, since states told apart only by colour are
     states nobody colour-blind can tell apart."""

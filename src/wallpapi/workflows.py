@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from wallpapi import batches, evidence_log, pool, settings, storage, thumbnails
 from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
-from wallpapi.evidence_log import HistoryEntry, HistoryRefused
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
@@ -40,8 +40,14 @@ def set_all_drafts(modules: Modules, batch_id: str, verdict: Verdict | None) -> 
         return batches.set_all_drafts(write, batch_id, verdict)
 
 
-def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
-    """Submit the **Batch**, then reconcile the **Library** and evict thumbnails.
+def open_preview(modules: Modules, batch_id: str, wallpaper_id: str) -> Batch | SubmissionRefused:
+    """Record on the **Draft Batch** that a tile's preview was opened."""
+    with storage.write(modules.connect()) as write:
+        return batches.open_preview(write, batch_id, wallpaper_id)
+
+
+def submit(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> Submitted | SubmissionRefused:
+    """Submit the **Batch** with the page's `theme`, then reconcile the **Library** and evict thumbnails.
 
     The tail is outside the transaction: a download is a network call, and nothing the **Library** does may
     roll the **Evidence log** back. Eviction comes before the next **Batch** is drawn, so nothing about to be
@@ -49,7 +55,7 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
     """
     connection = modules.connect()
     with storage.write(connection) as write:
-        submitted = modules.batches.submit(write, batch_id)
+        submitted = modules.batches.submit(write, batch_id, theme=theme)
     if isinstance(submitted, Submitted):
         current = settings.get(connection)
         modules.library.reconcile(connection, current.library_path)
@@ -57,12 +63,12 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
     return submitted
 
 
-def skip(modules: Modules, batch_id: str) -> SubmissionRefused | None:
-    """Record a **Skip** and drop the live **Batch**, or say why not (ADR 0026). No tail: nothing left the
-    **Pool** and nothing was decided, so there is nothing to reconcile or evict.
+def skip(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> SubmissionRefused | None:
+    """Record a **Skip**, with the page's `theme`, and drop the live **Batch**, or say why not (ADR 0026).
+    No tail: nothing left the **Pool** and nothing was decided, so there is nothing to reconcile or evict.
     """
     with storage.write(modules.connect()) as write:
-        return modules.batches.skip(write, batch_id)
+        return modules.batches.skip(write, batch_id, theme=theme)
 
 
 def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:

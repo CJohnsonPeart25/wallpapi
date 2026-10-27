@@ -28,7 +28,7 @@ from starlette.types import Lifespan
 from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
-from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict, Theme
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import (
     FORM_FIELDS,
@@ -122,6 +122,15 @@ def parse_verdict(posted: str, *, required: bool) -> Verdict | None:
         return Verdict(posted)
     except ValueError:
         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
+
+
+def parse_theme(posted: str) -> Theme | None:
+    """The page's resolved theme, if it posted `light` or `dark`. Anything else is dropped rather than
+    refused: the theme describes the moment and must never cost the submission it rides on."""
+    try:
+        return Theme(posted)
+    except ValueError:
+        return None
 
 
 def _refuse(request: Request, reason: StrEnum) -> HTMLResponse:
@@ -251,9 +260,12 @@ def batch_view(request: Request, modules: Wired) -> HTMLResponse:
 
 
 @router.post("/submit", response_class=HTMLResponse)
-def submit(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-    """Submit the **Batch**, answer with the banner, and have the page fetch the next one, refused or not."""
-    result = workflows.submit(modules, batch_id)
+def submit(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], theme: Annotated[str, Form()] = ""
+) -> HTMLResponse:
+    """Submit the **Batch** with the page's theme, answer with the banner, and have the page fetch the next
+    one, refused or not."""
+    result = workflows.submit(modules, batch_id, theme=parse_theme(theme))
     if isinstance(result, SubmissionRefused):
         response = _refuse(request, result.reason)
     else:
@@ -265,9 +277,12 @@ def submit(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -
 
 
 @router.post("/skip", response_class=HTMLResponse)
-def skip(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-    """Skip the **Batch** (ADR 0026) and answer as `/submit` does: the banner, and the same refetch."""
-    refused = workflows.skip(modules, batch_id)
+def skip(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], theme: Annotated[str, Form()] = ""
+) -> HTMLResponse:
+    """Skip the **Batch** (ADR 0026) with the page's theme and answer as `/submit` does: the banner, and the
+    same refetch."""
+    refused = workflows.skip(modules, batch_id, theme=parse_theme(theme))
     if refused is not None:
         response = _refuse(request, refused.reason)
     else:
@@ -311,6 +326,18 @@ def draft_all(
     if isinstance(live, SubmissionRefused):
         return _refuse(request, live.reason)
     return templates.TemplateResponse(request, "grid.html", {"batch": live})
+
+
+@router.post("/draft/preview")
+def open_preview(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], wallpaper_id: Annotated[str, Form()]
+) -> Response:
+    """Record that a tile's full-size preview was opened. Nothing on the page changes, so nothing comes
+    back: the preview swaps nothing in."""
+    opened = workflows.open_preview(modules, batch_id, wallpaper_id)
+    if isinstance(opened, SubmissionRefused):
+        return _refuse(request, opened.reason)
+    return Response(status_code=HTTPStatus.NO_CONTENT)
 
 
 @router.get("/history", response_class=HTMLResponse)
