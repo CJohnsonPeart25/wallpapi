@@ -161,8 +161,12 @@ _Avoid_: undo, reset, delete, revert
 ### Comparing
 
 **Line-up**:
-The n wallpapers shown side by side on the compare tab to be compared, n a setting from 2 to 8, 4 by default. Drawn from the active mix like a batch, from the pool minus the live batch's tiles, and kept until answered, so a reload shows the same one. Answering it takes nothing out of the pool except a wallpaper given a favourite.
+The n wallpapers shown side by side on the compare tab to be compared, n a setting from 2 to 8, 4 by default. Drawn by the active mix and wear, from the pool minus the live batch's tiles, and kept until answered, so a reload shows the same one. The mix allocates its slots as for a batch; wear decides which wallpaper fills each, and an instrument may add its own rule, as gauntlet keeps its winner. Answering it takes nothing out of the pool except a wallpaper given a favourite.
 _Avoid_: batch, comparison, matchup, grid
+
+**Wear**:
+How many times a wallpaper was on a line-up that was answered, "none of these" included, read from the evidence log as each line-up is drawn and never stored. Each showing makes a wallpaper wait longer to be lined up again: a banger is drawn by its score divided by one plus its wear, and an unknown or a dud fewest wear first. A line-up a pool reset discarded adds none, and a batch neither adds nor reads it. A stand-in for showing the comparison that teaches the most.
+_Avoid_: exposure, views, impressions, fatigue
 
 **Compare tab**:
 The tab that holds the line-up, with pick, order and gauntlet as a choice on it. The batches tab stays the verdict grid.
