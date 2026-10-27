@@ -14,7 +14,11 @@ the `WALLPAPI_SIMILARITY` switch and `scripts/similarity_spike.py` are deleted, 
 the per-pair fallback, now `metadata_similarity` in the one `similarity` module. Its **Similarity radius**
 default of 0.15 is superseded by ADR 0023: 0.10, by migration 11, because a grown **Decision log** left
 no **Unknown** zone at 0.15. Amended by ADR 0024: the baseline is the floor only while the model is not
-open; once it is open, a pair without two **Embeddings** scores 0.0.
+open; once it is open, a pair without two **Embeddings** scores 0.0. Amended 2026-10-27 by the taste engine
+MVP (wallpapi-8pa): the CLIP maths — preprocessing, the embed step, the cosine mapped into `[0, 1]` and the
+near-duplicate threshold — lives in `taste/`, as code over data. wallpapi fetches the model into
+`~/.wallpapi/models/` and checks it, keeps the embedding cache and runs the upkeep thread, and keeps the
+colour-and-category fallback. The **Space** a **Ranking stamp** names is this model's id, or the fallback.
 
 ## Context
 

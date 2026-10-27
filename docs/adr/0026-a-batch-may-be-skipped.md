@@ -7,7 +7,9 @@ Date: 2026-10-24
 Accepted. Supersedes ADR 0002's "There is no skip" and its rejected alternative "A skip that discards the
 Batch without recording anything". The rest of ADR 0002 stands: a refresh or a reopened tab still hands back
 the live **Batch**. Invariant 4 stands: a submitted **Batch** is never retracted. ADR 0016 stands: a skip
-decides nothing, so it retires nothing.
+decides nothing, so it retires nothing. Amended by ADR 0027: a **Skip** is now recorded, as a **Judgement**
+with every **Response** blank, before the **Batch** and its **Draft Batch** are dropped. Its **Reduction**
+gives it zero weight, so it still teaches nothing and still retires nothing.
 
 ## Context
 
