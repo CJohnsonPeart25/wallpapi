@@ -489,6 +489,28 @@ def pick(
     return _lineup_view(request, PICK_V1.name, modules.lineups.next(modules.connect()), refused=refused)
 
 
+@router.post("/compare/star", response_class=HTMLResponse)
+def star_lineup_tile(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()],
+    starred: Annotated[bool, Form()],
+    instrument: str = "",
+) -> HTMLResponse:
+    """Star one **Line-up** tile, or take its star off, and answer with the same **Line-up**, its tiles
+    answering the **Instrument** the URL names: a star never answers it or draws the next. A stale star gets
+    the one on screen now, under the words, as a stale answer does."""
+    chosen = _instrument(instrument)
+    held = workflows.star_lineup_tile(modules, lineup_id, wallpaper_id, starred=starred)
+    if isinstance(held, Lineup):
+        return _lineup_view(request, chosen, held)
+    refused = REFUSALS[held.reason]
+    if not refused.banner:
+        raise HTTPException(status_code=refused.status, detail=refused.message)
+    return _lineup_view(request, chosen, modules.lineups.next(modules.connect()), refused=refused)
+
+
 @router.post("/compare/size", response_class=HTMLResponse)
 def choose_lineup_size(request: Request, modules: Wired, size: Annotated[str, Form()] = "") -> HTMLResponse:
     """Set the **Line-up** size for the next **Line-up**. The one on screen is untouched."""

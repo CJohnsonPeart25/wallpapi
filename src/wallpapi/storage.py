@@ -17,7 +17,7 @@ from wallpapi import evidence_log, settings
 from wallpapi.taste.judgement import Judgement, Shown, instant
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -179,6 +179,8 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         # 14: the **Line-up** on screen, and a place in the **Evidence log** for the **Response** fields no
         # SQL reads; the **Line-up** size is seeded with the other settings.
         (*((statement, ()) for statement in _MIGRATION_14), *seed_settings),
+        # 15: the stars held against the live **Line-up** until it is answered.
+        (*((statement, ()) for statement in _MIGRATION_15), *seed_settings),
     )
 
 
@@ -530,6 +532,23 @@ the verdict grid, whose fields all have columns, and for every row from before.
 nothing ranked it), and each tile in on-screen order with the **Zone** it was drawn from and its **Slot**'s.
 A **Line-up** is deleted when it is answered, its **Judgement** then holding all of it, or by a **Pool
 reset**.
+"""
+
+
+_MIGRATION_15 = (
+    """
+CREATE TABLE lineup_stars (
+    lineup_id    TEXT NOT NULL,
+    wallpaper_id TEXT NOT NULL,
+    PRIMARY KEY (lineup_id, wallpaper_id),
+    FOREIGN KEY (lineup_id, wallpaper_id) REFERENCES lineup_wallpapers (lineup_id, wallpaper_id)
+)
+""",
+)
+"""Migration 15's schema: a row per starred tile of the live **Line-up**, as `draft_preview` is a row per
+opened preview beside a **Batch**. Keyed to the tile, not to an **Instrument**, so every **Instrument** on a
+**Line-up** holds its stars the same way. Set and cleared, never toggled, and dropped with the **Line-up**
+when it is answered (the **Judgement** then holding each star as a **Favourite**) or discarded.
 """
 
 

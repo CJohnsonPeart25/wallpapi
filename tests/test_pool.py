@@ -1146,7 +1146,8 @@ def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_lineup_and_ev
     db_path: Path,
 ) -> None:
     """Every part in one write, then eviction after the commit: a purged thumbnail goes, a **Like**'s stays.
-    The **Evidence log** carries over, and gains nothing for the **Line-up** thrown away."""
+    The **Evidence log** carries over, and gains nothing for the **Line-up** thrown away, nor for the star
+    held against it."""
     harness = make_harness(db_path, catalogue=catalogue_of(6))
     workflows.save_settings(harness.modules, batch_size=2, lineup_size=2)
     liked = submit_with(harness, {}).wallpapers[0].id
@@ -1155,6 +1156,7 @@ def test_a_pool_reset_empties_the_pool_discards_the_live_batch_and_lineup_and_ev
     workflows.set_draft(harness.modules, batch.id, batch.wallpapers[0].id, Verdict.FAVOURITE)
     shown = harness.modules.lineups.next(harness.connect())
     assert isinstance(shown, Lineup)
+    workflows.star_lineup_tile(harness.modules, shown.id, shown.wallpapers[0].id, starred=True)
     logged = len(evidence_log.judgements(harness.connect()))
     for w in catalogue_of(6):
         harness.modules.thumbnails.get(harness.connect(), w.id)

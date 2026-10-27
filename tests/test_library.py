@@ -21,6 +21,7 @@ from wallpapi import evidence_log, settings, workflows
 from wallpapi.batches import Batch
 from wallpapi.evidence_log import HistoryEntry
 from wallpapi.library import Library
+from wallpapi.lineup import Lineup, Picked
 from wallpapi.model import Verdict
 
 ONE, TWO, THREE = (w.id for w in catalogue_of(3))
@@ -301,3 +302,44 @@ def test_unmarking_a_reshown_favourite_takes_its_file_away(
 
     assert evidence_log.resolve(harness.connect(), [ONE])[ONE].verdict is Verdict.IGNORE
     assert harness.library.removed == [written]
+
+
+def live_lineup(harness: Harness) -> Lineup:
+    """The live **Line-up**, drawn if there is none, as `/compare/lineup` serves it."""
+    shown = harness.modules.lineups.next(harness.connect())
+    assert isinstance(shown, Lineup), shown
+    return shown
+
+
+def test_a_lineup_answered_with_a_star_reconciles_the_library_after_the_evidence_log_commits(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """The **Pick**'s tail, as a submission's: a failed download leaves the **Judgement** standing. Only an
+    answer with a star reconciles, since only it changes a **Favourite**: an unstarred one leaves the failed
+    download alone, and the next starred one picks it up beside its own."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    first = live_lineup(harness)
+    failing = first.wallpapers[0].id
+    harness.library.fail_for.add(failing)
+    assert isinstance(workflows.star_lineup_tile(harness.modules, first.id, failing, starred=True), Lineup)
+
+    assert workflows.pick(harness.modules, first.id, first.wallpapers[1].id) == Picked(
+        lineup_id=first.id, winner=first.wallpapers[1].id, starred=(failing,)
+    )
+
+    assert harness.library.written == []
+    assert evidence_log.favourites(harness.connect()) == [failing]
+
+    harness.library.fail_for.clear()
+    unstarred = live_lineup(harness)
+    workflows.pick(harness.modules, unstarred.id, None)
+
+    assert harness.library.written == []
+
+    starred = live_lineup(harness)
+    workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[0].id, starred=True)
+    workflows.pick(harness.modules, starred.id, None)
+
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted(
+        [failing, starred.wallpapers[0].id]
+    )

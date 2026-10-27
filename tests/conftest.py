@@ -506,6 +506,14 @@ class LineupRig(BatchesRig):
         with storage.write(self.connection) as write:
             return self.lineups.pick(write, lineup_id, winner, theme=theme)
 
+    def star(self, lineup_id: str, wallpaper_id: str, *, starred: bool = True) -> Lineup | LineupRefused:
+        """Star one tile of the **Line-up**, or take its star off with `starred=False`, in its own write."""
+        with storage.write(self.connection) as write:
+            return lineup.star(write, lineup_id, wallpaper_id, starred=starred)
+
+    def starred_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM lineup_stars").fetchone()[0])
+
     def discard_lineup(self) -> int:
         """Drop the live **Line-up**, as a **Pool reset** does."""
         with storage.write(self.connection) as write:

@@ -7,10 +7,17 @@
   on the list as an `hx-vals` every tile inherits, beside its own `wallpaper_id`.
 
   Each tile is one button, the thumbnail and its number on it: a click or the number key posts it as the
-  winner. The button is the tile's only control and fills it, so a star (8pa.10) has room to sit beside it
-  in the `<li>`, never inside it. The number is a `<kbd>` because it is the key to press. Every tile is the
-  same size whatever its **Zone**, and no **Zone** is shown: a label is not what is being compared.
+  winner. The number is a `<kbd>` because it is the key to press. Every tile is the same size whatever its
+  **Zone**, and no **Zone** is shown: a label is not what is being compared.
+
+  Beside that button in the `<li>`, never inside it, is the grid's star (star.html), by click or F: a click
+  on it is never a click on the tile. It posts the tile's star to the live **Line-up**, which holds it until
+  the **Line-up** is answered, and swaps the same **Line-up** back, starred. Posting for the **Instrument**
+  on screen and holding nothing of its own, it serves every **Instrument** on the **Line-up** alike. It is
+  synced on `#lineup` with the answers, so a star and an answer are never in flight together: the server
+  must hold the star before the answer that records it is posted.
 #}
+{% from "star.html" import star %}
 {% if refused %}
   <p class="lineup-refused" role="status">{{ refused }}</p>
 {% endif %}
@@ -36,6 +43,14 @@
           <img src="/thumb/{{ wallpaper.id }}" alt="" />
           <kbd class="key">{{ loop.index }}</kbd>
         </button>
+        {% set starred = wallpaper.id in lineup.starred %}
+        {% call star(starred) %}
+          hx-post="/compare/star?instrument={{ instrument }}"
+          hx-vals='{"wallpaper_id": "{{ wallpaper.id }}", "starred": "{{ 'false' if starred else 'true' }}"}'
+          hx-include="#lineup-id"
+          hx-target="#lineup"
+          hx-sync="#lineup:drop"
+        {% endcall %}
       </li>
     {% endfor %}
   </ul>
