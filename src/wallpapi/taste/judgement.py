@@ -73,7 +73,8 @@ class RankingStamp:
 
     read: LogPosition | None
     space: str
-    """The **Space**: the CLIP model's id, or the colour-and-category fallback, named by wallpapi."""
+    """The **Space**: the CLIP model's id, the colour-and-category fallback, or a blend of the two, named
+    by wallpapi."""
     radius: float
     decay: float
     distillation: str | None = None

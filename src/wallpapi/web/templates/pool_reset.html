@@ -28,7 +28,8 @@
   <p>
     The pool holds {{ pool_size }} wallpaper{{ "" if pool_size == 1 else "s" }}.
     {% if live %}
-      The batch on screen has {{ marks }} mark{{ "" if marks == 1 else "s" }}, which a reset throws away.
+      The batch on screen has {{ marks }} mark{{ "" if marks == 1 else "s" }}. A reset throws
+      {{ "it" if marks == 1 else "them" }} away, as your next visit to the batches page would.
     {% else %}
       No batch is on screen.
     {% endif %}
