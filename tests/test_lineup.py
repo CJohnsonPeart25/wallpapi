@@ -1,5 +1,5 @@
-"""The **Line-up**: drawing one beside the live **Batch**, keeping it until answered, and answering it with a
-**Pick**, through `lineup` alone.
+"""The **Line-up**: drawing one beside the live **Batch** on each visit, holding its stars while it is live,
+and answering it with a **Pick**, through `lineup` alone.
 
 On `conftest.LineupRig`: a real in-memory database, `Lineups` drawing through the rig's own `Batches.ranked`
 and **Embeddings** as the composition root wires it, a real `Embeddings` falling back to hand-defined
@@ -103,8 +103,8 @@ def test_a_tile_drawn_into_a_shortfall_remembers_the_zone_its_slot_was_meant_for
     }
 
 
-def test_a_reload_shows_the_same_lineup_until_it_is_answered(rig: LineupRig) -> None:
-    """A refresh is not an answer (ADR 0002's rule): the same screen, read back from storage, with its mint
+def test_asking_for_the_next_hands_back_the_live_lineup_until_it_is_answered(rig: LineupRig) -> None:
+    """What a refused answer is shown (ADR 0029): the same screen, read back from storage, with its mint
     time, **Mix** and **Ranking stamp**, and nothing minted a second time."""
     rig.clock.advance(90)
     minted = rig.lineup()
@@ -116,6 +116,82 @@ def test_a_reload_shows_the_same_lineup_until_it_is_answered(rig: LineupRig) -> 
     assert again.created_at == FIXED_NOW + dt.timedelta(seconds=90)
     assert again.ranking == RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0)
     assert rig.lineups_minted == ["lineup-1"]
+
+
+# -- a visit draws a new Line-up (ADR 0029)
+
+
+def test_two_visits_draw_two_lineups_and_the_first_is_never_recorded(rig: LineupRig) -> None:
+    """A visit replaces the live **Line-up**: nothing is recorded, so it adds no **Wear**, and its tiles stay
+    in the **Pool**."""
+    members = pool.members(rig.connection)
+    first = rig.fresh_lineup()
+
+    second = rig.fresh_lineup()
+
+    assert (first.id, second.id) == ("lineup-1", "lineup-2")
+    assert rig.lineup() == second
+    assert rig.connection.execute("SELECT COUNT(*) FROM lineups").fetchone()[0] == 1
+    assert rig.logged() == []
+    assert set(evidence_log.times_compared(rig.connection, ids(first)).values()) == {0}
+    assert pool.members(rig.connection) == members
+
+
+def test_a_visit_drops_the_stars_of_the_lineup_it_replaces_and_records_none(rig: LineupRig) -> None:
+    """A star lives only while its **Line-up** does: replaced, it is gone, nothing is a **Favourite**, and the
+    starred **Wallpaper** stays in the **Pool**."""
+    members = pool.members(rig.connection)
+    first = rig.fresh_lineup()
+    rig.star(first.id, ids(first)[0])
+
+    second = rig.fresh_lineup()
+
+    assert second.starred == frozenset()
+    assert rig.starred_rows() == 0
+    assert rig.logged() == []
+    assert evidence_log.favourites(rig.connection) == []
+    assert pool.members(rig.connection) == members
+
+
+def test_answering_or_starring_a_replaced_lineup_is_refused_as_unknown_and_records_nothing(
+    rig: LineupRig,
+) -> None:
+    """Two tabs on the compare tab: the second visit replaced the first tab's **Line-up**, so its answer and
+    its star are refused, and the **Line-up** live now is untouched."""
+    stale = rig.fresh_lineup()
+    now_live = rig.fresh_lineup()
+
+    picked = rig.pick(stale.id, ids(stale)[0])
+    starred = rig.star(stale.id, ids(stale)[0])
+
+    unknown = LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert (picked, starred) == (unknown, unknown)
+    assert rig.logged() == []
+    assert rig.lineup() == now_live
+
+
+def test_a_visit_still_draws_without_the_live_batchs_tiles(rig: LineupRig) -> None:
+    batch = rig.next()
+    rig.fresh_lineup()
+
+    shown = rig.fresh_lineup()
+
+    assert sorted(ids(shown)) == sorted(set(IDS) - set(ids(batch)))
+
+
+def test_a_visit_with_too_few_to_draw_still_drops_the_live_lineup(rig: LineupRig) -> None:
+    """The **Line-up** drawn, then a **Batch** of eleven leaves one: a visit says there are too few, and the
+    screen before it has ended all the same, its stars with it."""
+    stale = rig.fresh_lineup()
+    rig.star(stale.id, ids(stale)[0])
+    rig.configure(batch_size=11)
+    rig.fresh()
+
+    result = rig.lineups.fresh(rig.connection)
+
+    assert result == LineupUnavailable(reason=LineupUnavailable.Reason.TOO_FEW)
+    assert lineup.live(rig.connection) is None
+    assert rig.starred_rows() == 0
 
 
 def test_a_new_size_or_mix_applies_to_the_next_lineup_and_not_the_one_on_screen(rig: LineupRig) -> None:
@@ -326,22 +402,22 @@ def test_a_winner_the_lineup_does_not_show_is_refused_and_records_nothing(rig: L
     assert rig.lineup() == shown
 
 
-# -- the star: a Favourite on any tile, held against the live Line-up until it is answered
+# -- the star: a Favourite on any tile, held against the live Line-up while it is live
 
 
-def test_a_star_is_held_against_the_live_lineup_and_survives_a_reload(rig: LineupRig) -> None:
+def test_a_star_is_held_against_the_live_lineup_and_read_back_while_it_is_live(rig: LineupRig) -> None:
     """Starring is not answering: nothing is recorded, nothing leaves the **Pool** and no new **Line-up** is
-    drawn. A reload reads the star back from storage."""
+    drawn. The live **Line-up** read back carries the star."""
     members = pool.members(rig.connection)
     shown = rig.lineup()
     starred = ids(shown)[2]
 
     held = rig.star(shown.id, starred)
-    reloaded = rig.lineup()
+    read_back = rig.lineup()
 
-    assert held == reloaded
-    assert reloaded.id == shown.id
-    assert reloaded.starred == frozenset({starred})
+    assert held == read_back
+    assert read_back.id == shown.id
+    assert read_back.starred == frozenset({starred})
     assert rig.lineups_minted == ["lineup-1"]
     assert rig.logged() == []
     assert pool.members(rig.connection) == members

@@ -261,7 +261,7 @@ def judge(harness: Harness, **marks: Verdict) -> None:
 
 
 def live(harness: Harness) -> Batch:
-    """The live **Batch**, minted if there is none, as `/batch` serves it."""
+    """The live **Batch**, minted if there is none, as `/batch/next` serves it."""
     batch = harness.modules.batches.next(harness.connect())
     assert isinstance(batch, Batch), batch
     return batch
@@ -411,9 +411,19 @@ class BatchesRig:
             assert isinstance(settings.update(write, **fields), settings.Settings)
 
     def next(self) -> Batch:
+        """The live **Batch**, minted if there is none, as `/batch/next` serves it after an answer."""
         batch = self.batches.next(self.connection)
         assert isinstance(batch, Batch), batch
         return batch
+
+    def fresh(self) -> Batch:
+        """A new **Batch** replacing the live one, as `/batch` serves a visit."""
+        batch = self.batches.fresh(self.connection)
+        assert isinstance(batch, Batch), batch
+        return batch
+
+    def batch_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM batches").fetchone()[0])
 
     def set_draft(
         self, batch_id: str, wallpaper_id: str, verdict: Verdict | None
@@ -494,8 +504,14 @@ class LineupRig(BatchesRig):
         )
 
     def lineup(self) -> Lineup:
-        """The live **Line-up**, minted if there is none, as `/compare/lineup` serves it."""
+        """The live **Line-up**, minted if there is none, as an answer is followed by the next."""
         shown = self.lineups.next(self.connection)
+        assert isinstance(shown, Lineup), shown
+        return shown
+
+    def fresh_lineup(self) -> Lineup:
+        """A new **Line-up** replacing the live one, as `/compare/lineup` serves a visit."""
+        shown = self.lineups.fresh(self.connection)
         assert isinstance(shown, Lineup), shown
         return shown
 

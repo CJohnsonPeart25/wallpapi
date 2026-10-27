@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import Harness, batch_id_of, favourite, judge, live, make_harness, serving
 from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
-from wallpapi import batches, evidence_log, pool, settings, workflows
+from wallpapi import batches, evidence_log, lineup, pool, settings, workflows
 from wallpapi.batches import SubmissionRefused
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.lineup import LineupRefused
@@ -66,13 +66,24 @@ def test_a_thumbnail_is_fetched_once_and_then_served_off_disk(web: Web) -> None:
     assert harness.wallhaven.thumbnail_fetches == [shown.thumbnail_url]
 
 
-def test_the_shell_mints_nothing_and_fetches_the_batch_on_load_and_after_a_submission(web: Web) -> None:
+def test_the_shell_mints_nothing_and_fetches_a_new_batch_on_load_and_the_next_after_a_submission(
+    web: Web,
+) -> None:
+    """A load is a visit, which draws a new **Batch**, and so is a page restored from the back-forward cache;
+    the refetch after an answer asks for the next, which hands back the live one if a refusal left one (ADR
+    0029). Both swap into `#batch`."""
     _, client = web
 
     shell = client.get("/").text
 
-    assert 'hx-get="/batch"' in shell
-    assert 'hx-trigger="load, batch-submitted from:body"' in shell
+    loader = re.search(r'<div\s+id="batch"[^>]*>', shell)
+    refetcher = re.search(r'<div\s+id="batch-next"[^>]*>', shell)
+    assert loader is not None and refetcher is not None
+    assert 'hx-get="/batch"' in loader.group(0)
+    assert 'hx-trigger="load, pageshow[persisted] from:window"' in loader.group(0)
+    assert 'hx-get="/batch/next"' in refetcher.group(0)
+    assert 'hx-trigger="batch-submitted from:body"' in refetcher.group(0)
+    assert 'hx-target="#batch"' in refetcher.group(0)
     assert 'hx-post="/skip"' in shell
     assert 'data-wallpaper-id="' not in shell
 
@@ -89,6 +100,7 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
 
     swaps = [
         fetched,
+        client.get("/batch/next"),
         client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": wallpaper_id, "verdict": "ban"}),
         client.post("/draft/all", data={"batch_id": batch_id, "verdict": "ban"}),
         client.post("/mix", data={"mix": "refine"}),
@@ -120,20 +132,21 @@ def test_the_fragments_htmx_swaps_in_are_still_fragments(web: Web) -> None:
 def test_a_tile_post_sets_the_mark_and_answers_with_the_tile(web: Web) -> None:
     """The marked control posts an empty **Verdict**, so a second click says "end up clear" rather than
     "flip it" (`set_draft` sets rather than toggles). The tile keeps its **Zone** label when swapped
-    alone, and a reload shows the mark, because marks are server state."""
+    alone, and the live **Batch** handed back shows the mark, because marks are server state."""
     harness, client = web
     batch_id = batch_id_of(client.get("/batch").text)
     marked = live(harness).wallpapers[0].id
 
     tile = client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": marked, "verdict": "favourite"})
-    reloaded = client.get("/batch").text
+    held = client.get("/batch/next").text
 
     assert tile.status_code == HTTPStatus.OK
     assert 'data-draft-verdict="favourite"' in tile.text
     assert 'data-zone="unknown"' in tile.text
     assert '"verdict": ""' in tile.text, "the marked control must offer to clear itself"
-    assert reloaded.count('data-draft-verdict="favourite"') == 1
-    assert reloaded.count('data-draft-verdict=""') == 7
+    assert batch_id_of(held) == batch_id
+    assert held.count('data-draft-verdict="favourite"') == 1
+    assert held.count('data-draft-verdict=""') == 7
 
     cleared = client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": marked, "verdict": ""})
 
@@ -252,7 +265,7 @@ def test_a_submission_answers_with_what_it_recorded_and_triggers_a_refetch(
         client.post("/draft", data={"batch_id": shown, "wallpaper_id": tile.id, "verdict": "favourite"})
 
     response = client.post("/submit", data={"batch_id": shown}, follow_redirects=False)
-    following = client.get("/batch").text
+    following = client.get("/batch/next").text
 
     assert response.status_code == HTTPStatus.OK
     assert response.headers["HX-Trigger"] == "batch-submitted"
@@ -285,7 +298,7 @@ def test_a_skip_decides_nothing_says_so_and_triggers_a_refetch(web: Web) -> None
     shown = batch_id_of(client.get("/batch").text)
 
     response = client.post("/skip", data={"batch_id": shown})
-    following = client.get("/batch").text
+    following = client.get("/batch/next").text
 
     assert response.status_code == HTTPStatus.OK
     assert response.headers["HX-Trigger"] == "batch-submitted"
@@ -307,23 +320,19 @@ def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(w
     assert again.headers["HX-Trigger"] == "batch-submitted"
 
 
-def test_a_preview_opened_is_posted_without_a_swap_survives_a_reload_and_is_submitted_on_its_tile(
-    web: Web,
-) -> None:
+def test_a_preview_opened_is_posted_without_a_swap_and_is_submitted_on_its_tile(web: Web) -> None:
     """What the preview posts when it opens: nothing comes back to swap, and the flag is server state, so the
-    page reloaded and submitted still carries it, on that tile only."""
+    **Batch** submitted carries it, on that tile only."""
     harness, client = web
     batch_id = batch_id_of(client.get("/batch").text)
     shown = live(harness).wallpapers
     opened = shown[1].id
 
     posted = client.post("/draft/preview", data={"batch_id": batch_id, "wallpaper_id": opened})
-    reloaded = batch_id_of(client.get("/batch").text)
-    client.post("/submit", data={"batch_id": reloaded})
+    client.post("/submit", data={"batch_id": batch_id})
 
     assert posted.status_code == HTTPStatus.NO_CONTENT
     assert posted.text == ""
-    assert reloaded == batch_id
     (judgement,) = evidence_log.judgements(harness.connect())
     assert [s.response for s in judgement.shown] == [
         TileResponse(preview_opened=w.id == opened) for w in shown
@@ -448,9 +457,7 @@ def test_a_stale_tab_is_told_in_words_which_batch_it_is_on(web: Web) -> None:
     assert again.status_code == HTTPStatus.CONFLICT
     assert "That batch has already been submitted" in again.text
     assert unknown.status_code == HTTPStatus.NOT_FOUND
-    assert "That batch is no longer live here: it was skipped or reset, or this instance never drew it." in (
-        unknown.text
-    )
+    assert "That batch is no longer live here" in unknown.text
 
 
 def test_switching_the_mix_answers_with_the_switcher_alone(web: Web) -> None:
@@ -494,26 +501,34 @@ def lineup_of(body: str) -> tuple[str, list[str]]:
 
 def test_the_compare_shell_mints_nothing_and_fetches_the_lineup_for_its_instrument(web: Web) -> None:
     """The **Instrument** is carried in the URL, **Pick** when none is named; one the tab does not offer is
-    a 404."""
+    a 404. A load, or a restore from the back-forward cache, is a visit (ADR 0029)."""
     _, client = web
 
     shell = client.get("/compare").text
     named = client.get("/compare?instrument=pick")
 
     assert 'hx-get="/compare/lineup?instrument=pick"' in shell
+    assert 'hx-trigger="load, pageshow[persisted] from:window"' in shell
     assert 'data-wallpaper-id="' not in shell
     assert named.status_code == HTTPStatus.OK
     assert client.get("/compare?instrument=order").status_code == HTTPStatus.NOT_FOUND
     assert client.get("/compare/lineup?instrument=order").status_code == HTTPStatus.NOT_FOUND
 
 
-def test_a_reload_fetches_the_same_lineup(web: Web) -> None:
-    _, client = web
+def test_each_visit_fetches_a_new_lineup_and_records_nothing(web: Web) -> None:
+    """A reload is a visit (ADR 0029): the **Line-up** before it is replaced and never recorded, and an
+    answer to it is refused with words."""
+    harness, client = web
 
-    first = lineup_of(client.get("/compare/lineup?instrument=pick").text)
-    again = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    first, _ = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    again, _ = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    stale = client.post("/compare/pick", data={"lineup_id": first})
 
-    assert again == first
+    assert again != first
+    assert stale.status_code == HTTPStatus.CONFLICT
+    assert "That line-up is no longer on screen" in " ".join(stale.text.split())
+    assert lineup_of(stale.text)[0] == again
+    assert evidence_log.judgements(harness.connect()) == []
 
 
 def test_a_pick_records_the_winner_with_the_theme_and_answers_with_the_next_lineup(web: Web) -> None:
@@ -556,8 +571,8 @@ def test_answering_a_lineup_twice_is_refused_in_words_with_the_one_on_screen_now
     screen, so the stale page catches up; only the first answer is recorded."""
     harness, client = web
     lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
-    client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[0]})
-    live_now = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    first = client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[0]})
+    live_now = lineup_of(first.text)
 
     again = client.post("/compare/pick", data={"lineup_id": lineup_id, "wallpaper_id": tiles[1]})
 
@@ -589,7 +604,7 @@ def _lineup_starred(body: str) -> list[bool]:
     return ['aria-pressed="true"' in star for star in _lineup_stars(body)]
 
 
-def test_a_star_answers_with_the_same_lineup_starred_and_a_reload_still_shows_it(web: Web) -> None:
+def test_a_star_answers_with_the_same_lineup_starred_and_records_nothing(web: Web) -> None:
     """Starring never answers the **Line-up** or draws the next: the response is the same one, the tile's
     star now pressed and offering to come off, and nothing is recorded until the **Line-up** is answered."""
     harness, client = web
@@ -600,15 +615,13 @@ def test_a_star_answers_with_the_same_lineup_starred_and_a_reload_still_shows_it
         "/compare/star?instrument=pick",
         data={"lineup_id": lineup_id, "wallpaper_id": tiles[1], "starred": "true"},
     )
-    reloaded = client.get("/compare/lineup?instrument=pick").text
 
     assert starred.status_code == HTTPStatus.OK
-    assert lineup_of(starred.text) == lineup_of(reloaded) == shown
-    for body in (starred.text, reloaded):
-        stars = _lineup_stars(body)
-        assert _lineup_starred(body) == [n == 1 for n in range(4)]
-        assert '"starred": "false"' in html.unescape(stars[1])
-        assert '"starred": "true"' in html.unescape(stars[0])
+    assert lineup_of(starred.text) == shown
+    stars = _lineup_stars(starred.text)
+    assert _lineup_starred(starred.text) == [n == 1 for n in range(4)]
+    assert '"starred": "false"' in html.unescape(stars[1])
+    assert '"starred": "true"' in html.unescape(stars[0])
     assert 'hx-post="/compare/pick"' in starred.text, "the tiles still answer the Instrument posted"
     assert evidence_log.judgements(harness.connect()) == []
 
@@ -653,8 +666,7 @@ def test_a_star_on_a_lineup_no_longer_on_screen_is_refused_in_words_with_the_one
     screen now, as a stale **Pick** is; a tile the **Line-up** does not show is a bare 404."""
     harness, client = web
     lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
-    client.post("/compare/pick", data={"lineup_id": lineup_id})
-    live_now = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    live_now = lineup_of(client.post("/compare/pick", data={"lineup_id": lineup_id}).text)
 
     stale = client.post(
         "/compare/star?instrument=pick",
@@ -680,15 +692,18 @@ def test_switching_the_lineup_size_answers_with_the_switcher_alone_and_reaches_t
     lineup_id, _ = lineup_of(client.get("/compare/lineup?instrument=pick").text)
 
     switched = client.post("/compare/size", data={"size": "6"})
-    still = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    still = lineup.live(harness.connect())
     following = client.post("/compare/pick", data={"lineup_id": lineup_id}).text
+    visited = client.get("/compare/lineup?instrument=pick").text
 
     assert switched.status_code == HTTPStatus.OK
     assert 'id="lineup-size"' in switched.text
     assert 'value="6" selected' in switched.text
     assert "data-wallpaper-id" not in switched.text
-    assert len(still[1]) == 4, "the Line-up on screen keeps its size"
+    assert still is not None
+    assert (still.id, len(still.wallpapers)) == (lineup_id, 4), "the Line-up on screen keeps its size"
     assert len(lineup_of(following)[1]) == 6
+    assert len(lineup_of(visited)[1]) == 6
     assert settings.get(harness.connect()).lineup_size == 6
 
 
@@ -723,6 +738,98 @@ def test_an_unavailable_lineup_is_a_page_in_words_never_a_500(
     for word in words:
         assert word in " ".join(response.text.split())
     assert "too_few" not in response.text
+
+
+# -- each visit draws a new screen (ADR 0029) ------------------------------------------------------------
+
+
+def _counts(harness: Harness) -> tuple[int, ...]:
+    """The rows a live screen holds: unsubmitted **Batches**, **Draft Batch** marks and previews, **Line-ups**
+    and their stars."""
+    connection = harness.connect()
+    return tuple(
+        int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in ("batches", "draft_batch", "draft_preview", "lineups", "lineup_stars")
+    )
+
+
+def test_two_visits_to_the_batches_page_show_two_batches_and_the_first_is_never_recorded(web: Web) -> None:
+    """A reload is a visit: the first **Batch** is replaced, nothing is recorded, and its tiles stay in the
+    **Pool**."""
+    harness, client = web
+    members = pool.members(harness.connect())
+
+    first = client.get("/batch").text
+    second = client.get("/batch").text
+
+    assert batch_id_of(first) != batch_id_of(second)
+    assert TILE_ID.findall(first) != TILE_ID.findall(second)
+    assert evidence_log.judgements(harness.connect()) == []
+    assert pool.members(harness.connect()) == members
+    assert live(harness).id == batch_id_of(second)
+
+
+def test_marks_and_stars_are_gone_after_a_reload_and_nothing_is_recorded(web: Web) -> None:
+    """Every mark a screen holds goes with it: the **Draft Batch**'s marks and opened previews on the
+    **Batches** page, the stars on the compare tab. The new screens come up unmarked."""
+    harness, client = web
+    batch_id = batch_id_of(client.get("/batch").text)
+    client.post("/draft/all", data={"batch_id": batch_id, "verdict": "favourite"})
+    client.post("/draft/preview", data={"batch_id": batch_id, "wallpaper_id": live(harness).wallpapers[0].id})
+    lineup_id, tiles = lineup_of(client.get("/compare/lineup?instrument=pick").text)
+    client.post(
+        "/compare/star?instrument=pick",
+        data={"lineup_id": lineup_id, "wallpaper_id": tiles[0], "starred": "true"},
+    )
+    assert _counts(harness) == (1, 8, 1, 1, 1)
+
+    batch = client.get("/batch").text
+    compare = client.get("/compare/lineup?instrument=pick").text
+
+    assert batch.count('data-draft-verdict="favourite"') == 0
+    assert _lineup_starred(compare) == [False] * 4
+    assert _counts(harness) == (1, 0, 0, 1, 0)
+    assert evidence_log.judgements(harness.connect()) == []
+    assert harness.library.written == []
+
+
+@pytest.mark.parametrize("path", ["/submit", "/skip"])
+def test_answering_a_batch_a_later_visit_replaced_is_refused_in_words_and_refetches_the_live_one(
+    web: Web, path: str
+) -> None:
+    """Two tabs on the **Batches** page: the second visit replaced the first tab's **Batch**, so its
+    submission or **Skip** is refused with a sentence, and its refetch shows the one live now rather than
+    replacing it in turn."""
+    harness, client = web
+    stale = batch_id_of(client.get("/batch").text)
+    now_live = batch_id_of(client.get("/batch").text)
+
+    refused = client.post(path, data={"batch_id": stale})
+    refetched = client.get("/batch/next").text
+
+    assert refused.status_code == HTTPStatus.NOT_FOUND
+    assert "That batch is no longer live here" in refused.text
+    assert "replaced when the page was opened again in another tab" in " ".join(refused.text.split())
+    assert refused.headers["HX-Trigger"] == "batch-submitted"
+    assert batch_id_of(refetched) == now_live
+    assert evidence_log.judgements(harness.connect()) == []
+
+
+def test_a_mark_never_redraws_the_batch(web: Web) -> None:
+    """Only a visit draws: marking a tile, marking them all, opening a preview and switching the **Mix** leave
+    the **Batch** on screen live, and an answer to it is recorded."""
+    harness, client = web
+    batch_id = batch_id_of(client.get("/batch").text)
+    shown = live(harness).wallpapers[0].id
+
+    client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": shown, "verdict": "like"})
+    client.post("/draft/all", data={"batch_id": batch_id, "verdict": "ban"})
+    client.post("/draft/preview", data={"batch_id": batch_id, "wallpaper_id": shown})
+    client.post("/mix", data={"mix": "refine"})
+    submitted = client.post("/submit", data={"batch_id": batch_id})
+
+    assert submitted.status_code == HTTPStatus.OK
+    assert len(evidence_log.judgements(harness.connect())) == 1
 
 
 # -- when there is nothing to show -------------------------------------------------------------------
@@ -774,7 +881,7 @@ def test_the_refill_indicator_and_the_provider_notice_are_on_every_state_of_the_
 
 def test_a_batch_minted_with_no_unknowns_says_to_lower_the_similarity_radius(web: Web) -> None:
     """Every **Pool** member within the radius of a **Ban**: the next **Batch** is all **Duds**, and the page
-    says why, once, as it is minted (ADR 0023)."""
+    says why as each is minted (ADR 0023), which a visit does (ADR 0029)."""
     harness, client = web
     shown = live(harness)
     banned = shown.wallpapers[0].id
@@ -782,14 +889,16 @@ def test_a_batch_minted_with_no_unknowns_says_to_lower_the_similarity_radius(web
     workflows.set_draft(harness.modules, shown.id, banned, Verdict.BAN)
     client.post("/submit", data={"batch_id": shown.id})
 
-    minted = client.get("/batch").text
-    reloaded = client.get("/batch").text
+    minted = client.get("/batch/next").text
+    handed_back = client.get("/batch/next").text
+    visited = client.get("/batch").text
 
     words = " ".join(html.unescape(re.sub(r"<[^>]+>", "", minted)).split())
     assert "data-unknown-short" in minted
     assert "Only 0 unknown wallpapers in the pool, fewer than the explore mix's 6 unknown slots" in words
     assert "Lower the similarity radius in Settings" in words
-    assert "data-unknown-short" not in reloaded
+    assert "data-unknown-short" not in handed_back, "the live Batch read back has nothing to say"
+    assert "data-unknown-short" in visited, "a visit mints, so it says it again"
 
 
 def test_a_batch_with_unknowns_to_spare_adds_no_unknown_line(web: Web) -> None:

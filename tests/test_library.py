@@ -305,7 +305,7 @@ def test_unmarking_a_reshown_favourite_takes_its_file_away(
 
 
 def live_lineup(harness: Harness) -> Lineup:
-    """The live **Line-up**, drawn if there is none, as `/compare/lineup` serves it."""
+    """The live **Line-up**, drawn if there is none, as an answer is followed by the next."""
     shown = harness.modules.lineups.next(harness.connect())
     assert isinstance(shown, Lineup), shown
     return shown

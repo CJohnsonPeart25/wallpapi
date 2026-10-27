@@ -2,12 +2,13 @@
 **Evidence log** as one **Judgement**. Nothing else reads or writes `batches`, `batch_wallpapers`,
 `draft_batch` or `draft_preview`.
 
-A **Batch** persists until it is submitted (ADR 0002), skipped (ADR 0026) or discarded by a **Pool reset**
-(ADR 0025). Submitting and skipping each record one **Judgement**, and only submitting decides anything; a
-reset records nothing. Tile posts set a **Draft Batch** row and never toggle; absence is an unmarked
-tile, which a submitted **Judgement** reads as an **Ignore**, and an **Ignore** is never drafted. Opening a
-tile's preview sets a row of its own beside the mark. A **Batch** is submitted once. Every write takes the
-caller's write handle, behind one claim check.
+A **Batch** is drawn on each visit to the **Batches** page (`Batches.fresh`), and lives until it is
+submitted, skipped (ADR 0026), replaced by the next visit's or discarded by a **Pool reset** (ADR 0025): ADR
+0029. Submitting and skipping each record one **Judgement**, and only submitting decides anything; a
+replaced or reset **Batch** records nothing, and its **Draft Batch** goes with it. Tile posts set a **Draft
+Batch** row and never toggle; absence is an unmarked tile, which a submitted **Judgement** reads as an
+**Ignore**, and an **Ignore** is never drafted. Opening a tile's preview sets a row of its own beside the
+mark. A **Batch** is submitted once. Every write takes the caller's write handle, behind one claim check.
 """
 
 from __future__ import annotations
@@ -60,7 +61,8 @@ class Batch:
     before migration 13. `mix` is the name of the **Mix** it was drawn with, `None` for a **Batch** minted
     before migration 12. `ranking` is the **Ranking stamp** it was drawn under, recorded at mint; `None`
     for a **Batch** minted before migration 13. `unknown_short` is set only on the **Batch** as minted,
-    from the classification the mint computed, and is never stored: a reload has nothing to say (ADR 0023).
+    from the classification the mint computed, and is never stored: the live **Batch** read back has nothing
+    to say (ADR 0023). A visit mints, so it says it on every visit while the zone is short (ADR 0029).
     """
 
     id: str
@@ -114,6 +116,7 @@ class SubmissionRefused:
 
     class Reason(StrEnum):
         UNKNOWN_BATCH = "unknown_batch"
+        """Not a live **Batch**: skipped, reset, replaced by a later visit (ADR 0029), or never drawn here."""
         ALREADY_SUBMITTED = "already_submitted"
         NOT_IN_BATCH = "not_in_batch"
         """A draft naming a **Wallpaper** the **Batch** does not show: no control posts it."""
@@ -156,9 +159,28 @@ class Batches:
         self._random = random_source
         self._new_id = new_id
 
+    def fresh(self, connection: sqlite3.Connection) -> Batch | BatchUnavailable:
+        """A new **Batch** for a visit to the page, replacing the live one (ADR 0029). No **API call**.
+
+        The **Batch** it replaces is dropped with its **Draft Batch** in the transaction that writes its
+        successor, and records nothing: leaving a screen unanswered is not a **Skip**. Its tiles stay in the
+        **Pool** and may be drawn again. With nothing to draw, the live one is still dropped: a visit always
+        ends the screen before it.
+        """
+        return self._mint(connection, replacing=True)
+
     def next(self, connection: sqlite3.Connection) -> Batch | BatchUnavailable:
-        """The **Batch** waiting to be decided on, drawing from the **Pool** only if there isn't one. No **API
-        call**.
+        """The live **Batch**, drawing one only if there is none: what the page shows after a submission, a
+        **Skip** or a refused answer, never on a visit. No **API call**.
+        """
+        existing = live(connection)
+        if existing is not None:
+            return existing
+        return self._mint(connection, replacing=False)
+
+    def _mint(self, connection: sqlite3.Connection, *, replacing: bool) -> Batch | BatchUnavailable:
+        """Draw a **Batch** from the **Pool** and store it, `replacing` the live one or, if another request
+        minted one first, handing that back.
 
         Classified outside the write transaction, which stays short. The **Zone** recorded per **Wallpaper**
         is where it was drawn from, never the slot's: after a **Shortfall** the two differ.
@@ -167,13 +189,12 @@ class Batches:
         so leaving it alone records it again (ADR 0015). Dormant while nothing decided is in the **Pool** (ADR
         0016).
         """
-        existing = live(connection)
-        if existing is not None:
-            return existing
-
         ranked = self.ranked(connection)
         classified = ranked.scored
         if not classified:
+            if replacing:
+                with storage.write(connection) as write:
+                    discard_live(write)
             return self._nothing_to_show()
         # From the one sequence, so a row of `vectors` cannot drift from its **Wallpaper**.
         vectors = self._embeddings.vectors([scored.wallpaper for scored in classified])
@@ -184,10 +205,14 @@ class Batches:
         batch_id = self._new_id()
 
         with storage.write(connection) as write:
-            # Re-read under the write lock (ADR 0002): two tabs opened at once must not each mint a **Batch**.
-            contended = live(write)
-            if contended is not None:
-                return contended
+            if replacing:
+                # Every unsubmitted **Batch**, so a second tab's is replaced too and its answer refused.
+                discard_live(write)
+            else:
+                # Re-read under the write lock: two refetches at once must not each mint a **Batch**.
+                contended = live(write)
+                if contended is not None:
+                    return contended
             write.execute(
                 "INSERT INTO batches (id, created_at, size, mix, ranking) VALUES (?, ?, ?, ?, ?)",
                 (
@@ -505,14 +530,15 @@ def open_preview(write: sqlite3.Connection, batch_id: str, wallpaper_id: str) ->
 
 def showing(connection: sqlite3.Connection) -> set[str]:
     """Every **Wallpaper** in an unsubmitted **Batch**: the live one, plus any a database from before
-    ADR 0002 still holds.
+    ADR 0002 still holds until the next visit replaces them all.
     """
     return {str(row["wallpaper_id"]) for row in connection.execute(_SELECT_SHOWING)}
 
 
 def discard_live(write: sqlite3.Connection) -> int:
     """Drop every unsubmitted **Batch** with its tiles and **Draft Batch** inside the caller's transaction,
-    and say how many: a **Pool reset**'s half (ADR 0025). All of them, so nothing is left showing.
+    and say how many: a **Pool reset**'s half (ADR 0025), and what a visit replaces (ADR 0029). All of them,
+    so nothing is left showing.
 
     Housekeeping, not a **Judgement**: nothing is recorded, and an unsubmitted **Batch** has no
     **Judgement** to leave dangling. A submitted one is never touched.
