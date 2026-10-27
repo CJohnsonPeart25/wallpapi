@@ -29,7 +29,7 @@ from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict, Theme
-from wallpapi.lineup import Lineup, LineupRefused, LineupUnavailable, Ordered, Picked
+from wallpapi.lineup import Gauntleted, Lineup, LineupRefused, LineupUnavailable, Ordered, Picked
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import (
     FORM_FIELDS,
@@ -41,6 +41,7 @@ from wallpapi.settings import (
     form_values,
     mix_form,
 )
+from wallpapi.taste.gauntlet import GAUNTLET_V1
 from wallpapi.taste.order import ORDER_V1
 from wallpapi.taste.pick import PICK_V1
 
@@ -91,10 +92,9 @@ REFUSALS: dict[StrEnum, Refusal] = {
 refusals are not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds,
 so they stay beside the field (ADR 0004)."""
 
-COMPARE_INSTRUMENTS: Final = (PICK_V1.name, ORDER_V1.name)
+COMPARE_INSTRUMENTS: Final = (PICK_V1.name, ORDER_V1.name, GAUNTLET_V1.name)
 """The **Instruments** the compare tab offers, by the name each is recorded under, the first the default:
-the choice the URL carries (`?instrument=`), each answered at its own route, `/compare/<name>`. **Gauntlet**
-joins it as one more entry."""
+the choice the URL carries (`?instrument=`), each answered at its own route, `/compare/<name>`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,7 +243,10 @@ def _lineup_view(
 
 
 def _next_lineup_view(
-    request: Request, modules: Modules, instrument: str, answered: Picked | Ordered | LineupRefused
+    request: Request,
+    modules: Modules,
+    instrument: str,
+    answered: Picked | Ordered | Gauntleted | LineupRefused,
 ) -> HTMLResponse:
     """What follows an answer: the next **Line-up**, at once. After a refusal, the one on screen now under
     the words for why, or a bare status for one no control posts."""
@@ -507,6 +510,21 @@ def pick(
     with the next one, so it comes at once. A stale answer gets the one on screen now, under the words."""
     picked = workflows.pick(modules, lineup_id, wallpaper_id or None, theme=parse_theme(theme))
     return _next_lineup_view(request, modules, PICK_V1.name, picked)
+
+
+@router.post("/compare/gauntlet", response_class=HTMLResponse)
+def gauntlet(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()] = "",
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Answer the **Line-up** as a **Gauntlet**, or "none of these" when no wallpaper is posted, and answer
+    with the next one at once, as a **Pick** does: its winner kept in place under its crown, or after "none
+    of these" a new one whole. A stale answer gets the one on screen now, under the words."""
+    answered = workflows.gauntlet(modules, lineup_id, wallpaper_id or None, theme=parse_theme(theme))
+    return _next_lineup_view(request, modules, GAUNTLET_V1.name, answered)
 
 
 @router.post("/compare/order", response_class=HTMLResponse)

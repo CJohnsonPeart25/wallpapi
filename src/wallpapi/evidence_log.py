@@ -12,8 +12,9 @@ a **Judgement** back opens it.
 rule; `_RESOLUTION_CTE` is the SQL **History** pages and filters with, and with it a second spelling of the
 absolute part of the **Reductions**: a version 0 grid tile says its converted entry, and a version 1 tile on
 a submitted screen says its **Favourite** or its **Verdict**, an unmarked one an **Ignore**, while a screen
-not submitted (a **Skip**) says nothing; a **Pick** or an **Order** says **Favourite** of a starred tile and
-nothing absolute of any other. The tests hold the SQL to both `EXAMPLE_CASES` and to `evidence()`.
+not submitted (a **Skip**) says nothing; a **Pick**, an **Order** or a **Gauntlet** says **Favourite** of a
+starred tile and nothing absolute of any other. The tests hold the SQL to both `EXAMPLE_CASES` and to
+`evidence()`.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from typing import Final
 
 from wallpapi.model import Verdict, Zone
 from wallpapi.taste.clock import Clock
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Context,
     Instrument,
@@ -76,6 +78,13 @@ PROVENANCE_SLOT_ZONE: Final = "slot_zone"
 
 PROVENANCE_MIX: Final = "mix"
 """The name of the **Mix** the screen was drawn with."""
+
+PROVENANCE_KEPT: Final = "kept"
+"""Why a tile was on its screen without being drawn for it: `PROVENANCE_CHAMPION`, a **Gauntlet**'s winner
+holding its place. Absent from every tile drawn for its screen. A kept tile's `zone` and `slot_zone` are
+those of the screen it was first drawn onto."""
+
+PROVENANCE_CHAMPION: Final = "champion"
 
 CONTEXT_THEME: Final = "theme"
 """The **Context** field naming the page's theme as the browser resolved it: `Theme`'s values."""
@@ -165,11 +174,19 @@ def wallpaper_id(key: str) -> str:
     return bare
 
 
-def provenance(*, zone: Zone | None, slot_zone: Zone | None, mix: str | None) -> Provenance:
+def provenance(
+    *, zone: Zone | None, slot_zone: Zone | None, mix: str | None, champion: bool = False
+) -> Provenance:
     """Why a drawn tile was on its screen, in wallpapi's labels: the **Zone** it was drawn from, the **Zone**
-    its **Slot** was meant for, and the **Mix**, each only where the screen knows it. For every screen drawn
-    from a **Mix**, a **Batch** or a **Line-up**."""
-    labels = {PROVENANCE_ZONE: zone, PROVENANCE_SLOT_ZONE: slot_zone, PROVENANCE_MIX: mix}
+    its **Slot** was meant for, and the **Mix**, each only where the screen knows it; and, for a
+    **Gauntlet**'s `champion`, that it was kept rather than drawn. For every screen drawn from a **Mix**, a
+    **Batch** or a **Line-up**."""
+    labels = {
+        PROVENANCE_ZONE: zone,
+        PROVENANCE_SLOT_ZONE: slot_zone,
+        PROVENANCE_MIX: mix,
+        PROVENANCE_KEPT: PROVENANCE_CHAMPION if champion else None,
+    }
     return {name: str(label) for name, label in labels.items() if label is not None}
 
 
@@ -467,6 +484,8 @@ def _item_columns(judgement: Judgement, shown: Shown) -> _ItemColumns:
         return None, int(response.favourite), 0, None, _json({_PICKED: response.picked})
     if judgement.instrument == ORDER_V1 and isinstance(response, OrderTile):
         return None, int(response.favourite), 0, None, _json({_RANK: response.rank})
+    if judgement.instrument == GAUNTLET_V1 and isinstance(response, GauntletTile):
+        return None, int(response.favourite), 0, None, _json({_PICKED: response.picked})
     raise _not_kept(judgement, f"a tile response of {response!r}")
 
 
@@ -481,6 +500,8 @@ def _screen_columns(judgement: Judgement) -> _ScreenColumns:
         return None, _json({_NONE_OF_THESE: response.none_of_these})
     if judgement.instrument == ORDER_V1 and response is None:
         return None, None
+    if judgement.instrument == GAUNTLET_V1 and isinstance(response, GauntletResponse):
+        return None, _json({_STREAK: response.streak, _NONE_OF_THESE: response.none_of_these})
     raise _not_kept(judgement, f"a screen response of {response!r}")
 
 
@@ -490,6 +511,9 @@ _NONE_OF_THESE: Final = "none_of_these"
 
 _RANK: Final = "rank"
 """**Order**'s field name in `response`: `OrderTile.rank`, `null` for a tile left unranked."""
+
+_STREAK: Final = "streak"
+"""**Gauntlet**'s own field name in `response`, `GauntletResponse.streak`; its others are **Pick**'s."""
 
 
 def _not_kept(judgement: Judgement, what: str) -> ValueError:
@@ -514,6 +538,8 @@ def _item_response(instrument: Instrument, row: sqlite3.Row) -> ItemResponse:
         return PickTile(picked=bool(_fields(row)[_PICKED]), favourite=bool(row["favourite"]))
     if instrument == ORDER_V1:
         return OrderTile(rank=_rank(_fields(row)[_RANK]), favourite=bool(row["favourite"]))
+    if instrument == GAUNTLET_V1:
+        return GauntletTile(picked=bool(_fields(row)[_PICKED]), favourite=bool(row["favourite"]))
     raise _not_read(instrument)
 
 
@@ -526,6 +552,9 @@ def _judgement_response(instrument: Instrument, row: sqlite3.Row) -> JudgementRe
         return PickResponse(none_of_these=bool(_fields(row)[_NONE_OF_THESE]))
     if instrument == ORDER_V1:
         return None
+    if instrument == GAUNTLET_V1:
+        fields = _fields(row)
+        return GauntletResponse(streak=_streak(fields[_STREAK]), none_of_these=bool(fields[_NONE_OF_THESE]))
     raise _not_read(instrument)
 
 
@@ -539,6 +568,13 @@ def _rank(stored: object) -> int | None:
     if stored is None or type(stored) is int:
         return stored
     raise ValueError(f"the Evidence log holds a rank of {stored!r}")
+
+
+def _streak(stored: object) -> int:
+    """A **Gauntlet** screen's streak as `response` holds it: a whole number."""
+    if type(stored) is int:
+        return stored
+    raise ValueError(f"the Evidence log holds a streak of {stored!r}")
 
 
 def _not_read(instrument: Instrument) -> ValueError:
@@ -633,9 +669,9 @@ ORDER BY i.judgement_id, i.position
 _KEY_START = len(ITEM_SOURCE) + 2
 """Where the bare id starts in a key, counting from 1 as SQLite's `substr` does."""
 
-_LINEUP_INSTRUMENTS: Final = (PICK_V1, ORDER_V1)
+_LINEUP_INSTRUMENTS: Final = (PICK_V1, ORDER_V1, GAUNTLET_V1)
 """The **Instruments** a **Line-up** is answered with, each of whose tiles says something absolute only when
-it was starred: a **Favourite**, in the `favourite` column. **Gauntlet** is one more entry."""
+it was starred: a **Favourite**, in the `favourite` column."""
 
 
 def _any_of(instruments: Sequence[Instrument]) -> str:

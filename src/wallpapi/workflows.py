@@ -21,7 +21,7 @@ from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload
-from wallpapi.lineup import Lineup, LineupRefused, Ordered, Picked
+from wallpapi.lineup import Gauntleted, Lineup, LineupRefused, Ordered, Picked
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
 from wallpapi.thumbnails import ThumbnailEviction
@@ -98,6 +98,28 @@ def pick(
     if isinstance(picked, Picked) and picked.starred:
         modules.library.reconcile(connection, settings.get(connection).library_path)
     return picked
+
+
+def gauntlet(
+    modules: Modules, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+) -> Gauntleted | LineupRefused:
+    """Answer the live **Line-up** as a **Gauntlet** with `winner`, or "none of these" with `None`, with the
+    page's `theme`; then draw the next **Line-up** keeping the winner in its place, and, if a tile was
+    starred, reconcile the **Library**, as after a **Pick** and for the same reasons.
+
+    The next is drawn as soon as the answer commits, in a write of its own, because the champion it keeps is
+    held nowhere else until then. After "none of these" there is no champion, and the next is drawn when it
+    is asked for, as after a **Pick**.
+    """
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        answered = modules.lineups.gauntlet(write, lineup_id, winner, theme=theme)
+    if isinstance(answered, Gauntleted):
+        if answered.champion is not None:
+            modules.lineups.next(connection, keeping=answered.champion)
+        if answered.starred:
+            modules.library.reconcile(connection, settings.get(connection).library_path)
+    return answered
 
 
 def rank_lineup_tile(

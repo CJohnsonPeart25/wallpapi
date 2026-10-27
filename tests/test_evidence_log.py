@@ -18,7 +18,8 @@ import pytest
 from tests.fakes import FakeClock
 from wallpapi import evidence_log, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
-from wallpapi.model import Verdict
+from wallpapi.model import Verdict, Zone
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Instrument,
     Judgement,
@@ -137,6 +138,28 @@ def order(
     )
 
 
+def gauntlet(
+    *tiles: tuple[str, GauntletTile],
+    at: dt.datetime = AT,
+    streak: int = 0,
+    none_of_these: bool = False,
+    provenance: Provenance | None = None,
+    **recorded: object,
+) -> Judgement:
+    """A **Gauntlet** screen of these tiles on the compare **Screen**, in order, its champion having carried
+    `streak` onto it."""
+    return Judgement(
+        instrument=GAUNTLET_V1,
+        screen="compare",
+        shown=tuple(Shown(key(w), response, provenance or {}) for w, response in tiles),
+        recorded_at=at,
+        app="wallpapi",
+        app_version="0.1.0",
+        response=GauntletResponse(streak=streak, none_of_these=none_of_these),
+        **recorded,  # pyright: ignore[reportArgumentType]
+    )
+
+
 def append(connection: sqlite3.Connection, *judgements: Judgement) -> None:
     for judgement in judgements:
         with storage.write(connection) as write:
@@ -162,6 +185,8 @@ STARRED = TileResponse(favourite=True)
 PICKED = PickTile(picked=True)
 PASSED = PickTile()
 UNRANKED = OrderTile()
+WON = GauntletTile(picked=True)
+LOST = GauntletTile()
 
 
 def ranked(rank: int, *, favourite: bool = False) -> OrderTile:
@@ -235,6 +260,49 @@ def test_a_pick_and_a_none_of_these_are_read_back_as_written(connection: sqlite3
     append(connection, chosen, none)
 
     assert evidence_log.judgements(connection) == [chosen, none]
+
+
+def test_a_gauntlet_is_read_back_as_written_streak_and_champion_included(
+    connection: sqlite3.Connection,
+) -> None:
+    """**Gauntlet** keeps its tiles' winner and star, its screen's streak and "none of these", and the
+    champion's **Provenance** saying it was kept rather than drawn, with everything a screen drawn from a
+    **Mix** records about itself."""
+    drawn = {"zone": "unknown", "slot_zone": "unknown", "mix": "explore"}
+    defended = Judgement(
+        instrument=GAUNTLET_V1,
+        screen="compare",
+        shown=(
+            Shown(key("wp0000"), LOST, drawn),
+            Shown(key("wp0001"), WON, {**drawn, "zone": "banger", "kept": "champion"}),
+            Shown(key("wp0002"), GauntletTile(favourite=True), drawn),
+        ),
+        recorded_at=AT,
+        app="wallpapi",
+        app_version="0.1.0",
+        response=GauntletResponse(streak=2),
+        first_shown_at=AT - dt.timedelta(seconds=2),
+        ranking=RankingStamp(read=None, space="fallback", radius=0.1, decay=4.0),
+        utc_offset=dt.timedelta(hours=1),
+        context={"theme": "dark"},
+    )
+    first = gauntlet(("wp0003", WON), ("wp0000", LOST), at=LATER)
+    dismissed = gauntlet(
+        ("wp0003", LOST), ("wp0004", LOST), at=LATER + dt.timedelta(seconds=1), streak=1, none_of_these=True
+    )
+
+    append(connection, defended, first, dismissed)
+
+    assert evidence_log.judgements(connection) == [defended, first, dismissed]
+
+
+def test_a_tile_kept_as_a_gauntlets_champion_says_so_beside_where_it_was_first_drawn() -> None:
+    """The one **Provenance** label a drawn tile never has."""
+    drawn = evidence_log.provenance(zone=Zone.UNKNOWN, slot_zone=Zone.BANGER, mix="explore")
+    kept = evidence_log.provenance(zone=Zone.UNKNOWN, slot_zone=Zone.BANGER, mix="explore", champion=True)
+
+    assert drawn == {"zone": "unknown", "slot_zone": "banger", "mix": "explore"}
+    assert kept == {**drawn, "kept": "champion"}
 
 
 def test_an_order_partial_complete_or_blank_is_read_back_as_written(connection: sqlite3.Connection) -> None:
@@ -323,8 +391,8 @@ def test_a_judgement_naming_an_unknown_wallpaper_is_refused_whole(connection: sq
 
 
 def test_only_wallhaven_items_of_a_kept_instrument_are_appended(connection: sqlite3.Connection) -> None:
-    """The log keeps the verdict grid's two versions, **Pick** and **Order**, each **Response** in its own
-    shape, and Wallhaven is the only **Item source**."""
+    """The log keeps the verdict grid's two versions, **Pick**, **Order** and **Gauntlet**, each **Response**
+    in its own shape, and Wallhaven is the only **Item source**."""
     elsewhere = Judgement(
         instrument=VERDICT_GRID_V1,
         screen="batch",
@@ -335,7 +403,7 @@ def test_only_wallhaven_items_of_a_kept_instrument_are_appended(connection: sqli
         response=GridResponse(submitted=True),
     )
     unbuilt = Judgement(
-        instrument=Instrument("gauntlet", 1),
+        instrument=Instrument("stream", 1),
         screen="compare",
         shown=(Shown(key("wp0000"), PASSED),),
         recorded_at=AT,
@@ -344,6 +412,17 @@ def test_only_wallhaven_items_of_a_kept_instrument_are_appended(connection: sqli
         response=PickResponse(),
     )
     order_of_pick_tiles = order(("wp0000", PASSED))  # pyright: ignore[reportArgumentType]
+    gauntlet_of_pick_tiles = gauntlet(("wp0000", PICKED))  # pyright: ignore[reportArgumentType]
+    gauntlet_with_a_pick_screen = Judgement(
+        instrument=GAUNTLET_V1,
+        screen="compare",
+        shown=(Shown(key("wp0000"), WON),),
+        recorded_at=AT,
+        app="wallpapi",
+        app_version="0.1.0",
+        response=PickResponse(),
+    )
+    pick_of_gauntlet_tiles = pick(("wp0000", WON))  # pyright: ignore[reportArgumentType]
     order_with_a_screen_response = order(("wp0000", ranked(1)), response=PickResponse())
     pick_of_grid_tiles = Judgement(
         instrument=PICK_V1,
@@ -373,6 +452,9 @@ def test_only_wallhaven_items_of_a_kept_instrument_are_appended(connection: sqli
             pick_with_a_grid_screen,
             order_of_pick_tiles,
             order_with_a_screen_response,
+            gauntlet_of_pick_tiles,
+            gauntlet_with_a_pick_screen,
+            pick_of_gauntlet_tiles,
         ):
             with pytest.raises(ValueError, match=refused.instrument.name):
                 evidence_log.append(write, refused)
@@ -468,9 +550,10 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
     **Ignore**, a starred one a **Favourite**, a **Skip** says nothing whatever its tiles hold, and a
     **History** edit overturns the **Batch**. Converted **Judgements** among them, a **Clearance** too.
 
-    And of **Pick**'s and **Order**'s: a **Pick**, a "none of these" or an **Order**, partial, complete or
-    blank, says nothing absolute about any tile, so a later one neither overturns a **Verdict** nor gives a
-    tile seen only there a line; a tile starred on one is a **Favourite** like any other, ranked or not."""
+    And of **Pick**'s, **Order**'s and **Gauntlet**'s: a **Pick**, an **Order**, partial, complete or blank,
+    a **Gauntlet** screen whatever its streak, or a "none of these" on either, says nothing absolute about
+    any tile, so a later one neither overturns a **Verdict** nor gives a tile seen only there a line; a tile
+    starred on one is a **Favourite** like any other, ranked, picked or not."""
     batch = grid(
         ("wp0000", BLANK), ("wp0001", STARRED), ("wp0002", LIKED), ("wp0003", BANNED), ("wp0004", BLANK)
     )
@@ -502,6 +585,15 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
         ("wp0005", ranked(2)),
         at=latest + dt.timedelta(seconds=1),
     )
+    defended = gauntlet(("wp0016", WON), ("wp0002", LOST), ("wp0017", LOST), at=latest, streak=3)
+    dismissed = gauntlet(("wp0016", LOST), ("wp0018", LOST), at=latest, streak=4, none_of_these=True)
+    starred_on_a_gauntlet = gauntlet(
+        ("wp0019", GauntletTile(picked=True, favourite=True)),
+        ("wp0001", GauntletTile(favourite=True)),
+        ("wp0004", LOST),
+        at=latest + dt.timedelta(seconds=2),
+        streak=1,
+    )
     logged = [
         batch,
         skip,
@@ -515,6 +607,9 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
         ordered_over,
         blank_order,
         starred_on_an_order,
+        defended,
+        dismissed,
+        starred_on_a_gauntlet,
     ]
 
     append(connection, *logged)
@@ -522,7 +617,7 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
     assert _standing_in_sql(connection) == _standing_in_taste(logged)
     assert _standing_in_sql(connection) == {
         key("wp0000"): (starred_on_an_order.id, 100.0),
-        key("wp0001"): (batch.id, 100.0),
+        key("wp0001"): (starred_on_a_gauntlet.id, 100.0),
         key("wp0002"): (overturned.id, -10.0),
         key("wp0003"): (starred_from_history.id, 100.0),
         key("wp0004"): (batch.id, -10.0),
@@ -531,9 +626,11 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
         key("wp0008"): (cleared.id, 0.0),
         key("wp0012"): (starred_on_a_pick.id, 100.0),
         key("wp0015"): (starred_on_an_order.id, 100.0),
+        key("wp0019"): (starred_on_a_gauntlet.id, 100.0),
     }, (
         "worked by hand: no line for wp0005, seen only on the Skip and ranked on an Order, nor wp0009 to "
-        "wp0011, only on Picks, nor wp0013 and wp0014, only on Orders"
+        "wp0011, only on Picks, nor wp0013 and wp0014, only on Orders, nor wp0016 to wp0018, only on "
+        "unstarred Gauntlet tiles; wp0002 and wp0004 keep their Ignores through the Gauntlet"
     )
 
 
@@ -579,7 +676,7 @@ def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_record
     """What the **Pool** refuses (ADR 0027): an unmarked tile on a submitted **Batch** and a legacy
     **Clearance** are decisions; an **Item** only ever on a **Skip** is not, whatever was marked on it. Nor
     is one only ever on a **Line-up**, picked, passed over, answered "none of these", ranked or left unranked,
-    unless it was starred there."""
+    kept as a **Gauntlet**'s champion or not, unless it was starred there."""
     append(
         connection,
         grid(("wp0000", BLANK), ("wp0001", LIKED)),
@@ -591,6 +688,9 @@ def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_record
         order(("wp0011", ranked(1)), ("wp0012", ranked(2)), ("wp0013", UNRANKED)),
         order(("wp0014", UNRANKED), ("wp0015", UNRANKED)),
         order(("wp0016", OrderTile(favourite=True)), ("wp0017", ranked(1, favourite=True)), at=LATER),
+        gauntlet(("wp0018", WON), ("wp0019", LOST), streak=2),
+        gauntlet(("wp0020", LOST), ("wp0018", LOST), streak=3, none_of_these=True),
+        gauntlet(("wp0021", GauntletTile(picked=True, favourite=True)), ("wp0022", LOST), at=LATER),
     )
 
     decided = connection.execute(evidence_log.DECIDED).fetchall()
@@ -602,6 +702,7 @@ def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_record
         "wp0009",
         "wp0016",
         "wp0017",
+        "wp0021",
     ]
 
 
@@ -654,8 +755,8 @@ def test_times_compared_counts_compare_screens_alone_whatever_was_answered(
     connection: sqlite3.Connection,
 ) -> None:
     """A **Line-up**'s wear (ADR 0028): picked, passed over, starred, "none of these", ranked or left
-    unranked on an **Order** each count once per **Judgement**. A submitted **Batch**, a **Skip** and a
-    **History** edit are not compare **Screens**."""
+    unranked on an **Order**, or held or challenging on a **Gauntlet**, each count once per **Judgement**. A
+    submitted **Batch**, a **Skip** and a **History** edit are not compare **Screens**."""
     append(
         connection,
         pick(("wp0000", PICKED), ("wp0001", PASSED)),
@@ -663,6 +764,8 @@ def test_times_compared_counts_compare_screens_alone_whatever_was_answered(
         pick(("wp0002", PickTile(favourite=True)), ("wp0001", PICKED), at=LATER + dt.timedelta(seconds=1)),
         order(("wp0006", ranked(1)), ("wp0001", UNRANKED), at=LATER + dt.timedelta(seconds=2)),
         order(("wp0006", UNRANKED), ("wp0002", UNRANKED), at=LATER + dt.timedelta(seconds=3)),
+        gauntlet(("wp0006", WON), ("wp0000", LOST), at=LATER + dt.timedelta(seconds=4)),
+        gauntlet(("wp0006", LOST), ("wp0001", LOST), at=LATER + dt.timedelta(seconds=5), none_of_these=True),
         grid(("wp0000", LIKED), ("wp0003", BLANK)),
         grid(("wp0003", BLANK), ("wp0004", STARRED), at=LATER, submitted=False),
         grid(("wp0005", BANNED), screen="history"),
@@ -671,13 +774,13 @@ def test_times_compared_counts_compare_screens_alone_whatever_was_answered(
     asked = ["wp0001", "wp0000", "wp0002", "wp0003", "wp0004", "wp0005", "wp0006", "wp0001"]
 
     assert evidence_log.times_compared(connection, asked) == {
-        "wp0000": 1,
-        "wp0001": 4,
+        "wp0000": 2,
+        "wp0001": 5,
         "wp0002": 3,
         "wp0003": 0,
         "wp0004": 0,
         "wp0005": 0,
-        "wp0006": 2,
+        "wp0006": 4,
     }
     assert evidence_log.times_compared(connection, []) == {}
 

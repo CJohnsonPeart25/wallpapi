@@ -27,6 +27,7 @@ from wallpapi.taste.evaluation import (
     reading,
     replay,
 )
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
 from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
@@ -622,6 +623,34 @@ def test_an_order_gets_its_row_from_its_reduction_alone() -> None:
         Pair("second", "unranked"),
     )
     assert [(each.instrument, each.judgements, each.accuracy) for each in accuracy] == [(ORDER_V1, 1, 2 / 3)]
+
+
+def test_a_gauntlet_gets_its_row_from_its_reduction_alone() -> None:
+    """**Gauntlet**'s **Reduction** in the table, and nothing in the evaluation: the winner over each other
+    tile is its test answer and it has a row of its own; "none of these" is never one. The champion near the
+    Favourite (100) beats a challenger near nothing (0), right, and one near the Like (50), right; 2 of 2."""
+    defended = judged(
+        {"near": GauntletTile(), "champion": GauntletTile(picked=True), "challenger": GauntletTile()},
+        second=1,
+        instrument=GAUNTLET_V1,
+        response=GauntletResponse(streak=1),
+        screen="compare",
+    )
+    dismissed = judged(
+        {"champion": GauntletTile(), "challenger": GauntletTile()},
+        second=2,
+        instrument=GAUNTLET_V1,
+        response=GauntletResponse(streak=2, none_of_these=True),
+        screen="compare",
+    )
+    log = [judged({"a": FAVOURITE, "c": LIKE}, second=0), defended, dismissed]
+    table = Table({("champion", "a"): 0.95, ("near", "c"): 0.95})
+
+    accuracy = pairwise_accuracy(replay(log, table, radius=RADIUS, decay=DECAY, warm_up=1))
+
+    assert reading(defended) == (Pair("champion", "near"), Pair("champion", "challenger"))
+    assert reading(dismissed) == ()
+    assert [(each.instrument, each.judgements, each.accuracy) for each in accuracy] == [(GAUNTLET_V1, 1, 1.0)]
 
 
 def test_an_instrument_with_no_reduction_has_no_reading_either() -> None:

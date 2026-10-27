@@ -516,6 +516,21 @@ ul.lineup:has(.rank) .lineup-tile:not(:has(.rank)) .pick:not(:hover, :focus-visi
   opacity: 0.55;
 }
 
+/* A Gauntlet's champion: the crown and its streak, in the corner the key and the star leave free, where the
+   prototype had it. Over the thumbnail, so white on dark in either theme; not the Favourite's gold, which
+   would read as a star. */
+.lineup-tile .crown {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.3rem;
+  background: rgb(0 0 0 / 70%);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
 /* Nothing to pass over or submit until a Line-up has loaded. Hidden rather than removed, so the nav does not
    shift. */
 body:not(:has(#lineup-id)) :is([data-none-of-these], [data-submit-order]) {

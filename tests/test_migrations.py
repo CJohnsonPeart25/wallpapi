@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import sqlite3
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ import pytest
 
 from tests.conftest import BatchesRig, batches_rig, raw_connection, write_log_entries, write_old_pool
 from tests.fakes import catalogue_of
-from wallpapi import evidence_log, pool, settings, storage
+from wallpapi import evidence_log, lineup, pool, settings, storage
 from wallpapi.batches import zone_of
 from wallpapi.model import Verdict, Zone
 from wallpapi.settings import (
@@ -534,3 +535,43 @@ def test_a_batch_live_across_migration_13_has_no_slot_zone_stamp_or_preview_and_
     )
     assert [shown.provenance for shown in judgement.shown] == [{"zone": "unknown", "mix": "explore"}]
     assert judgement.ranking is None
+
+
+def test_a_lineup_live_across_migration_17_has_no_champion_and_a_lineup_holds_at_most_one(
+    db_path: Path,
+) -> None:
+    """A **Line-up** drawn at version 16 was drawn whole: every tile reads back with no streak, so it has no
+    champion. After it, the schema itself refuses a second champion on one **Line-up**, and a streak below
+    1."""
+    with raw_connection(db_path) as connection:
+        storage.migrate(connection, to=16)
+        with storage.write(connection) as write:
+            write.executemany(
+                "INSERT INTO wallpapers VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
+                [("wp0000",), ("wp0001",)],
+            )
+            write.execute(
+                "INSERT INTO lineups (id, created_at, mix) VALUES ('l1', ?, 'explore')", (iso_utc(T),)
+            )
+            write.executemany(
+                "INSERT INTO lineup_wallpapers (lineup_id, wallpaper_id, position, zone, slot_zone)"
+                " VALUES ('l1', ?, ?, 'unknown', 'unknown')",
+                [("wp0000", 0), ("wp0001", 1)],
+            )
+        storage.migrate(connection)
+
+        live = lineup.live(connection)
+        assert live is not None
+        assert (live.id, live.champion, live.streak) == ("l1", None, 0)
+
+        with storage.write(connection) as write:
+            write.execute("UPDATE lineup_wallpapers SET streak = 2 WHERE wallpaper_id = 'wp0000'")
+        live = lineup.live(connection)
+        assert live is not None
+        assert (live.champion, live.streak) == ("wp0000", 2)
+        for refused in (
+            "streak = 1 WHERE wallpaper_id = 'wp0001'",
+            "streak = 0 WHERE wallpaper_id = 'wp0000'",
+        ):
+            with pytest.raises(sqlite3.IntegrityError), storage.write(connection) as write:
+                write.execute(f"UPDATE lineup_wallpapers SET {refused}")

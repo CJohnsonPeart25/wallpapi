@@ -1,7 +1,7 @@
 """The **Reductions**: each **Judgement** to its Evidence, through `evidence()`, the one function callers see.
 
 Plain data in and out: a **Judgement** written out by hand, and the Evidence it must come to. The verdict
-grid's two versions, **Pick** and **Order** are the **Reductions** built.
+grid's two versions, **Pick**, **Order** and **Gauntlet** are the **Reductions** built.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections.abc import Mapping
 import pytest
 
 from wallpapi.taste.evidence import AbsoluteEvidence, RelativeEvidence
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
 from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
@@ -358,6 +359,98 @@ def test_a_starred_tile_on_an_order_is_a_favourite_whatever_its_rank() -> None:
     assert strengths(starred_empty) == [("wallhaven:a", 100.0), ("wallhaven:c", 100.0)]
 
 
+# -- Gauntlet ------------------------------------------------------------------------------------------
+
+
+WON = GauntletTile(picked=True)
+LOST = GauntletTile()
+
+
+def gauntleted(
+    tiles: Mapping[str, ItemResponse], *, streak: int = 0, none_of_these: bool = False
+) -> Judgement:
+    """A **Gauntlet** screen on the compare **Screen**, its tiles in on-screen order, its champion having
+    carried `streak` onto it."""
+    return judged(
+        GAUNTLET_V1,
+        tiles,
+        GauntletResponse(streak=streak, none_of_these=none_of_these),
+        screen="compare",
+    )
+
+
+def test_the_gauntlets_winner_beats_each_other_tile_on_its_screen_at_strength_one() -> None:
+    """The champion held its place and won again: it beats this screen's three challengers, the losers in
+    on-screen order, and that is all. A **Gauntlet** says which was best, not what any of them is worth."""
+    judgement = gauntleted(
+        {"wallhaven:a": LOST, "wallhaven:b": LOST, "wallhaven:c": WON, "wallhaven:d": LOST}, streak=2
+    )
+
+    assert evidence([judgement]) == [
+        RelativeEvidence(winner, loser, 1.0, judgement_id=judgement.id, recorded_at=AT)
+        for winner, loser in (
+            ("wallhaven:c", "wallhaven:a"),
+            ("wallhaven:c", "wallhaven:b"),
+            ("wallhaven:c", "wallhaven:d"),
+        )
+    ]
+
+
+def test_a_challenger_that_wins_beats_the_champion_and_every_other_challenger() -> None:
+    """Whichever tile wins, it beats every other on that screen: a challenger beats the crowned tile as it
+    beats the rest."""
+    judgement = gauntleted({"wallhaven:a": WON, "wallhaven:b": LOST, "wallhaven:c": LOST}, streak=3)
+
+    assert pairs(judgement) == [("wallhaven:a", "wallhaven:b", 1.0), ("wallhaven:a", "wallhaven:c", 1.0)]
+
+
+def test_the_streak_is_recorded_and_never_read() -> None:
+    """The same screen with any streak, none included, comes to the same pairs: the crown counts for the
+    screen, not for the Evidence."""
+    tiles = {"wallhaven:a": LOST, "wallhaven:b": WON, "wallhaven:c": LOST}
+
+    assert pairs(gauntleted(tiles, streak=0)) == pairs(gauntleted(tiles, streak=7))
+    assert pairs(gauntleted(tiles, streak=7)) == pairs(
+        picked({"wallhaven:a": PASSED, "wallhaven:b": PICKED, "wallhaven:c": PASSED})
+    ), "a Pick of the same tile"
+
+
+def test_none_of_these_on_a_gauntlet_emits_nothing_whatever_streak_it_ended() -> None:
+    """Not an **Ignore**, and not a loss for the champion: nothing is said about any tile."""
+    judgement = gauntleted({"wallhaven:a": LOST, "wallhaven:b": LOST}, streak=4, none_of_these=True)
+
+    assert evidence([judgement]) == []
+
+
+def test_a_starred_tile_on_a_gauntlet_is_a_favourite_beside_whatever_won() -> None:
+    """A **Favourite** first, in **Shown set** order, as on a **Pick**: a starred loser is still beaten, a
+    starred winner still wins, and a star on a "none of these" still counts."""
+    starred_loser = gauntleted({"wallhaven:a": WON, "wallhaven:b": GauntletTile(favourite=True)}, streak=1)
+    starred_winner = gauntleted(
+        {"wallhaven:a": GauntletTile(picked=True, favourite=True), "wallhaven:b": LOST}
+    )
+    starred_none = gauntleted(
+        {"wallhaven:a": LOST, "wallhaven:b": GauntletTile(favourite=True)}, streak=2, none_of_these=True
+    )
+
+    assert evidence([starred_loser]) == [
+        AbsoluteEvidence("wallhaven:b", 100.0, judgement_id=starred_loser.id, recorded_at=AT),
+        RelativeEvidence("wallhaven:a", "wallhaven:b", 1.0, judgement_id=starred_loser.id, recorded_at=AT),
+    ]
+    assert evidence([starred_winner]) == [
+        AbsoluteEvidence("wallhaven:a", 100.0, judgement_id=starred_winner.id, recorded_at=AT),
+        RelativeEvidence("wallhaven:a", "wallhaven:b", 1.0, judgement_id=starred_winner.id, recorded_at=AT),
+    ]
+    assert strengths(starred_none) == [("wallhaven:b", 100.0)]
+
+
+def test_a_gauntlet_and_a_pick_of_the_same_screen_are_two_judgements() -> None:
+    """The same shape, its own **Instrument**: the name is in the content the id hashes."""
+    tiles = {"wallhaven:a": WON, "wallhaven:b": LOST}
+
+    assert gauntleted(tiles).id != picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED}).id
+
+
 @pytest.mark.parametrize(
     "judgement",
     [
@@ -379,6 +472,16 @@ def test_a_starred_tile_on_an_order_is_a_favourite_whatever_its_rank() -> None:
         judged(ORDER_V1, {"wallhaven:a": OrderTile(rank=1)}, PickResponse(), screen="compare"),
         judged(ORDER_V1, {"wallhaven:a": PICKED}, screen="compare"),
         judged(PICK_V1, {"wallhaven:a": OrderTile(rank=1)}, ANSWERED, screen="compare"),
+        gauntleted({"wallhaven:a": WON, "wallhaven:b": WON}),
+        gauntleted({"wallhaven:a": LOST, "wallhaven:b": LOST}),
+        gauntleted({"wallhaven:a": WON, "wallhaven:b": LOST}, none_of_these=True),
+        gauntleted({"wallhaven:a": WON, "wallhaven:b": LOST}, streak=-1),
+        gauntleted({"wallhaven:a": WON, "wallhaven:b": LOST}, streak=True),
+        gauntleted({"wallhaven:a": WON, "wallhaven:b": LOST}, streak=1.0),  # pyright: ignore[reportArgumentType]
+        judged(GAUNTLET_V1, {"wallhaven:a": WON, "wallhaven:b": LOST}, ANSWERED, screen="compare"),
+        judged(GAUNTLET_V1, {"wallhaven:a": WON, "wallhaven:b": LOST}, None, screen="compare"),
+        gauntleted({"wallhaven:a": WON, "wallhaven:b": PASSED}),
+        judged(PICK_V1, {"wallhaven:a": WON, "wallhaven:b": PASSED}, ANSWERED, screen="compare"),
     ],
     ids=[
         "v1 with a converted tile",
@@ -399,6 +502,16 @@ def test_a_starred_tile_on_an_order_is_a_favourite_whatever_its_rank() -> None:
         "an order with a screen response",
         "an order with a pick tile",
         "a pick with an order tile",
+        "a gauntlet of two winners",
+        "a gauntlet of no winner, not none of these",
+        "a gauntlet with a winner and none of these",
+        "a gauntlet with a streak below 0",
+        "a gauntlet with a streak that is a flag",
+        "a gauntlet with a streak that is not a whole number",
+        "a gauntlet with a pick's screen response",
+        "a gauntlet with no screen response",
+        "a gauntlet with a pick tile",
+        "a pick with a gauntlet tile",
     ],
 )
 def test_a_response_not_in_its_instruments_format_is_refused(judgement: Judgement) -> None:
