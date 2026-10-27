@@ -273,7 +273,140 @@ def test_a_winner_the_lineup_does_not_show_is_refused_and_records_nothing(rig: L
     assert rig.lineup() == shown
 
 
+# -- the star: a Favourite on any tile, held against the live Line-up until it is answered
+
+
+def test_a_star_is_held_against_the_live_lineup_and_survives_a_reload(rig: LineupRig) -> None:
+    """Starring is not answering: nothing is recorded, nothing leaves the **Pool** and no new **Line-up** is
+    drawn. A reload reads the star back from storage."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    starred = ids(shown)[2]
+
+    held = rig.star(shown.id, starred)
+    reloaded = rig.lineup()
+
+    assert held == reloaded
+    assert reloaded.id == shown.id
+    assert reloaded.starred == frozenset({starred})
+    assert rig.lineups_minted == ["lineup-1"]
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == members
+
+
+def test_a_star_is_set_rather_than_toggled_and_taken_off_the_same_way(rig: LineupRig) -> None:
+    """A replayed click lands on the same state, as a mark on the **Draft Batch** does."""
+    shown = rig.lineup()
+    first, second = ids(shown)[:2]
+
+    rig.star(shown.id, first)
+    rig.star(shown.id, first)
+    both = rig.star(shown.id, second)
+    assert isinstance(both, Lineup)
+    assert both.starred == frozenset({first, second})
+    assert rig.starred_rows() == 2
+
+    rig.star(shown.id, first, starred=False)
+    after = rig.star(shown.id, first, starred=False)
+
+    assert isinstance(after, Lineup)
+    assert after.starred == frozenset({second})
+    assert rig.lineup().starred == frozenset({second})
+
+
+def test_a_star_on_a_lineup_gone_or_a_tile_it_does_not_show_is_refused_and_writes_nothing(
+    rig: LineupRig,
+) -> None:
+    batch = rig.next()
+    shown = rig.lineup()
+
+    not_shown = rig.star(shown.id, ids(batch)[0])
+    unknown = rig.star("never-minted", ids(shown)[0])
+
+    assert not_shown == LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    assert unknown == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert rig.starred_rows() == 0
+
+
+@pytest.mark.parametrize("winner_at", [1, 0], ids=["another tile wins", "the starred tile wins"])
+def test_star_then_pick_records_one_judgement_with_the_favourite_and_the_pick(
+    rig: LineupRig, winner_at: int
+) -> None:
+    """The star rides in the one **Pick** **Judgement**, on its tile, as `PickTile.favourite`: the starred
+    **Wallpaper** is then a **Favourite**, whichever tile won."""
+    shown = rig.lineup()
+    starred, winner = ids(shown)[0], ids(shown)[winner_at]
+    rig.star(shown.id, starred)
+
+    picked = rig.pick(shown.id, winner)
+
+    assert picked == Picked(lineup_id=shown.id, winner=winner, starred=(starred,))
+    (judgement,) = rig.logged()
+    assert judgement.shown == _shown(
+        shown, {starred: PickTile(favourite=True), winner: PickTile(picked=True, favourite=winner == starred)}
+    )
+    assert judgement.response == PickResponse()
+    assert evidence_log.favourites(rig.connection) == [starred]
+    assert evidence_log.resolve(rig.connection, [starred])[starred].verdict is Verdict.FAVOURITE
+
+
+def test_none_of_these_with_a_starred_tile_still_records_the_favourite(rig: LineupRig) -> None:
+    """Passing the screen over says nothing relative, but the star is still a **Favourite**."""
+    shown = rig.lineup()
+    first, third = ids(shown)[0], ids(shown)[2]
+    rig.star(shown.id, third)
+    rig.star(shown.id, first)
+
+    picked = rig.pick(shown.id, None)
+
+    assert picked == Picked(lineup_id=shown.id, winner=None, starred=(first, third)), "on-screen order"
+    (judgement,) = rig.logged()
+    assert judgement.shown == _shown(shown, dict.fromkeys((first, third), PickTile(favourite=True)))
+    assert judgement.response == PickResponse(none_of_these=True)
+    assert evidence_log.favourites(rig.connection) == sorted([first, third])
+
+
+def test_only_the_starred_item_leaves_the_pool(rig: LineupRig) -> None:
+    """A **Favourite** decides its **Wallpaper**, which retires it (ADR 0016); the winner and the rest were
+    only compared, so they stay, undecided, and may be drawn again."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    starred, winner = ids(shown)[0], ids(shown)[1]
+    rig.star(shown.id, starred)
+
+    rig.pick(shown.id, winner)
+
+    assert pool.members(rig.connection) == [w for w in members if w.id != starred]
+    assert [w.id for w in pool.decided(rig.connection)] == [starred]
+    assert starred not in ids(rig.lineup())
+
+
+def test_the_stars_go_with_the_lineup_when_it_is_answered(rig: LineupRig) -> None:
+    """Held against that **Line-up** alone: the next one starts with none."""
+    shown = rig.lineup()
+    rig.star(shown.id, ids(shown)[0])
+
+    rig.pick(shown.id, None)
+
+    assert rig.starred_rows() == 0
+    assert rig.lineup().starred == frozenset()
+
+
 # -- discarding, a Pool reset's half (ADR 0025)
+
+
+def test_discarding_drops_a_starred_lineup_and_its_stars_and_decides_nothing(rig: LineupRig) -> None:
+    """A star is not recorded until the **Line-up** is answered, so a discarded one records nothing and its
+    **Wallpaper** stays in the **Pool**."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    rig.star(shown.id, ids(shown)[0])
+
+    assert rig.discard_lineup() == 1
+
+    assert rig.starred_rows() == 0
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == members
 
 
 def test_discarding_drops_the_live_lineup_without_recording_it(rig: LineupRig) -> None:

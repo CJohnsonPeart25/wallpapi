@@ -1,5 +1,6 @@
-"""The **Line-up**: drawing one for the compare tab, keeping it until it is answered, and answering it with a
-**Pick** into the **Evidence log**. Nothing else reads or writes `lineups` or `lineup_wallpapers`.
+"""The **Line-up**: drawing one for the compare tab, keeping it and its stars until it is answered, and
+answering it with a **Pick** into the **Evidence log**. Nothing else reads or writes `lineups`,
+`lineup_wallpapers` or `lineup_stars`.
 
 A **Line-up** is drawn as a **Batch** is, from the classified **Pool** `Batches.ranked` gives, by the active
 **Mix**'s allocation (`allocation.draw`), at the **Line-up** size, but from the **Pool** less the live
@@ -8,10 +9,12 @@ A **Line-up** is drawn as a **Batch** is, from the classified **Pool** `Batches.
 reload shows the same one. Answering records one **Judgement** and drops the **Line-up**, whose
 **Judgement** then holds all of it; the next is drawn when it is asked for.
 
-Answering takes nothing out of the **Pool** and decides nothing (ADR 0027): a **Pick** says one tile beat
-the others, which is relative Evidence, and a "none of these" says nothing. A star on a **Line-up** tile is
-the one thing that would decide its **Wallpaper**; the format holds it (`PickTile.favourite`), but no
-**Line-up** offers one yet, so `pick` records every tile unstarred.
+A **Pick** says one tile beat the others, which is relative Evidence, and a "none of these" says nothing:
+neither decides anything (ADR 0027). The star is the one thing on a **Line-up** that does. Any tile may be
+starred, and a star is held against its tile of the live **Line-up** (`star`) until the **Line-up** is
+answered, so a reload keeps it; held per tile, not per **Instrument**, so every **Instrument** on a
+**Line-up** stars the same way. Answering records each star in the **Judgement** as a **Favourite** and
+retires that **Wallpaper** from the **Pool** (ADR 0016); every other tile stays.
 """
 
 from __future__ import annotations
@@ -19,12 +22,12 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Final
 from uuid import uuid4
 
-from wallpapi import batches, evidence_log, settings, storage
+from wallpapi import batches, evidence_log, pool, settings, storage
 from wallpapi.allocation import draw
 from wallpapi.batches import Ranked
 from wallpapi.evidence_log import Theme
@@ -46,7 +49,8 @@ class Lineup:
 
     `zones` is the **Zone** each was drawn from at mint time and `slots` the **Zone** its **Slot** was meant
     for; `mix` the name of the **Mix** it was drawn with; `ranking` the **Ranking stamp** it was drawn under,
-    `None` when nothing ranked it. All recorded at mint, never recomputed.
+    `None` when nothing ranked it. All recorded at mint, never recomputed. `starred` is every tile starred
+    so far, held until the **Line-up** is answered.
     """
 
     id: str
@@ -56,6 +60,7 @@ class Lineup:
     slots: Mapping[str, Zone]
     mix: str
     ranking: RankingStamp | None
+    starred: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -86,17 +91,19 @@ class LineupRefused:
         """Not the live **Line-up**: already answered, discarded by a **Pool reset**, or never drawn here."""
 
         NOT_IN_LINEUP = "not_in_lineup"
-        """A winner the **Line-up** does not show: no control posts it."""
+        """A winner, or a star, on a tile the **Line-up** does not show: no control posts it."""
 
     reason: Reason
 
 
 @dataclass(frozen=True, slots=True)
 class Picked:
-    """What a **Pick** recorded: the **Line-up** answered, and its winner, `None` for "none of these"."""
+    """What a **Pick** recorded: the **Line-up** answered, its winner, `None` for "none of these", and the
+    tiles starred on it, each now a **Favourite**, in on-screen order."""
 
     lineup_id: str
     winner: str | None
+    starred: tuple[str, ...] = ()
 
 
 def _new_id() -> str:
@@ -185,9 +192,10 @@ class Lineups:
         caller's write transaction, and drop it; or say why not, before anything is written.
 
         One **Pick** version 1 **Judgement** on the compare **Screen**: every tile in on-screen order, the
-        winner marked and every tile unstarred, each with its **Provenance**, the **Ranking stamp** it was
-        drawn under, its mint time as first shown, the clock's local offset, and the page's `theme` in the
-        **Context** where it sent one. Nothing leaves the **Pool**.
+        winner marked and each star as a **Favourite**, each with its **Provenance**, the **Ranking stamp**
+        it was drawn under, its mint time as first shown, the clock's local offset, and the page's `theme` in
+        the **Context** where it sent one. A starred tile is decided, so it leaves the **Pool**; nothing
+        else does.
         """
         claimed = _claim(write, lineup_id)
         if claimed is None:
@@ -195,6 +203,7 @@ class Lineups:
         shown = [w.id for w in claimed.wallpapers]
         if winner is not None and winner not in shown:
             return LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+        starred = tuple(w for w in shown if w in claimed.starred)
         now = self._clock.now()
         evidence_log.append(
             write,
@@ -202,7 +211,11 @@ class Lineups:
                 instrument=PICK_V1,
                 screen=evidence_log.SCREEN_COMPARE,
                 shown=tuple(
-                    Shown(evidence_log.item_key(w), PickTile(picked=w == winner), _provenance(claimed, w))
+                    Shown(
+                        evidence_log.item_key(w),
+                        PickTile(picked=w == winner, favourite=w in claimed.starred),
+                        _provenance(claimed, w),
+                    )
                     for w in shown
                 ),
                 recorded_at=evidence_log.recorded_time(write, shown, now),
@@ -215,8 +228,9 @@ class Lineups:
                 context=evidence_log.context(theme=theme),
             ),
         )
+        pool.retire(write, starred)
         _drop(write, "?", (lineup_id,))
-        return Picked(lineup_id=lineup_id, winner=winner)
+        return Picked(lineup_id=lineup_id, winner=winner, starred=starred)
 
     def _too_few(self) -> LineupUnavailable:
         """Why there was nothing to compare. A recorded refill failure outranks "nothing yet"."""
@@ -245,6 +259,33 @@ def showing(connection: sqlite3.Connection) -> set[str]:
     }
 
 
+def star(
+    write: sqlite3.Connection, lineup_id: str, wallpaper_id: str, *, starred: bool
+) -> Lineup | LineupRefused:
+    """Star one tile of the live **Line-up**, or take its star off with `starred=False`, inside the caller's
+    write transaction, and answer with the **Line-up** as it now stands; or say why not, before anything is
+    written.
+
+    Sets rather than toggles, so a replayed click cannot flip it. Not an answer: nothing is recorded, nothing
+    leaves the **Pool**, and the **Line-up** stays on screen until it is answered.
+    """
+    claimed = _claim(write, lineup_id)
+    if claimed is None:
+        return LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    if wallpaper_id not in {w.id for w in claimed.wallpapers}:
+        return LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    if starred:
+        write.execute(
+            "INSERT INTO lineup_stars (lineup_id, wallpaper_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            (lineup_id, wallpaper_id),
+        )
+        return replace(claimed, starred=claimed.starred | {wallpaper_id})
+    write.execute(
+        "DELETE FROM lineup_stars WHERE lineup_id = ? AND wallpaper_id = ?", (lineup_id, wallpaper_id)
+    )
+    return replace(claimed, starred=claimed.starred - {wallpaper_id})
+
+
 def discard_live(write: sqlite3.Connection) -> int:
     """Drop the live **Line-up** inside the caller's transaction, and say how many were dropped: a **Pool
     reset**'s share (ADR 0025). Housekeeping, not an answer: nothing is recorded."""
@@ -260,22 +301,26 @@ def _claim(write: sqlite3.Connection, lineup_id: str) -> Lineup | None:
 
 def _drop(write: sqlite3.Connection, selection: str, parameters: Sequence[str] = ()) -> int:
     """Delete the **Line-ups** whose ids the SQL `selection` gives (a subquery, or `?` for one), and say how
-    many. Tiles first, for the foreign key."""
+    many. Stars, then tiles, then the **Line-up**, for the foreign keys."""
+    write.execute(f"DELETE FROM lineup_stars WHERE lineup_id IN ({selection})", parameters)
     write.execute(f"DELETE FROM lineup_wallpapers WHERE lineup_id IN ({selection})", parameters)
     return write.execute(f"DELETE FROM lineups WHERE id IN ({selection})", parameters).rowcount
 
 
 def _lineup_from(connection: sqlite3.Connection, lineup: sqlite3.Row) -> Lineup:
-    """A `lineups` row with its tiles."""
-    rows = connection.execute(_SELECT_LINEUP_WALLPAPERS, (str(lineup["id"]),)).fetchall()
+    """A `lineups` row with its tiles and their stars."""
+    lineup_id = str(lineup["id"])
+    rows = connection.execute(_SELECT_LINEUP_WALLPAPERS, (lineup_id,)).fetchall()
+    stars = connection.execute("SELECT wallpaper_id FROM lineup_stars WHERE lineup_id = ?", (lineup_id,))
     return Lineup(
-        id=str(lineup["id"]),
+        id=lineup_id,
         created_at=dt.datetime.fromisoformat(str(lineup["created_at"])),
         wallpapers=tuple(wallpaper_from_row(row) for row in rows),
         zones={str(row["id"]): Zone(str(row["zone"])) for row in rows},
         slots={str(row["id"]): Zone(str(row["slot_zone"])) for row in rows},
         mix=str(lineup["mix"]),
         ranking=None if lineup["ranking"] is None else evidence_log.stamp_from_text(lineup["ranking"]),
+        starred=frozenset(str(row["wallpaper_id"]) for row in stars),
     )
 
 
