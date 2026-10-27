@@ -30,7 +30,6 @@ from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock, iso_utc
-from wallpapi.taste.evidence import AbsoluteEvidence, Evidence
 from wallpapi.taste.judgement import Judgement, LogPosition, Provenance, RankingStamp, Shown
 from wallpapi.taste.ranking import rank
 from wallpapi.taste.reductions import evidence
@@ -265,9 +264,7 @@ class Batches:
             return Ranked(scored=(), stamp=None)
 
         log = evidence_log.judgements(connection)
-        # In **Item** key order, so the decided columns come in the order `pool.decided` gives the
-        # **Wallpapers** and every **Score**'s sum runs in the order it always has.
-        found = sorted(evidence(log), key=_column_order)
+        found = evidence(log)
         by_key = {evidence_log.item_key(w.id): w for w in [*candidates, *judged]}
         spaces: list[str] = []
 
@@ -397,10 +394,6 @@ class Batches:
                 error_at=status.last_error_at,
             )
         return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
-
-
-def _column_order(piece: Evidence) -> str:
-    return piece.item if isinstance(piece, AbsoluteEvidence) else piece.winner
 
 
 def _provenance(batch: Batch, wallpaper_id: str) -> Provenance:

@@ -54,6 +54,22 @@ def write(connection: sqlite3.Connection) -> Generator[sqlite3.Connection]:
     connection.execute("COMMIT")
 
 
+@contextmanager
+def read_only(connection: sqlite3.Connection) -> Generator[sqlite3.Connection]:
+    """One read transaction on a connection SQLite holds to reading: any write on it is refused, and every
+    read inside sees one snapshot, so a server writing meanwhile cannot land between two of them. Handed back
+    able to write. For a command that must be safe beside a running server."""
+    connection.execute("PRAGMA query_only = ON")
+    try:
+        connection.execute("BEGIN")
+        try:
+            yield connection
+        finally:
+            connection.execute("COMMIT")
+    finally:
+        connection.execute("PRAGMA query_only = OFF")
+
+
 class ThreadConnections(threading.local):
     """One connection per thread to one file: the threadpool hands each request a different thread."""
 
