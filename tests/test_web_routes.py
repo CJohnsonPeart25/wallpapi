@@ -122,6 +122,85 @@ def test_a_tile_post_sets_the_mark_and_answers_with_the_tile(web: Web) -> None:
     assert live(harness).drafts == {}
 
 
+def _star(tile: str) -> str:
+    """The tile's one star, as its opening tag."""
+    (star,) = re.findall(r'<button\b[^>]*class="star"[^>]*>', tile)
+    return star
+
+
+def _pressed(tile: str) -> dict[str, bool]:
+    """Each of a tile's controls by the **Verdict** it marks, and whether it shows pressed."""
+    return {
+        verdict: 'aria-pressed="true"' in control
+        for control in re.findall(r"<button\b[^>]*>", tile)
+        for verdict in re.findall(r'data-verdict="(\w+)"', control)
+    }
+
+
+@pytest.mark.parametrize(
+    ("marks", "stands"),
+    [
+        pytest.param(("favourite", "like"), "like", id="star then like"),
+        pytest.param(("like", "favourite"), "favourite", id="like then star"),
+        pytest.param(("ban", "favourite"), "favourite", id="ban then star"),
+        pytest.param(("favourite", "ban"), "ban", id="star then ban"),
+    ],
+)
+def test_the_star_and_a_like_or_ban_replace_each_other_on_the_tile_that_comes_back(
+    web: Web, marks: tuple[str, str], stands: str
+) -> None:
+    """The star is the tile's **Favourite** control, posting to the same set-not-toggle route as the rail, so
+    the tile swapped back after the second mark shows that one pressed and the first not, and the
+    **Draft Batch** holds the one."""
+    harness, client = web
+    batch_id = batch_id_of(client.get("/batch").text)
+    marked = live(harness).wallpapers[0].id
+
+    tile = ""
+    for verdict in marks:
+        tile = client.post(
+            "/draft", data={"batch_id": batch_id, "wallpaper_id": marked, "verdict": verdict}
+        ).text
+
+    assert 'data-verdict="favourite"' in _star(tile)
+    assert _pressed(tile) == {choice: choice == stands for choice in ("favourite", "like", "ban")}
+    assert live(harness).drafts == {marked: Verdict(stands)}
+
+
+def test_a_starred_star_offers_to_clear_itself_and_an_unstarred_one_to_star(web: Web) -> None:
+    """Clicking a starred star un-stars the tile, as clicking any marked control un-marks it."""
+    harness, client = web
+    batch_id = batch_id_of(client.get("/batch").text)
+    marked = live(harness).wallpapers[0].id
+
+    starred = client.post(
+        "/draft", data={"batch_id": batch_id, "wallpaper_id": marked, "verdict": "favourite"}
+    ).text
+    cleared = client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": marked, "verdict": ""}).text
+
+    assert '"verdict": ""' in html.unescape(_star(starred))
+    assert '"verdict": "favourite"' in html.unescape(_star(cleared))
+    assert _pressed(cleared) == {"favourite": False, "like": False, "ban": False}
+
+
+def test_a_starred_tile_submitted_is_a_favourite_and_reaches_the_library(web: Web, tmp_path: Path) -> None:
+    """What the star is for: the submitted tile is a **Favourite** in the **Judgement**, and the post-commit
+    reconciliation writes that **Wallpaper**, and only it, to the **Library**."""
+    harness, client = web
+    workflows.save_settings(harness.modules, library_path=tmp_path / "Library")
+    batch_id = batch_id_of(client.get("/batch").text)
+    shown = live(harness).wallpapers
+    starred = shown[1].id
+
+    client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": starred, "verdict": "favourite"})
+    submitted = client.post("/submit", data={"batch_id": batch_id})
+
+    assert submitted.status_code == HTTPStatus.OK
+    (judgement,) = evidence_log.judgements(harness.connect())
+    assert [s.response for s in judgement.shown] == [TileResponse(favourite=w.id == starred) for w in shown]
+    assert [written.wallpaper_id for written in harness.library.written] == [starred]
+
+
 def test_a_bulk_post_answers_with_the_whole_grid(web: Web) -> None:
     """One post for the **Batch**, and the grid comes back carrying what it just did."""
     harness, client = web
