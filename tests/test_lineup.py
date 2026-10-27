@@ -1,17 +1,17 @@
-"""The **Line-up**: drawing one beside the live **Batch** on each visit, holding its stars while it is live,
-and answering it with a **Pick**, through `lineup` alone.
+"""The **Line-up**: drawing one beside the live **Batch** on each visit, holding its stars and an **Order**'s
+ranks while it is live, and answering it with a **Pick** or an **Order**, through `lineup` alone.
 
 On `conftest.LineupRig`: a real in-memory database, `Lineups` drawing through the rig's own `Batches.ranked`
 and **Embeddings** as the composition root wires it, a real `Embeddings` falling back to hand-defined
-similarities, and the fake clock. What a **Pick** is worth is `test_reductions.py`'s; what the **Evidence
-log** makes of one is `test_evidence_log.py`'s.
+similarities, and the fake clock. What a **Pick** or an **Order** is worth is `test_reductions.py`'s; what
+the **Evidence log** makes of one is `test_evidence_log.py`'s.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -20,12 +20,13 @@ from tests.fakes import catalogue_of, wallpaper
 from wallpapi import evidence_log, lineup, pool, settings, storage
 from wallpapi.batches import Batch
 from wallpapi.evidence_log import Theme
-from wallpapi.lineup import Lineup, LineupRefused, LineupUnavailable, Picked
+from wallpapi.lineup import Lineup, LineupRefused, LineupUnavailable, Ordered, Picked
 from wallpapi.model import Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.settings import EXPLORE_MIX
 from wallpapi.similarity import FALLBACK_SPACE
-from wallpapi.taste.judgement import Judgement, RankingStamp, Shown
+from wallpapi.taste.judgement import ItemResponse, Judgement, RankingStamp, Shown
+from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 
 STOCK = catalogue_of(12)
@@ -307,8 +308,9 @@ def test_a_lineup_discarded_by_a_pool_reset_adds_no_wear(rig: LineupRig) -> None
 # -- answering ---------------------------------------------------------------------------------------------
 
 
-def _shown(shown: Lineup, tiles: dict[str, PickTile]) -> tuple[Shown, ...]:
-    """The **Shown set** a **Judgement** of `shown` holds: each tile in order with why it was there."""
+def _shown(shown: Lineup, tiles: Mapping[str, ItemResponse]) -> tuple[Shown, ...]:
+    """The **Shown set** a **Judgement** of `shown` holds: each tile in order with why it was there, a blank
+    **Pick** tile for one `tiles` does not name."""
     return tuple(
         Shown(
             f"wallhaven:{w}",
@@ -519,6 +521,259 @@ def test_the_stars_go_with_the_lineup_when_it_is_answered(rig: LineupRig) -> Non
 
     assert rig.starred_rows() == 0
     assert rig.lineup().starred == frozenset()
+
+
+# -- Order: ranks held against the live Line-up, answered when all but the last are ranked or on submit
+
+
+def _ranks(shown: Lineup, *ranked: str, starred: tuple[str, ...] = ()) -> tuple[Shown, ...]:
+    """The **Shown set** an **Order** of `shown` holds: `ranked` best first, the rest unranked, `starred`
+    each a **Favourite**."""
+    return _shown(
+        shown,
+        {
+            w: OrderTile(rank=ranked.index(w) + 1 if w in ranked else None, favourite=w in starred)
+            for w in ids(shown)
+        },
+    )
+
+
+def test_a_rank_is_held_against_the_live_lineup_and_records_nothing(rig: LineupRig) -> None:
+    """Ranking is not answering until the last place is implied: nothing is recorded, nothing leaves the
+    **Pool** and no new **Line-up** is drawn. The live **Line-up** read back carries the rank."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    first = ids(shown)[2]
+
+    held = rig.rank(shown.id, first)
+    read_back = rig.lineup()
+
+    assert held == read_back
+    assert read_back.id == shown.id
+    assert read_back.ranked == (first,)
+    assert read_back.rank_of(first) == 1
+    assert read_back.rank_of(ids(shown)[0]) is None
+    assert rig.lineups_minted == ["lineup-1"]
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == members
+
+
+def test_each_tile_clicked_is_ranked_next_and_one_taken_back_closes_the_ranks_after_it_up(
+    rig: LineupRig,
+) -> None:
+    """On a **Line-up** of six: c, a, e ranked 1 to 3; taking a back makes e second, and a clicked again is
+    ranked next, fourth, behind the rest. The ranks are always 1 to k."""
+    rig.configure(lineup_size=6)
+    shown = rig.lineup()
+    a, _, c, _, e, _ = ids(shown)
+    for w in (c, a, e):
+        rig.rank(shown.id, w)
+
+    taken_back = rig.rank(shown.id, a, ranked=False)
+    assert isinstance(taken_back, Lineup)
+    assert taken_back.ranked == (c, e)
+    assert [taken_back.rank_of(w) for w in (c, e, a)] == [1, 2, None]
+
+    again = rig.rank(shown.id, a)
+
+    assert isinstance(again, Lineup)
+    assert again.ranked == (c, e, a)
+    assert rig.lineup().ranked == (c, e, a)
+    stored = rig.connection.execute("SELECT rank FROM lineup_ranks ORDER BY rank").fetchall()
+    assert [row[0] for row in stored] == [1, 2, 3]
+    assert rig.logged() == []
+
+
+def test_a_rank_is_set_rather_than_toggled_and_taken_back_the_same_way(rig: LineupRig) -> None:
+    """A replayed click lands on the same state, as a star does: ranking a ranked tile keeps its place, and
+    taking back an unranked one changes nothing."""
+    shown = rig.lineup()
+    a, b, _, _ = ids(shown)
+
+    rig.rank(shown.id, a)
+    twice = rig.rank(shown.id, a)
+    unranked = rig.rank(shown.id, b, ranked=False)
+
+    assert isinstance(twice, Lineup)
+    assert isinstance(unranked, Lineup)
+    assert twice.ranked == unranked.ranked == (a,)
+    assert rig.ranked_rows() == 1
+
+
+def test_ranking_all_but_the_last_answers_the_order_at_once_the_last_place_implied(rig: LineupRig) -> None:
+    """**Order** version 1 on the compare **Screen**: every tile in on-screen order with its rank, the last
+    one ranked last, why each was there, the stamp it was drawn under, first shown when it was minted,
+    recorded at the clock's time with its local offset and the page's theme. The next is a new one."""
+    rig.clock.offset = dt.timedelta(hours=1)
+    shown = rig.lineup()
+    a, b, c, d = ids(shown)
+    rig.rank(shown.id, c)
+    rig.rank(shown.id, a)
+    rig.clock.advance(5)
+
+    ordered = rig.rank(shown.id, d, theme=Theme.LIGHT)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(c, a, d, b))
+    assert rig.logged() == [
+        Judgement(
+            instrument=ORDER_V1,
+            screen="compare",
+            shown=_ranks(shown, c, a, d, b),
+            recorded_at=FIXED_NOW + dt.timedelta(seconds=5),
+            app="wallpapi",
+            app_version=evidence_log.APP_VERSION,
+            response=None,
+            utc_offset=dt.timedelta(hours=1),
+            first_shown_at=FIXED_NOW,
+            ranking=RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0),
+            context={"theme": "light"},
+        )
+    ]
+    assert rig.ranked_rows() == 0
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_on_a_lineup_of_two_ranking_one_answers_at_once(rig: LineupRig) -> None:
+    """All but the last of two is one: the same claim as a **Pick**, recorded as an **Order**."""
+    rig.configure(lineup_size=2)
+    shown = rig.lineup()
+    first, second = ids(shown)
+
+    ordered = rig.rank(shown.id, second)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(second, first))
+    (judgement,) = rig.logged()
+    assert judgement.shown == _ranks(shown, second, first)
+
+
+def test_submitting_records_a_partial_order_as_it_stands_and_the_next_is_a_new_one(rig: LineupRig) -> None:
+    """Enter: the ranks held so far and every other tile unranked, which says nothing among them."""
+    shown = rig.lineup()
+    a, b, _, _ = ids(shown)
+    rig.rank(shown.id, b)
+    rig.rank(shown.id, a)
+
+    ordered = rig.order(shown.id, theme=Theme.DARK)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(b, a))
+    (judgement,) = rig.logged()
+    assert (judgement.instrument, judgement.screen, judgement.response) == (ORDER_V1, "compare", None)
+    assert judgement.shown == _ranks(shown, b, a)
+    assert judgement.context == {"theme": "dark"}
+    assert rig.ranked_rows() == 0
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_submitting_with_nothing_ranked_records_a_blank_order(rig: LineupRig) -> None:
+    shown = rig.lineup()
+
+    ordered = rig.order(shown.id)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=())
+    (judgement,) = rig.logged()
+    assert judgement.instrument == ORDER_V1
+    assert judgement.shown == _ranks(shown)
+    assert judgement.context == {}, "no theme sent, none stored"
+
+
+def test_an_order_takes_nothing_out_of_the_pool_and_decides_nothing(rig: LineupRig) -> None:
+    """Being ordered is not being decided (ADR 0027): complete, partial or blank, every tile stays in the
+    **Pool**, may be drawn again, and has no standing in **History**; each counts as compared."""
+    members = pool.members(rig.connection)
+    first = rig.lineup()
+    for w in ids(first)[:3]:
+        rig.rank(first.id, w)
+    second = rig.lineup()
+    rig.rank(second.id, ids(second)[1])
+    rig.order(second.id)
+    third = rig.lineup()
+    rig.order(third.id)
+
+    assert pool.members(rig.connection) == members
+    assert pool.decided(rig.connection) == []
+    assert evidence_log.history(rig.connection).total == 0
+    assert [j.instrument for j in rig.logged()] == [ORDER_V1] * 3
+
+
+def test_star_then_order_records_the_favourite_on_its_tile_and_only_it_leaves_the_pool(
+    rig: LineupRig,
+) -> None:
+    """The star is held and recorded as on a **Pick**: one **Judgement** with the **Favourite** on its tile,
+    ranked or not, and the starred **Wallpaper** a **Favourite**, retired from the **Pool** alone."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    a, b, c, d = ids(shown)
+    rig.star(shown.id, d)
+    rig.star(shown.id, b)
+    rig.rank(shown.id, b)
+
+    ordered = rig.order(shown.id)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(b,), starred=(b, d)), "starred in on-screen order"
+    (judgement,) = rig.logged()
+    assert judgement.shown == _ranks(shown, b, starred=(b, d))
+    assert evidence_log.favourites(rig.connection) == sorted([b, d])
+    assert pool.members(rig.connection) == [w for w in members if w.id not in {b, d}]
+    assert {a, c} <= {w.id for w in pool.members(rig.connection)}
+
+
+def test_a_rank_or_an_order_on_a_lineup_gone_or_a_tile_it_does_not_show_is_refused_and_writes_nothing(
+    rig: LineupRig,
+) -> None:
+    """Two tabs, a key pressed twice, or a visit since: refused before anything is written, and the
+    **Line-up** live now is untouched."""
+    batch = rig.next()
+    stale = rig.fresh_lineup()
+    shown = rig.fresh_lineup()
+    rig.rank(shown.id, ids(shown)[0])
+
+    not_shown = rig.rank(shown.id, ids(batch)[0])
+    stale_rank = rig.rank(stale.id, ids(stale)[0])
+    stale_order = rig.order(stale.id)
+    never = rig.order("never-minted")
+
+    unknown = LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert not_shown == LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    assert (stale_rank, stale_order, never) == (unknown, unknown, unknown)
+    assert rig.logged() == []
+    assert rig.lineup().ranked == (ids(shown)[0],)
+
+
+def test_an_order_answered_once_is_refused_the_second_time(rig: LineupRig) -> None:
+    shown = rig.lineup()
+    rig.order(shown.id)
+
+    assert rig.order(shown.id) == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert rig.rank(shown.id, ids(shown)[0]) == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert len(rig.logged()) == 1
+
+
+def test_a_visit_or_a_discard_drops_the_ranks_of_the_lineup_and_records_none(rig: LineupRig) -> None:
+    """An **Order** in progress lives only while its **Line-up** does (ADR 0029), as a star does."""
+    first = rig.fresh_lineup()
+    rig.rank(first.id, ids(first)[0])
+
+    second = rig.fresh_lineup()
+    assert second.ranked == ()
+    assert rig.ranked_rows() == 0
+
+    rig.rank(second.id, ids(second)[1])
+    assert rig.discard_lineup() == 1
+    assert rig.ranked_rows() == 0
+    assert rig.logged() == []
+
+
+def test_a_pick_on_a_lineup_with_ranks_held_records_the_pick_alone(rig: LineupRig) -> None:
+    """A stale tab on another **Instrument**: the ranks are not part of a **Pick**'s format, and go with the
+    **Line-up**."""
+    shown = rig.lineup()
+    rig.rank(shown.id, ids(shown)[0])
+
+    rig.pick(shown.id, ids(shown)[1])
+
+    (judgement,) = rig.logged()
+    assert judgement.shown == _shown(shown, {ids(shown)[1]: PickTile(picked=True)})
+    assert rig.ranked_rows() == 0
 
 
 # -- discarding, a Pool reset's half (ADR 0025)

@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from wallpapi.taste import reductions
 from wallpapi.taste.evaluation import (
     Accuracy,
     Comparison,
@@ -29,8 +27,8 @@ from wallpapi.taste.evaluation import (
     reading,
     replay,
 )
-from wallpapi.taste.evidence import Evidence, RelativeEvidence
 from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
+from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.reductions import UnknownInstrument
 from wallpapi.taste.verdict_grid import (
@@ -602,59 +600,32 @@ def test_an_instrument_with_a_reduction_and_no_test_judgements_has_no_row() -> N
     assert [each.instrument for each in accuracy] == [VERDICT_GRID_V1]
 
 
-@dataclass(frozen=True, slots=True)
-class Placed(ItemResponse):
-    """A stand-in **Line-up** tile **Response**: where the tile was put, 1 the best, `None` unplaced."""
-
-    place: int | None = None
-
-
-ORDER_V1 = Instrument("order", 1)
-
-
-def reduce_placed(judgement: Judgement) -> list[Evidence]:
-    """A stand-in for a **Line-up** **Instrument** this evaluation was written before: each placed tile over
-    every tile placed below it and every unplaced one, strength 1 each."""
-    places = [
-        (shown.item, shown.response.place if isinstance(shown.response, Placed) else None)
-        for shown in judgement.shown
-    ]
-    return [
-        RelativeEvidence(winner, loser, 1.0, judgement.id, judgement.recorded_at)
-        for winner, above in places
-        if above is not None
-        for loser, below in places
-        if loser != winner and (below is None or below > above)
-    ]
-
-
-def test_a_new_line_up_instrument_gets_its_row_from_its_reduction_alone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A **Reduction** added to the table, and nothing in the evaluation: its pairs are its test answers and
-    it has a row of its own. Placed 1 near the Favourite (100), 2 near nothing (0), the unplaced near the
-    Like (50): first over second right, first over unplaced right, second over unplaced wrong: 2 of 3."""
-    monkeypatch.setitem(reductions.REDUCTIONS, ORDER_V1, reduce_placed)
+def test_an_order_gets_its_row_from_its_reduction_alone() -> None:
+    """**Order**'s **Reduction** in the table, and nothing in the evaluation: its pairs are its test answers
+    and it has a row of its own. Ranked 1 near the Favourite (100), 2 near nothing (0), the unranked near the
+    Like (50): first over second right, first over unranked right, second over unranked wrong: 2 of 3."""
     ordered = judged(
-        {"first": Placed(1), "second": Placed(2), "unplaced": Placed()},
+        {"first": OrderTile(rank=1), "second": OrderTile(rank=2), "unranked": OrderTile()},
         second=1,
         instrument=ORDER_V1,
         response=None,
         screen="compare",
     )
     log = [judged({"a": FAVOURITE, "c": LIKE}, second=0), ordered]
-    table = Table({("first", "a"): 0.95, ("unplaced", "c"): 0.95})
+    table = Table({("first", "a"): 0.95, ("unranked", "c"): 0.95})
 
     accuracy = pairwise_accuracy(replay(log, table, radius=RADIUS, decay=DECAY, warm_up=1))
 
     assert reading(ordered) == (
         Pair("first", "second"),
-        Pair("first", "unplaced"),
-        Pair("second", "unplaced"),
+        Pair("first", "unranked"),
+        Pair("second", "unranked"),
     )
     assert [(each.instrument, each.judgements, each.accuracy) for each in accuracy] == [(ORDER_V1, 1, 2 / 3)]
 
 
 def test_an_instrument_with_no_reduction_has_no_reading_either() -> None:
     with pytest.raises(UnknownInstrument):
-        reading(judged({"a": Placed(1), "b": Placed()}, second=0, instrument=Instrument("unbuilt", 1)))
+        reading(
+            judged({"a": OrderTile(rank=1), "b": OrderTile()}, second=0, instrument=Instrument("unbuilt", 1))
+        )

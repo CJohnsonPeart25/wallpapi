@@ -6,9 +6,14 @@
   holds no input of its own for the same reason the **Batch** page's Submit holds none. The page's theme is
   on the list as an `hx-vals` every tile inherits, beside its own `wallpaper_id`.
 
-  Each tile is one button, the thumbnail and its number on it: a click or the number key posts it as the
-  winner. The number is a `<kbd>` because it is the key to press. Every tile is the same size whatever its
-  **Zone**, and no **Zone** is shown: a label is not what is being compared.
+  Each tile is one button, the thumbnail and its number on it, answering the **Instrument** on screen. On a
+  **Pick** a click or the number key posts it as the winner. On an **Order** it posts the tile's rank to the
+  live **Line-up**, which holds it while it is live: an unranked tile is ranked next, a ranked one taken
+  back, and its rank is shown on it; the response is the same **Line-up** as it now stands, or the next one
+  once all but the last tile are ranked, which answers the **Order**. Like the star, it says what a click
+  should leave, so a replayed click changes nothing. The number is a `<kbd>` because it is the key to
+  press. Every tile is the same size whatever its **Zone**, and no **Zone** is shown: a label is not what
+  is being compared.
 
   Beside that button in the `<li>`, never inside it, is the grid's star (star.html), by click or F: a click
   on it is never a click on the tile. It posts the tile's star to the live **Line-up**, which holds it while
@@ -28,14 +33,25 @@
   <input type="hidden" id="lineup-id" name="lineup_id" value="{{ lineup.id }}" />
   <ul class="lineup" data-size="{{ lineup.wallpapers | length }}" hx-vals="{{ theme_value }}">
     {% for wallpaper in lineup.wallpapers %}
+      {% set rank = lineup.rank_of(wallpaper.id) %}
       <li class="lineup-tile">
         <button
           type="button"
           class="pick"
           data-wallpaper-id="{{ wallpaper.id }}"
-          aria-label="Pick {{ loop.index }}"
-          hx-post="/compare/{{ instrument }}"
-          hx-vals='{"wallpaper_id": "{{ wallpaper.id }}"}'
+          {% if instrument == "order" %}
+            {% if rank %}
+              aria-label="Take back {{ loop.index }}, ranked {{ rank }}" aria-pressed="true"
+            {% else %}
+              aria-label="Rank {{ loop.index }} next" aria-pressed="false"
+            {% endif %}
+            hx-post="/compare/order/rank"
+            hx-vals='{"wallpaper_id": "{{ wallpaper.id }}", "ranked": "{{ 'false' if rank else 'true' }}"}'
+          {% else %}
+            aria-label="Pick {{ loop.index }}"
+            hx-post="/compare/{{ instrument }}"
+            hx-vals='{"wallpaper_id": "{{ wallpaper.id }}"}'
+          {% endif %}
           hx-include="#lineup-id"
           hx-target="#lineup"
           hx-sync="#lineup:drop"
@@ -43,6 +59,7 @@
         >
           <img src="/thumb/{{ wallpaper.id }}" alt="" />
           <kbd class="key">{{ loop.index }}</kbd>
+          {% if rank %}<span class="rank">{{ rank }}</span>{% endif %}
         </button>
         {% set starred = wallpaper.id in lineup.starred %}
         {% call star(starred) %}

@@ -495,8 +495,30 @@ ul.lineup > li.placeholder {
   font-weight: 600;
 }
 
-/* Nothing to pass over until a Line-up has loaded. Hidden rather than removed, so the nav does not shift. */
-body:not(:has(#lineup-id)) [data-none-of-these] {
+/* An Order's rank on its tile, in the corner the star leaves free, where the prototype had it opposite the
+   key. Once anything is ranked, the tiles still unranked fade a little, so what is left to place stands
+   apart from what is placed; a tile under the pointer or the keyboard's focus is shown in full. */
+.lineup-tile .rank {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+  font-weight: 700;
+}
+
+ul.lineup:has(.rank) .lineup-tile:not(:has(.rank)) .pick:not(:hover, :focus-visible) img {
+  opacity: 0.55;
+}
+
+/* Nothing to pass over or submit until a Line-up has loaded. Hidden rather than removed, so the nav does not
+   shift. */
+body:not(:has(#lineup-id)) :is([data-none-of-these], [data-submit-order]) {
   visibility: hidden;
 }
 

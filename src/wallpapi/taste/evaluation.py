@@ -142,8 +142,8 @@ READINGS: Final[Mapping[Instrument, Reading]] = {
     VERDICT_GRID_V1: _read_grid,
 }
 """Evaluation reading version 1's answer keys of their own, one entry per **Instrument** name and version.
-Every other **Instrument** is read by its **Reduction**'s relative Evidence: **Pick** now, and **Order** and
-**Gauntlet** once their **Reductions** are in the table, with no entry here. One whose **Reduction** gives no
+Every other **Instrument** is read by its **Reduction**'s relative Evidence: **Pick** and **Order** now, and
+**Gauntlet** once its **Reduction** is in the table, with no entry here. One whose **Reduction** gives no
 relative Evidence is never a test answer, though its Evidence still counts."""
 
 

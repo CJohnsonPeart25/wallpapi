@@ -1,7 +1,7 @@
 """The **Reductions**: each **Judgement** to its Evidence, through `evidence()`, the one function callers see.
 
 Plain data in and out: a **Judgement** written out by hand, and the Evidence it must come to. The verdict
-grid's two versions and **Pick** are the **Reductions** built.
+grid's two versions, **Pick** and **Order** are the **Reductions** built.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import pytest
 
 from wallpapi.taste.evidence import AbsoluteEvidence, RelativeEvidence
 from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
+from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.reductions import UnknownInstrument, evidence
 from wallpapi.taste.verdict_grid import (
@@ -190,7 +191,7 @@ def test_each_piece_carries_its_judgements_id_and_recorded_time_in_judgement_ord
 
 @pytest.mark.parametrize(
     "instrument",
-    [Instrument("verdict grid", 2), Instrument("order", 1), Instrument("Verdict grid", 1)],
+    [Instrument("verdict grid", 2), Instrument("stream", 1), Instrument("Verdict grid", 1)],
     ids=["a later version", "an instrument not built", "a misspelt name"],
 )
 def test_an_unknown_instrument_raises(instrument: Instrument) -> None:
@@ -272,6 +273,91 @@ def test_a_starred_tile_is_a_favourite_beside_whatever_was_picked() -> None:
     assert strengths(starred_none) == [("wallhaven:a", 100.0)]
 
 
+# -- Order ---------------------------------------------------------------------------------------------
+
+
+UNRANKED = OrderTile()
+
+
+def ordered(*ranks: int | None, starred: tuple[int, ...] = ()) -> Judgement:
+    """An **Order** of a **Line-up** on the compare **Screen**, tiles `wallhaven:a`, `b`, ... in on-screen
+    order with these ranks (`None` for unranked), the tiles at the `starred` positions given a star."""
+    return judged(
+        ORDER_V1,
+        {
+            f"wallhaven:{chr(ord('a') + at)}": OrderTile(rank=rank, favourite=at in starred)
+            for at, rank in enumerate(ranks)
+        },
+        screen="compare",
+    )
+
+
+def test_a_complete_order_gives_every_pair_best_first_each_winners_losers_in_on_screen_order() -> None:
+    """Four tiles ranked c, a, d, b: six pairs, each the higher rank over the lower, strength 1 each, and no
+    absolute Evidence. Each carries the **Judgement**'s id and recorded time."""
+    judgement = ordered(2, 4, 1, 3)
+
+    assert pairs(judgement) == [
+        ("wallhaven:c", "wallhaven:a", 1.0),
+        ("wallhaven:c", "wallhaven:b", 1.0),
+        ("wallhaven:c", "wallhaven:d", 1.0),
+        ("wallhaven:a", "wallhaven:b", 1.0),
+        ("wallhaven:a", "wallhaven:d", 1.0),
+        ("wallhaven:d", "wallhaven:b", 1.0),
+    ]
+    assert {(piece.judgement_id, piece.recorded_at) for piece in evidence([judgement])} == {
+        (judgement.id, AT)
+    }
+
+
+def test_a_partial_order_ranks_its_tiles_over_each_other_and_every_unranked_one() -> None:
+    """Two of five ranked: the first beats the second and the three unranked, the second the three
+    unranked, and the unranked say nothing about each other."""
+    judgement = ordered(None, 2, None, 1, None)
+
+    assert pairs(judgement) == [
+        ("wallhaven:d", "wallhaven:a", 1.0),
+        ("wallhaven:d", "wallhaven:b", 1.0),
+        ("wallhaven:d", "wallhaven:c", 1.0),
+        ("wallhaven:d", "wallhaven:e", 1.0),
+        ("wallhaven:b", "wallhaven:a", 1.0),
+        ("wallhaven:b", "wallhaven:c", 1.0),
+        ("wallhaven:b", "wallhaven:e", 1.0),
+    ]
+
+
+def test_one_ranked_tile_makes_the_same_claim_as_a_pick_of_it() -> None:
+    order = ordered(None, 1, None)
+    pick = picked({"wallhaven:a": PASSED, "wallhaven:b": PICKED, "wallhaven:c": PASSED})
+
+    assert pairs(order) == pairs(pick)
+
+
+def test_all_but_the_last_ranked_gives_the_pairs_of_the_complete_order_it_implies() -> None:
+    """Ranking all but the last submits, the last place implied: whether the last tile is recorded at rank n
+    or left unranked, it loses to every other and nothing else changes."""
+    assert pairs(ordered(2, None, 1)) == pairs(ordered(2, 3, 1))
+
+
+def test_an_empty_order_emits_nothing() -> None:
+    """Nothing ranked is a blank **Response**: not an **Ignore** of anything, and every tile stays in the
+    **Pool**."""
+    assert evidence([ordered(None, None, None, None)]) == []
+
+
+def test_a_starred_tile_on_an_order_is_a_favourite_whatever_its_rank() -> None:
+    """A **Favourite** first, in **Shown set** order, as on a **Pick**: a starred tile left unranked is still
+    beaten, and a star on an empty **Order** still counts."""
+    starred_unranked = ordered(1, None, starred=(1,))
+    starred_empty = ordered(None, None, None, starred=(2, 0))
+
+    assert evidence([starred_unranked]) == [
+        AbsoluteEvidence("wallhaven:b", 100.0, judgement_id=starred_unranked.id, recorded_at=AT),
+        RelativeEvidence("wallhaven:a", "wallhaven:b", 1.0, judgement_id=starred_unranked.id, recorded_at=AT),
+    ]
+    assert strengths(starred_empty) == [("wallhaven:a", 100.0), ("wallhaven:c", 100.0)]
+
+
 @pytest.mark.parametrize(
     "judgement",
     [
@@ -285,6 +371,14 @@ def test_a_starred_tile_is_a_favourite_beside_whatever_was_picked() -> None:
         picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED}, None),
         picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED}, SUBMITTED),
         picked({"wallhaven:a": PICKED, "wallhaven:b": TileResponse()}),
+        ordered(1, 1, None),
+        ordered(1, 3, 2, 4, None, 6),
+        ordered(2, None),
+        ordered(0, 1),
+        judged(ORDER_V1, {"wallhaven:a": OrderTile(rank=True)}, screen="compare"),
+        judged(ORDER_V1, {"wallhaven:a": OrderTile(rank=1)}, PickResponse(), screen="compare"),
+        judged(ORDER_V1, {"wallhaven:a": PICKED}, screen="compare"),
+        judged(PICK_V1, {"wallhaven:a": OrderTile(rank=1)}, ANSWERED, screen="compare"),
     ],
     ids=[
         "v1 with a converted tile",
@@ -297,6 +391,14 @@ def test_a_starred_tile_is_a_favourite_beside_whatever_was_picked() -> None:
         "a pick with no screen response",
         "a pick with a grid's screen response",
         "a pick with a grid tile",
+        "an order with a rank shared",
+        "an order with a gap",
+        "an order not starting at 1",
+        "an order with a rank of 0",
+        "an order with a rank that is not a whole number",
+        "an order with a screen response",
+        "an order with a pick tile",
+        "a pick with an order tile",
     ],
 )
 def test_a_response_not_in_its_instruments_format_is_refused(judgement: Judgement) -> None:
