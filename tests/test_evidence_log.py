@@ -19,7 +19,16 @@ from tests.fakes import FakeClock
 from wallpapi import evidence_log, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict
-from wallpapi.taste.judgement import Instrument, Judgement, LogPosition, RankingStamp, Shown, instant
+from wallpapi.taste.judgement import (
+    Instrument,
+    Judgement,
+    LogPosition,
+    Provenance,
+    RankingStamp,
+    Shown,
+    instant,
+)
+from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.reductions import evidence
 from wallpapi.taste.resolution import EXAMPLE_CASES, ExampleCase, resolve
 from wallpapi.taste.verdict_grid import (
@@ -89,6 +98,26 @@ def converted(*entries: tuple[str, LegacyEntry], at: dt.datetime = AT, screen: s
     )
 
 
+def pick(
+    *tiles: tuple[str, PickTile],
+    at: dt.datetime = AT,
+    none_of_these: bool = False,
+    provenance: Provenance | None = None,
+    **recorded: object,
+) -> Judgement:
+    """A **Pick** of these tiles on the compare **Screen**, in order."""
+    return Judgement(
+        instrument=PICK_V1,
+        screen="compare",
+        shown=tuple(Shown(key(w), response, provenance or {}) for w, response in tiles),
+        recorded_at=at,
+        app="wallpapi",
+        app_version="0.1.0",
+        response=PickResponse(none_of_these=none_of_these),
+        **recorded,  # pyright: ignore[reportArgumentType]
+    )
+
+
 def append(connection: sqlite3.Connection, *judgements: Judgement) -> None:
     for judgement in judgements:
         with storage.write(connection) as write:
@@ -111,6 +140,8 @@ BLANK = TileResponse()
 LIKED = TileResponse(verdict=GridVerdict.LIKE)
 BANNED = TileResponse(verdict=GridVerdict.BAN)
 STARRED = TileResponse(favourite=True)
+PICKED = PickTile(picked=True)
+PASSED = PickTile()
 
 
 # -- appending and reading back ----------------------------------------------------------------------------
@@ -160,6 +191,26 @@ def test_a_converted_judgement_and_a_skip_are_read_back_as_written(connection: s
     append(connection, old, skip)
 
     assert evidence_log.judgements(connection) == [old, skip]
+
+
+def test_a_pick_and_a_none_of_these_are_read_back_as_written(connection: sqlite3.Connection) -> None:
+    """**Pick** keeps its tiles' winner and star and its screen's "none of these", with everything a screen
+    drawn from a **Mix** records about itself."""
+    chosen = pick(
+        ("wp0000", PASSED),
+        ("wp0001", PICKED),
+        ("wp0002", PickTile(favourite=True)),
+        provenance={"zone": "unknown", "slot_zone": "banger", "mix": "explore"},
+        first_shown_at=AT - dt.timedelta(seconds=3),
+        ranking=RankingStamp(read=None, space="fallback", radius=0.1, decay=4.0),
+        utc_offset=dt.timedelta(hours=-5),
+        context={"theme": "light"},
+    )
+    none = pick(("wp0003", PASSED), ("wp0000", PASSED), at=LATER, none_of_these=True)
+
+    append(connection, chosen, none)
+
+    assert evidence_log.judgements(connection) == [chosen, none]
 
 
 def test_the_log_reads_in_recorded_order_and_on_a_tie_the_lower_id_comes_last(
@@ -226,7 +277,8 @@ def test_a_judgement_naming_an_unknown_wallpaper_is_refused_whole(connection: sq
 
 
 def test_only_wallhaven_items_of_a_kept_instrument_are_appended(connection: sqlite3.Connection) -> None:
-    """The log has columns for the verdict grid's two versions, and Wallhaven is the only **Item source**."""
+    """The log keeps the verdict grid's two versions and **Pick**, each **Response** in its own shape, and
+    Wallhaven is the only **Item source**."""
     elsewhere = Judgement(
         instrument=VERDICT_GRID_V1,
         screen="batch",
@@ -236,20 +288,40 @@ def test_only_wallhaven_items_of_a_kept_instrument_are_appended(connection: sqli
         app_version="0.1.0",
         response=GridResponse(submitted=True),
     )
-    pick = Judgement(
-        instrument=Instrument("pick", 1),
+    order = Judgement(
+        instrument=Instrument("order", 1),
+        screen="compare",
+        shown=(Shown(key("wp0000"), PASSED),),
+        recorded_at=AT,
+        app="wallpapi",
+        app_version="0.1.0",
+        response=PickResponse(),
+    )
+    pick_of_grid_tiles = Judgement(
+        instrument=PICK_V1,
         screen="compare",
         shown=(Shown(key("wp0000"), LIKED),),
         recorded_at=AT,
         app="wallpapi",
         app_version="0.1.0",
+        response=PickResponse(),
+    )
+    pick_with_a_grid_screen = Judgement(
+        instrument=PICK_V1,
+        screen="compare",
+        shown=(Shown(key("wp0000"), PICKED),),
+        recorded_at=AT,
+        app="wallpapi",
+        app_version="0.1.0",
+        response=GridResponse(submitted=True),
     )
 
     with storage.write(connection) as write:
         with pytest.raises(ValueError, match="source"):
             evidence_log.append(write, elsewhere)
-        with pytest.raises(ValueError, match="pick"):
-            evidence_log.append(write, pick)
+        for refused in (order, pick_of_grid_tiles, pick_with_a_grid_screen):
+            with pytest.raises(ValueError, match=refused.instrument.name):
+                evidence_log.append(write, refused)
 
     assert evidence_log.judgements(connection) == []
 
@@ -340,7 +412,11 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
 ) -> None:
     """The second spelling of the version 1 **Reduction**: an unmarked tile on a submitted **Batch** is an
     **Ignore**, a starred one a **Favourite**, a **Skip** says nothing whatever its tiles hold, and a
-    **History** edit overturns the **Batch**. Converted **Judgements** among them, a **Clearance** too."""
+    **History** edit overturns the **Batch**. Converted **Judgements** among them, a **Clearance** too.
+
+    And of **Pick**'s: a **Pick** or a "none of these" says nothing absolute about any tile, so a later one
+    neither overturns a **Verdict** nor gives a tile seen only there a line; a tile starred on one is a
+    **Favourite** like any other."""
     batch = grid(
         ("wp0000", BLANK), ("wp0001", STARRED), ("wp0002", LIKED), ("wp0003", BANNED), ("wp0004", BLANK)
     )
@@ -355,7 +431,26 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
     starred_from_history = grid(("wp0003", STARRED), at=LATER, screen="history")
     old = converted(("wp0007", LegacyEntry.FAVOURITE), ("wp0008", LegacyEntry.LIKE), screen="batch")
     cleared = converted(("wp0008", LegacyEntry.CLEARED), at=LATER)
-    logged = [batch, skip, overturned, starred_from_history, old, cleared]
+    latest = LATER + dt.timedelta(minutes=5)
+    picked_over = pick(("wp0009", PICKED), ("wp0010", PASSED), ("wp0002", PASSED), at=latest)
+    passed_over = pick(("wp0011", PASSED), ("wp0000", PASSED), at=latest, none_of_these=True)
+    starred_on_a_pick = pick(
+        ("wp0012", PickTile(favourite=True)),
+        ("wp0004", PICKED),
+        ("wp0006", PickTile(favourite=True)),
+        at=latest,
+    )
+    logged = [
+        batch,
+        skip,
+        overturned,
+        starred_from_history,
+        old,
+        cleared,
+        picked_over,
+        passed_over,
+        starred_on_a_pick,
+    ]
 
     append(connection, *logged)
 
@@ -366,9 +461,11 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
         key("wp0002"): (overturned.id, -10.0),
         key("wp0003"): (starred_from_history.id, 100.0),
         key("wp0004"): (batch.id, -10.0),
+        key("wp0006"): (starred_on_a_pick.id, 100.0),
         key("wp0007"): (old.id, 100.0),
         key("wp0008"): (cleared.id, 0.0),
-    }, "worked by hand: no line for wp0005 or wp0006, seen only on the Skip"
+        key("wp0012"): (starred_on_a_pick.id, 100.0),
+    }, "worked by hand: no line for wp0005, seen only on the Skip, nor wp0009 to wp0011, only on Picks"
 
 
 def test_a_skip_after_a_verdict_leaves_the_verdict_standing(connection: sqlite3.Connection) -> None:
@@ -411,17 +508,22 @@ def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_record
     connection: sqlite3.Connection,
 ) -> None:
     """What the **Pool** refuses (ADR 0027): an unmarked tile on a submitted **Batch** and a legacy
-    **Clearance** are decisions; an **Item** only ever on a **Skip** is not, whatever was marked on it."""
+    **Clearance** are decisions; an **Item** only ever on a **Skip** is not, whatever was marked on it. Nor
+    is one only ever on a **Line-up**, picked, passed over or answered "none of these", unless it was
+    starred there."""
     append(
         connection,
         grid(("wp0000", BLANK), ("wp0001", LIKED)),
         converted(("wp0002", LegacyEntry.CLEARED)),
         grid(("wp0003", BLANK), ("wp0004", STARRED), ("wp0001", BANNED), at=LATER, submitted=False),
+        pick(("wp0005", PICKED), ("wp0006", PASSED)),
+        pick(("wp0007", PASSED), ("wp0008", PASSED), none_of_these=True),
+        pick(("wp0009", PickTile(favourite=True)), ("wp0010", PICKED), at=LATER),
     )
 
     decided = connection.execute(evidence_log.DECIDED).fetchall()
 
-    assert sorted(str(row[0]) for row in decided) == ["wp0000", "wp0001", "wp0002"]
+    assert sorted(str(row[0]) for row in decided) == ["wp0000", "wp0001", "wp0002", "wp0009"]
 
 
 def test_only_a_standing_explicit_verdict_is_explicitly_decided(connection: sqlite3.Connection) -> None:

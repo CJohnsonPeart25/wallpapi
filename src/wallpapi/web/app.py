@@ -17,7 +17,7 @@ from enum import StrEnum
 from http import HTTPStatus
 from mimetypes import guess_type
 from pathlib import Path
-from typing import Annotated, Literal, overload
+from typing import Annotated, Final, Literal, overload
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -29,16 +29,19 @@ from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict, Theme
+from wallpapi.lineup import Lineup, LineupRefused, LineupUnavailable
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import (
     FORM_FIELDS,
     MAX_MIX_NAME_LENGTH,
     MIX_FORM_FIELDS,
     MIX_TOTAL,
+    Settings,
     SettingsRefused,
     form_values,
     mix_form,
 )
+from wallpapi.taste.pick import PICK_V1
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -73,10 +76,22 @@ REFUSALS: dict[StrEnum, Refusal] = {
     ),
     SubmissionRefused.Reason.NOT_IN_BATCH: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
+    LineupRefused.Reason.UNKNOWN_LINEUP: Refusal(
+        HTTPStatus.CONFLICT,
+        "That line-up is no longer on screen: it was answered or reset, in another tab or by a key pressed "
+        "twice. Nothing more was recorded; this is the one on screen now.",
+        banner=True,
+    ),
+    LineupRefused.Reason.NOT_IN_LINEUP: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
 }
-"""Every refusal the **Batch** and **History** pages answer, as the page answers it. Settings refusals are
-not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds, so they
-stay beside the field (ADR 0004)."""
+"""Every refusal the **Batch**, **History** and compare pages answer, as the page answers it. Settings
+refusals are not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds,
+so they stay beside the field (ADR 0004)."""
+
+COMPARE_INSTRUMENTS: Final = (PICK_V1.name,)
+"""The **Instruments** the compare tab offers, by the name each is recorded under, the first the default:
+the choice the URL carries (`?instrument=`). **Order** and **Gauntlet** join it, each with its own answer
+route at `/compare/<name>`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +191,52 @@ def _mix_context(connection: sqlite3.Connection) -> dict[str, object]:
         "mixes": tuple(listed.mix for listed in settings.list_mixes(connection)),
         "active_mix": settings.get(connection).active_mix,
     }
+
+
+def _instrument(named: str) -> str:
+    """The **Instrument** the URL names, the tab's first when it names none; one it does not offer is a
+    404."""
+    if not named:
+        return COMPARE_INSTRUMENTS[0]
+    if named not in COMPARE_INSTRUMENTS:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="unknown instrument")
+    return named
+
+
+def _lineup_size_context(connection: sqlite3.Connection) -> dict[str, object]:
+    """What the **Line-up** size switcher needs: the stored size, and every size the setting accepts."""
+    field = Settings.lineup_size
+    return {
+        "lineup_size": settings.get(connection).lineup_size,
+        "lineup_sizes": range(int(field.minimum or 0), int(field.maximum or 0) + 1),
+    }
+
+
+def _lineup_view(
+    request: Request,
+    instrument: str,
+    result: Lineup | LineupUnavailable,
+    *,
+    refused: Refusal | None = None,
+) -> HTMLResponse:
+    """The **Line-up** fragment, or the words for why there is none; after a refused answer, the one on
+    screen now under the words for why, at the refusal's status."""
+    context: dict[str, object] = {
+        "instrument": instrument,
+        "refused": None if refused is None else refused.message,
+    }
+    if isinstance(result, Lineup):
+        status = HTTPStatus.OK if refused is None else refused.status
+        return templates.TemplateResponse(
+            request, "lineup_view.html", {**context, "lineup": result}, status_code=status
+        )
+    # 503 and never a 500: nothing failed, there is too little to compare and the refill may fix it.
+    return templates.TemplateResponse(
+        request,
+        "lineup_view.html",
+        {**context, "unavailable": result},
+        status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+    )
 
 
 def _pool_reset_context(connection: sqlite3.Connection) -> dict[str, object]:
@@ -382,6 +443,60 @@ def choose_mix(request: Request, modules: Wired, mix: Annotated[str, Form()]) ->
         request,
         "mix.html",
         _mix_context(modules.connect()),
+        status_code=HTTPStatus.BAD_REQUEST if refused else HTTPStatus.OK,
+    )
+
+
+@router.get("/compare", response_class=HTMLResponse)
+def compare_page(request: Request, modules: Wired, instrument: str = "") -> HTMLResponse:
+    """The compare tab's shell for the **Instrument** the URL names, which fetches its **Line-up** from
+    `/compare/lineup`. It draws nothing."""
+    return templates.TemplateResponse(
+        request,
+        "compare.html",
+        {
+            "instrument": _instrument(instrument),
+            "instruments": COMPARE_INSTRUMENTS,
+            **_lineup_size_context(modules.connect()),
+        },
+    )
+
+
+@router.get("/compare/lineup", response_class=HTMLResponse)
+def lineup_view(request: Request, modules: Wired, instrument: str = "") -> HTMLResponse:
+    """The live **Line-up** as the fragment the shell swaps in, its tiles answering the named
+    **Instrument**."""
+    chosen = _instrument(instrument)
+    return _lineup_view(request, chosen, modules.lineups.next(modules.connect()))
+
+
+@router.post("/compare/pick", response_class=HTMLResponse)
+def pick(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()] = "",
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Answer the **Line-up** with a **Pick**, or "none of these" when no wallpaper is posted, and answer
+    with the next one, so it comes at once. A stale answer gets the one on screen now, under the words."""
+    picked = workflows.pick(modules, lineup_id, wallpaper_id or None, theme=parse_theme(theme))
+    refused = None
+    if isinstance(picked, LineupRefused):
+        refused = REFUSALS[picked.reason]
+        if not refused.banner:
+            raise HTTPException(status_code=refused.status, detail=refused.message)
+    return _lineup_view(request, PICK_V1.name, modules.lineups.next(modules.connect()), refused=refused)
+
+
+@router.post("/compare/size", response_class=HTMLResponse)
+def choose_lineup_size(request: Request, modules: Wired, size: Annotated[str, Form()] = "") -> HTMLResponse:
+    """Set the **Line-up** size for the next **Line-up**. The one on screen is untouched."""
+    refused = isinstance(workflows.choose_lineup_size(modules, size), SettingsRefused)
+    return templates.TemplateResponse(
+        request,
+        "lineup_size.html",
+        _lineup_size_context(modules.connect()),
         status_code=HTTPStatus.BAD_REQUEST if refused else HTTPStatus.OK,
     )
 

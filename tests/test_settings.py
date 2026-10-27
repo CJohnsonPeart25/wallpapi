@@ -45,6 +45,9 @@ def update(connection: sqlite3.Connection, **fields: object) -> Settings | Setti
 REFUSALS = [
     *[("batch_size", bad, Reason.OUT_OF_RANGE) for bad in ("0", "-1", str(MAX_BATCH_SIZE + 1))],
     *[("batch_size", bad, Reason.NOT_A_NUMBER) for bad in ("eight", "1.5", "")],
+    # A Line-up of one compares nothing; more than eight do not fit a screen side by side.
+    *[("lineup_size", bad, Reason.OUT_OF_RANGE) for bad in ("0", "1", "9", "-4")],
+    *[("lineup_size", bad, Reason.NOT_A_NUMBER) for bad in ("four", "2.5", "")],
     *[("library_path", bad, Reason.EMPTY) for bad in ("", "   ")],
     # Absolute or nothing (invariant 9): a relative path moves with the working directory, and every file
     # written into it is recorded at a path that cannot be found again.
@@ -112,6 +115,8 @@ def test_an_invalid_value_is_refused_with_a_reason_and_words_and_changes_nothing
     [
         pytest.param({"batch_size": MIN_BATCH_SIZE}, {"batch_size": MIN_BATCH_SIZE}, id="the smallest batch"),
         pytest.param({"batch_size": MAX_BATCH_SIZE}, {"batch_size": MAX_BATCH_SIZE}, id="the largest batch"),
+        pytest.param({"lineup_size": "2"}, {"lineup_size": 2}, id="the smallest line-up"),
+        pytest.param({"lineup_size": 8}, {"lineup_size": 8}, id="the largest line-up"),
         pytest.param({"pool_target_size": "50"}, {"pool_target_size": 50}, id="a pool target, as text"),
         pytest.param({"api_calls_per_minute": "1"}, {"api_calls_per_minute": 1}, id="the smallest budget"),
         pytest.param({"api_calls_per_minute": "45"}, {"api_calls_per_minute": 45}, id="the largest budget"),
@@ -149,6 +154,15 @@ def test_a_valid_value_is_saved_typed_and_read_back(
     assert isinstance(saved, Settings)
     for field, value in expected.items():
         assert getattr(saved, field) == getattr(settings.get(memory), field) == value
+
+
+def test_a_fresh_database_lines_up_four_and_a_refusal_says_two_to_eight(memory: sqlite3.Connection) -> None:
+    """The spec's numbers as literals: four by default, so the bounds and default cannot drift together."""
+    refused = update(memory, lineup_size="9")
+
+    assert settings.get(memory).lineup_size == 4
+    assert isinstance(refused, SettingsRefused)
+    assert refused.message == "Line-up size must be between 2 and 8."
 
 
 @pytest.mark.parametrize("posted", ["0", "46", "1.5", ""])
@@ -266,7 +280,7 @@ def test_the_form_is_the_table_grouped_by_section_in_declaration_order() -> None
     sections = settings.form_sections()
 
     assert [(section.heading, [field.key for field in fields]) for section, fields in sections] == [
-        (None, ["batch_size", "library_path"]),
+        (None, ["batch_size", "lineup_size", "library_path"]),
         ("Filters", ["min_width", "min_height", "allowed_ratios", "min_favourites"]),
         ("Pool", ["pool_target_size", "api_calls_per_minute"]),
         ("Scoring", ["similarity_radius", "similarity_decay"]),
@@ -281,6 +295,7 @@ def test_every_form_field_says_how_the_form_shows_it() -> None:
 
     assert steps == {
         "batch_size": "1",
+        "lineup_size": "1",
         "library_path": None,
         "min_width": "1",
         "min_height": "1",

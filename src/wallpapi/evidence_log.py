@@ -3,14 +3,17 @@ at. The one piece of data wallpapi cannot rebuild, and nothing else reads or wri
 `judgement_items` (ADR 0027).
 
 `taste/` defines the **Judgement** and stores nothing; this module keeps one row per **Judgement** and one per
-shown **Item**, made by `storage`'s migration 12. Items are keyed by source, `wallhaven:<id>`, and this is the
-edge where wallpapi's bare Wallhaven ids become keys and back: every other table keeps the bare id.
+shown **Item**, made by `storage`'s migrations 12 and 14. Items are keyed by source, `wallhaven:<id>`, and
+this is the edge where wallpapi's bare Wallhaven ids become keys and back: every other table keeps the bare
+id. A **Response** field SQL reads has a column; the others are kept as JSON in `response`, and only reading
+a **Judgement** back opens it.
 
 **Verdict resolution** is spelled twice. `taste.resolution.resolve` over `taste.reductions.evidence` is the
-rule; `_RESOLUTION_CTE` is the SQL **History** pages and filters with, and with it a second spelling of part
-of the verdict grid's **Reduction**: a version 0 tile says its converted entry, and a version 1 tile on a
-submitted screen says its **Favourite** or its **Verdict**, an unmarked one an **Ignore**, while a screen not
-submitted (a **Skip**) says nothing. The tests hold the SQL to both `EXAMPLE_CASES` and to `evidence()`.
+rule; `_RESOLUTION_CTE` is the SQL **History** pages and filters with, and with it a second spelling of the
+absolute part of the **Reductions**: a version 0 grid tile says its converted entry, and a version 1 tile on
+a submitted screen says its **Favourite** or its **Verdict**, an unmarked one an **Ignore**, while a screen
+not submitted (a **Skip**) says nothing; a **Pick** says **Favourite** of a starred tile and nothing absolute
+of any other. The tests hold the SQL to both `EXAMPLE_CASES` and to `evidence()`.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from wallpapi.taste.judgement import (
     Shown,
     instant,
 )
+from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.verdict_grid import (
     FAVOURITE_STRENGTH,
     LEGACY_STRENGTHS,
@@ -60,7 +64,8 @@ APP_VERSION: Final = importlib.metadata.version("wallpapi")
 
 SCREEN_BATCH: Final = "batch"
 SCREEN_HISTORY: Final = "history"
-"""The **Screens** wallpapi asks on today; `compare` comes with the **Line-up**."""
+SCREEN_COMPARE: Final = "compare"
+"""The **Screens** wallpapi asks on: the verdict grid, **History**, and the compare tab's **Line-up**."""
 
 PROVENANCE_ZONE: Final = "zone"
 """The **Zone** an **Item** was drawn from."""
@@ -197,7 +202,7 @@ def append(write: sqlite3.Connection, judgement: Judgement) -> bool:
     rows = [
         (shown.item, *_item_columns(judgement, shown), _json(shown.provenance)) for shown in judgement.shown
     ]
-    submitted = _submitted_column(judgement)
+    submitted, response = _screen_columns(judgement)
     write.execute("SAVEPOINT append_judgement")
     try:
         inserted = write.execute(
@@ -214,6 +219,7 @@ def append(write: sqlite3.Connection, judgement: Judgement) -> bool:
                 judgement.app,
                 judgement.app_version,
                 submitted,
+                response,
                 None if judgement.ranking is None else stamp_text(judgement.ranking),
                 _json(judgement.context),
             ),
@@ -257,7 +263,7 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
             recorded_at=_moment(row["recorded_at"]),
             app=str(row["app"]),
             app_version=str(row["app_version"]),
-            response=_judgement_response(instrument, row["submitted"]),
+            response=_judgement_response(instrument, row),
             utc_offset=None if row["utc_offset"] is None else dt.timedelta(seconds=int(row["utc_offset"])),
             first_shown_at=None if row["first_shown_at"] is None else _moment(row["first_shown_at"]),
             ranking=None if row["ranking"] is None else stamp_from_text(row["ranking"]),
@@ -418,28 +424,43 @@ def _history_entry_from(row: sqlite3.Row) -> HistoryEntry:
 # -- the columns a Response is kept in ---------------------------------------------------------------------
 
 
-type _ItemColumns = tuple[str | None, int, int, str | None]
-"""`verdict`, `favourite`, `preview_opened`, `entry`."""
+type _ItemColumns = tuple[str | None, int, int, str | None, str | None]
+"""`verdict`, `favourite`, `preview_opened`, `entry`, and `response`, the JSON of the fields no SQL reads."""
+
+type _ScreenColumns = tuple[int | None, str | None]
+"""`submitted`, and `response`, the JSON of the fields no SQL reads."""
 
 
 def _item_columns(judgement: Judgement, shown: Shown) -> _ItemColumns:
-    """One tile's **Response** as the columns SQL reads, or `ValueError` for a shape the log cannot keep."""
+    """One tile's **Response** as its columns, or `ValueError` for a shape the log cannot keep. A field SQL
+    reads has a column; the rest go in `response`, which nothing but this module's reading back opens."""
     response = shown.response
     if judgement.instrument == VERDICT_GRID_V1 and isinstance(response, TileResponse):
         verdict = None if response.verdict is None else response.verdict.value
-        return verdict, int(response.favourite), int(response.preview_opened), None
+        return verdict, int(response.favourite), int(response.preview_opened), None, None
     if judgement.instrument == VERDICT_GRID_V0 and isinstance(response, LegacyTileResponse):
-        return None, 0, 0, response.entry.value
+        return None, 0, 0, response.entry.value, None
+    if judgement.instrument == PICK_V1 and isinstance(response, PickTile):
+        # No preview on a **Line-up**, so none was opened.
+        return None, int(response.favourite), 0, None, _json({_PICKED: response.picked})
     raise _not_kept(judgement, f"a tile response of {response!r}")
 
 
-def _submitted_column(judgement: Judgement) -> int | None:
+def _screen_columns(judgement: Judgement) -> _ScreenColumns:
+    """The judgement-level **Response** as its columns, as `_item_columns` keeps a tile's."""
     response = judgement.response
     if judgement.instrument == VERDICT_GRID_V1 and isinstance(response, GridResponse):
-        return int(response.submitted)
+        return int(response.submitted), None
     if judgement.instrument == VERDICT_GRID_V0 and response is None:
-        return None
+        return None, None
+    if judgement.instrument == PICK_V1 and isinstance(response, PickResponse):
+        return None, _json({_NONE_OF_THESE: response.none_of_these})
     raise _not_kept(judgement, f"a screen response of {response!r}")
+
+
+_PICKED: Final = "picked"
+_NONE_OF_THESE: Final = "none_of_these"
+"""**Pick**'s field names in `response`: `PickTile.picked` and `PickResponse.none_of_these`."""
 
 
 def _not_kept(judgement: Judgement, what: str) -> ValueError:
@@ -454,17 +475,34 @@ def _instrument_of(row: sqlite3.Row) -> Instrument:
 def _item_response(instrument: Instrument, row: sqlite3.Row) -> ItemResponse:
     if instrument == VERDICT_GRID_V0:
         return LegacyTileResponse(entry=LegacyEntry(str(row["entry"])))
-    return TileResponse(
-        verdict=None if row["verdict"] is None else GridVerdict(str(row["verdict"])),
-        favourite=bool(row["favourite"]),
-        preview_opened=bool(row["preview_opened"]),
-    )
+    if instrument == VERDICT_GRID_V1:
+        return TileResponse(
+            verdict=None if row["verdict"] is None else GridVerdict(str(row["verdict"])),
+            favourite=bool(row["favourite"]),
+            preview_opened=bool(row["preview_opened"]),
+        )
+    if instrument == PICK_V1:
+        return PickTile(picked=bool(_fields(row)[_PICKED]), favourite=bool(row["favourite"]))
+    raise _not_read(instrument)
 
 
-def _judgement_response(instrument: Instrument, submitted: object) -> JudgementResponse | None:
+def _judgement_response(instrument: Instrument, row: sqlite3.Row) -> JudgementResponse | None:
     if instrument == VERDICT_GRID_V0:
         return None
-    return GridResponse(submitted=bool(submitted))
+    if instrument == VERDICT_GRID_V1:
+        return GridResponse(submitted=bool(row["submitted"]))
+    if instrument == PICK_V1:
+        return PickResponse(none_of_these=bool(_fields(row)[_NONE_OF_THESE]))
+    raise _not_read(instrument)
+
+
+def _fields(row: sqlite3.Row) -> dict[str, object]:
+    """The `response` column's fields, by name."""
+    return dict(json.loads(str(row["response"])))
+
+
+def _not_read(instrument: Instrument) -> ValueError:
+    return ValueError(f"the Evidence log cannot read {instrument.name} version {instrument.version}")
 
 
 def _whole_seconds(offset: dt.timedelta) -> int:
@@ -526,17 +564,17 @@ def _moment(stored: object) -> dt.datetime:
 _INSERT_JUDGEMENT = """
 INSERT INTO judgements (
     id, format_version, instrument, instrument_version, screen, recorded_at, utc_offset, first_shown_at,
-    app, app_version, submitted, ranking, context
+    app, app_version, submitted, response, ranking, context
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 """
 
 _INSERT_ITEM = """
 INSERT INTO judgement_items (
-    judgement_id, position, item, verdict, favourite, preview_opened, entry, provenance
+    judgement_id, position, item, verdict, favourite, preview_opened, entry, response, provenance
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _SELECT_JUDGEMENTS = "SELECT * FROM judgements ORDER BY recorded_at, id DESC"
@@ -556,12 +594,16 @@ _KEY_START = len(ITEM_SOURCE) + 2
 """Where the bare id starts in a key, counting from 1 as SQLite's `substr` does."""
 
 _SAYS_ABSOLUTE = f"""
-j.instrument = '{VERDICT_GRID_V1.name}'
-AND (j.instrument_version = {VERDICT_GRID_V0.version}
-    OR (j.instrument_version = {VERDICT_GRID_V1.version} AND j.submitted = 1))
+(
+    (j.instrument = '{VERDICT_GRID_V1.name}'
+        AND (j.instrument_version = {VERDICT_GRID_V0.version}
+            OR (j.instrument_version = {VERDICT_GRID_V1.version} AND j.submitted = 1)))
+    OR (j.instrument = '{PICK_V1.name}' AND j.instrument_version = {PICK_V1.version} AND i.favourite = 1)
+)
 """
-"""The **Judgements** whose tiles are absolute Evidence: every converted one, and a version 1 grid screen
-that was submitted. A **Skip** is the rest, and says nothing about any **Item** on it."""
+"""The tiles that are absolute Evidence: every tile of a converted grid **Judgement** and of a version 1
+grid screen that was submitted, and a starred tile on a **Pick**. A **Skip** says nothing about any **Item**
+on it, and a **Pick** nothing about a tile it did not star: what it says of the rest is relative."""
 
 DECIDED = f"""
 SELECT DISTINCT substr(i.item, {_KEY_START})
@@ -572,8 +614,9 @@ WHERE {_SAYS_ABSOLUTE}
 """Every **Wallpaper** that has ever had a **Verdict** or a **Favourite** recorded, by bare id, as a subquery
 for SQL elsewhere to compose: what the **Pool** refuses (ADR 0016, ADR 0027). An unmarked tile on a submitted
 **Batch** is an **Ignore** and counts; a legacy **Clearance** counts, though it resolves to nothing; an
-**Item** only ever on a **Skip** does not. Asked of the log, not of resolution, because a **Clearance**
-resolves to the same nothing as a **Wallpaper** never decided.
+**Item** only ever on a **Skip** does not, nor one only ever on a **Line-up** unless it was starred there.
+Asked of the log, not of resolution, because a **Clearance** resolves to the same nothing as a **Wallpaper**
+never decided.
 """
 
 _RESOLUTION_CTE = f"""
@@ -584,7 +627,8 @@ WITH said AS (
         j.id AS judgement_id,
         j.recorded_at,
         CASE
-            WHEN j.instrument_version = {VERDICT_GRID_V0.version} THEN i.entry
+            WHEN j.instrument = '{VERDICT_GRID_V0.name}' AND j.instrument_version = {VERDICT_GRID_V0.version}
+                THEN i.entry
             WHEN i.favourite = 1 THEN '{Verdict.FAVOURITE.value}'
             ELSE COALESCE(i.verdict, '{Verdict.IGNORE.value}')
         END AS said
@@ -610,8 +654,9 @@ resolution AS (
 """
 """**Verdict resolution**, as the prelude to every query that needs it (ADR 0015, ADR 0027).
 
-`said` is what each tile of a **Judgement** that says anything says, in the grid's four words or a legacy
-`cleared`: the second spelling of the **Reduction** the module docstring names. The **Judgement** with the
+`said` is what each tile that says anything absolute says, in the grid's four words or a legacy `cleared`:
+the second spelling of the **Reductions** the module docstring names. Only a starred tile on a **Pick** says
+anything absolute, and it says **Favourite**. The **Judgement** with the
 latest recorded time decides, and an exact tie falls to the lower **Judgement** id; times are fixed-width
 UTC text, so text order is time order. A legacy **Clearance** as the latest resolves to `NULL`. In SQL
 because **History** filters and pages over the resolved **Verdict**.

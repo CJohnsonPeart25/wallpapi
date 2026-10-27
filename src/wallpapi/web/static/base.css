@@ -38,19 +38,19 @@ body > nav [type="submit"] {
     var(--pico-nav-link-spacing-horizontal);
 }
 
-#mix-switcher {
+:is(#mix-switcher, #lineup-size) {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   margin: 0;
 }
 
-#mix-switcher label {
+:is(#mix-switcher, #lineup-size) label {
   margin: 0;
   white-space: nowrap;
 }
 
-#mix-select {
+:is(#mix-select, #lineup-size-select) {
   width: auto;
 }
 
@@ -404,6 +404,95 @@ article.preview img:fullscreen {
   overflow: hidden;
   border-radius: 0 0 12px 12px;
   background: #0b0b0e; /* the frame's own dark, so the translucent segments read the same in both themes */
+}
+
+/* ---------- the compare tab: a Line-up of equal tiles, laid out from how many there are ---------- */
+
+/*
+  The column count is the Line-up's size's, so this needs no script: two side by side, four as two by two,
+  eight as four by two. The width is capped so every row of tiles fits one screen under the nav and the
+  hint, and the Line-up is centred in what is left: a comparison you have to scroll is not side by side.
+*/
+ul.lineup {
+  --tile-ratio: 3 / 2; /* thumbs.small, as on the grid */
+  --columns: 2;
+  --rows: 1;
+  --gap: 1rem;
+  display: grid;
+  grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
+  gap: var(--gap);
+  max-width: max(
+    30rem,
+    calc((100vh - 15rem) / var(--rows) * 3 / 2 * var(--columns) + (var(--columns) - 1) * var(--gap))
+  );
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+ul.lineup[data-size="3"] { --columns: 3; }
+ul.lineup[data-size="4"] { --rows: 2; }
+ul.lineup[data-size="5"] { --columns: 5; }
+ul.lineup[data-size="6"] { --columns: 3; --rows: 2; }
+ul.lineup:is([data-size="7"], [data-size="8"]) { --columns: 4; --rows: 2; }
+
+ul.lineup > li {
+  position: relative;
+  margin: 0;
+  list-style: none;
+}
+
+ul.lineup > li.placeholder {
+  aspect-ratio: var(--tile-ratio);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+/* The whole tile is the Pick: a Pico button undone down to the thumbnail, which says it is the control by
+   the ring it takes under the pointer or the keyboard's focus. */
+.lineup-tile .pick,
+.lineup-tile .pick:is(:hover, :active, :focus) {
+  --pico-box-shadow: none;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--pico-border-radius);
+  background: none;
+  cursor: pointer;
+}
+
+.lineup-tile .pick:is(:hover, :focus-visible) {
+  outline: 3px solid var(--pico-primary);
+  outline-offset: 3px;
+}
+
+.lineup-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--tile-ratio);
+  object-fit: cover;
+  background: var(--pico-card-sectioning-background-color);
+}
+
+/* The number to press, over the thumbnail's corner, where the prototype had it. */
+.lineup-tile .key {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  padding: 0 0.45rem;
+  border-radius: 0.3rem;
+  background: rgb(0 0 0 / 65%);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Nothing to pass over until a Line-up has loaded. Hidden rather than removed, so the nav does not shift. */
+body:not(:has(#lineup-id)) [data-none-of-these] {
+  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

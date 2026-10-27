@@ -1,5 +1,5 @@
 {#
-  The nav, which is also the dock: the three pages on the left, and on the right whatever the page puts
+  The nav, which is also the dock: the four pages on the left, and on the right whatever the page puts
   in its `actions` block, then the theme button, which is last on every page.
 
   Sticky, so the **Batch** page's Submit stays in reach however far a big **Batch** scrolls, and still
@@ -8,6 +8,7 @@
 <nav class="container-fluid">
   <ul>
     <li><a href="/"{% if page == "batch" %} aria-current="page"{% endif %}>Batches</a></li>
+    <li><a href="/compare"{% if page == "compare" %} aria-current="page"{% endif %}>Compare</a></li>
     <li><a href="/history"{% if page == "history" %} aria-current="page"{% endif %}>History</a></li>
     <li><a href="/settings"{% if page == "settings" %} aria-current="page"{% endif %}>Settings</a></li>
   </ul>

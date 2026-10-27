@@ -1,0 +1,8 @@
+{#
+  The page's theme as the browser resolved it, as an `hx-vals` value, for the Context of every Judgement a
+  page answers: `data-theme` when the theme button chose one, otherwise what the OS asked Pico for. Never
+  stored as a setting, and the server drops anything but light or dark. Captured with `{% set %}` by the page
+  that posts it, the Batch page's Submit and Skip and the compare tab's answers alike.
+#}
+js:{theme: document.documentElement.dataset.theme
+  || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')}

@@ -52,7 +52,7 @@ def build_similarity(root: Path) -> Embeddings:
 
 def build_modules(home: Path | None = None) -> Modules:
     """The real modules over the real collaborators. The seed is fresh per boot unless `WALLPAPI_SEED` pins
-    it; the Refill draws its own stream from the one after it.
+    it; the Refill draws its own stream from the one after it, and the **Line-up** from the one after that.
     """
     root = wallpapi_home() if home is None else home
     root.mkdir(parents=True, exist_ok=True)
@@ -66,6 +66,7 @@ def build_modules(home: Path | None = None) -> Modules:
         similarity=build_similarity(root),
         random_source=SeededRandom(seed),
         refill_random_source=SeededRandom(seed + 1),
+        lineup_random_source=SeededRandom(seed + 2),
         clock=SystemClock(),
     )
 
@@ -95,7 +96,8 @@ def main(
     commands = parser.add_subparsers(dest="command", metavar="command")
     commands.add_parser(
         "reset-pool",
-        help="Empty the Pool and discard the live Batch; the refill restocks to the Pool target size.",
+        help="Empty the Pool and discard the live Batch and Line-up; the refill restocks to the Pool target "
+        "size.",
     )
     evaluate = commands.add_parser(
         "evaluate",
@@ -116,6 +118,7 @@ def main(
     reset = workflows.reset_pool(build())
     print(f"Pool members removed: {reset.members}")
     print(f"Live Batch discarded: {'yes' if reset.batches_discarded else 'no'}")
+    print(f"Live Line-up discarded: {'yes' if reset.lineups_discarded else 'no'}")
     print(f"Thumbnails evicted: {len(reset.eviction.evicted)}")
 
 

@@ -1,7 +1,7 @@
 """The **Reductions**: each **Judgement** to its Evidence, through `evidence()`, the one function callers see.
 
 Plain data in and out: a **Judgement** written out by hand, and the Evidence it must come to. The verdict
-grid's two versions are the only **Reductions** built.
+grid's two versions and **Pick** are the **Reductions** built.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from collections.abc import Mapping
 
 import pytest
 
-from wallpapi.taste.evidence import AbsoluteEvidence
+from wallpapi.taste.evidence import AbsoluteEvidence, RelativeEvidence
 from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
+from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.reductions import UnknownInstrument, evidence
 from wallpapi.taste.verdict_grid import (
     VERDICT_GRID_V0,
@@ -189,7 +190,7 @@ def test_each_piece_carries_its_judgements_id_and_recorded_time_in_judgement_ord
 
 @pytest.mark.parametrize(
     "instrument",
-    [Instrument("verdict grid", 2), Instrument("pick", 1), Instrument("Verdict grid", 1)],
+    [Instrument("verdict grid", 2), Instrument("order", 1), Instrument("Verdict grid", 1)],
     ids=["a later version", "an instrument not built", "a misspelt name"],
 )
 def test_an_unknown_instrument_raises(instrument: Instrument) -> None:
@@ -199,6 +200,78 @@ def test_an_unknown_instrument_raises(instrument: Instrument) -> None:
         evidence([judgement])
 
 
+# -- Pick ----------------------------------------------------------------------------------------------
+
+
+PICKED = PickTile(picked=True)
+PASSED = PickTile()
+ANSWERED = PickResponse()
+NONE_OF_THESE = PickResponse(none_of_these=True)
+
+
+def picked(tiles: Mapping[str, ItemResponse], response: JudgementResponse | None = ANSWERED) -> Judgement:
+    """A **Pick** of a **Line-up** on the compare **Screen**, its tiles in on-screen order."""
+    return judged(PICK_V1, tiles, response, screen="compare")
+
+
+def pairs(judgement: Judgement) -> list[tuple[str, str, float]]:
+    """What the **Judgement** comes to, as (winner, loser, strength) in the order emitted."""
+    pieces = evidence([judgement])
+    assert all(isinstance(piece, RelativeEvidence) for piece in pieces)
+    return [
+        (piece.winner, piece.loser, piece.strength) for piece in pieces if isinstance(piece, RelativeEvidence)
+    ]
+
+
+def test_the_pick_beats_each_other_tile_at_strength_one() -> None:
+    """Three pairs from a **Line-up** of four, the losers in on-screen order, and no absolute Evidence: a
+    **Pick** says which was best, not what any of them is worth."""
+    judgement = picked(
+        {"wallhaven:a": PASSED, "wallhaven:b": PICKED, "wallhaven:c": PASSED, "wallhaven:d": PASSED}
+    )
+
+    assert pairs(judgement) == [
+        ("wallhaven:b", "wallhaven:a", 1.0),
+        ("wallhaven:b", "wallhaven:c", 1.0),
+        ("wallhaven:b", "wallhaven:d", 1.0),
+    ]
+
+
+def test_a_pick_carries_its_judgements_id_and_recorded_time() -> None:
+    judgement = picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED})
+
+    assert evidence([judgement]) == [
+        RelativeEvidence(
+            winner="wallhaven:a", loser="wallhaven:b", strength=1.0, judgement_id=judgement.id, recorded_at=AT
+        )
+    ]
+
+
+def test_none_of_these_emits_nothing() -> None:
+    """Not an **Ignore**: nothing is said about any tile, and they all stay in the **Pool**."""
+    judgement = picked({"wallhaven:a": PASSED, "wallhaven:b": PASSED}, NONE_OF_THESE)
+
+    assert evidence([judgement]) == []
+
+
+def test_a_starred_tile_is_a_favourite_beside_whatever_was_picked() -> None:
+    """A **Favourite** on any tile of any **Instrument** is absolute 100, the grid's own, and it says nothing
+    about the **Pick**: a starred loser is still beaten, and a star on a "none of these" still counts."""
+    starred_loser = picked({"wallhaven:a": PICKED, "wallhaven:b": PickTile(favourite=True)})
+    starred_winner = picked({"wallhaven:a": PickTile(picked=True, favourite=True), "wallhaven:b": PASSED})
+    starred_none = picked({"wallhaven:a": PickTile(favourite=True), "wallhaven:b": PASSED}, NONE_OF_THESE)
+
+    assert evidence([starred_loser]) == [
+        AbsoluteEvidence("wallhaven:b", 100.0, judgement_id=starred_loser.id, recorded_at=AT),
+        RelativeEvidence("wallhaven:a", "wallhaven:b", 1.0, judgement_id=starred_loser.id, recorded_at=AT),
+    ]
+    assert evidence([starred_winner]) == [
+        AbsoluteEvidence("wallhaven:a", 100.0, judgement_id=starred_winner.id, recorded_at=AT),
+        RelativeEvidence("wallhaven:a", "wallhaven:b", 1.0, judgement_id=starred_winner.id, recorded_at=AT),
+    ]
+    assert strengths(starred_none) == [("wallhaven:a", 100.0)]
+
+
 @pytest.mark.parametrize(
     "judgement",
     [
@@ -206,12 +279,24 @@ def test_an_unknown_instrument_raises(instrument: Instrument) -> None:
         judged(VERDICT_GRID_V1, {"wallhaven:a": TileResponse()}),
         judged(VERDICT_GRID_V0, {"wallhaven:a": TileResponse()}),
         judged(VERDICT_GRID_V0, {"wallhaven:a": LegacyTileResponse(LegacyEntry.LIKE)}, SUBMITTED),
+        picked({"wallhaven:a": PICKED, "wallhaven:b": PICKED}),
+        picked({"wallhaven:a": PASSED, "wallhaven:b": PASSED}),
+        picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED}, NONE_OF_THESE),
+        picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED}, None),
+        picked({"wallhaven:a": PICKED, "wallhaven:b": PASSED}, SUBMITTED),
+        picked({"wallhaven:a": PICKED, "wallhaven:b": TileResponse()}),
     ],
     ids=[
         "v1 with a converted tile",
         "v1 with no screen response",
         "v0 with a v1 tile",
         "v0 with a screen response",
+        "a pick of two winners",
+        "a pick of no winner, not none of these",
+        "a pick with a winner and none of these",
+        "a pick with no screen response",
+        "a pick with a grid's screen response",
+        "a pick with a grid tile",
     ],
 )
 def test_a_response_not_in_its_instruments_format_is_refused(judgement: Judgement) -> None:

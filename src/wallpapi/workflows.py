@@ -16,11 +16,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from wallpapi import batches, evidence_log, pool, settings, storage, thumbnails
+from wallpapi import batches, evidence_log, lineup, pool, settings, storage, thumbnails
 from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
 from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload
+from wallpapi.lineup import LineupRefused, Picked
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
 from wallpapi.thumbnails import ThumbnailEviction
@@ -71,6 +72,26 @@ def skip(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> Subm
         return modules.batches.skip(write, batch_id, theme=theme)
 
 
+def pick(
+    modules: Modules, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+) -> Picked | LineupRefused:
+    """Answer the live **Line-up** with `winner`, or "none of these" with `None`, with the page's `theme`.
+
+    No tail: nothing left the **Pool** and nothing was decided, so there is nothing to reconcile or evict.
+    A star on a **Line-up** tile will change that (8pa.10): a **Pick** with a starred tile is then followed
+    by **Library** reconciliation, as a submission is.
+    """
+    with storage.write(modules.connect()) as write:
+        return modules.lineups.pick(write, lineup_id, winner, theme=theme)
+
+
+def choose_lineup_size(modules: Modules, size: str) -> Settings | SettingsRefused:
+    """Set the **Line-up** size, or say why not. It changes no **Filter**, so the **Pool** is left as it is,
+    and the live **Line-up** keeps the size it was drawn with."""
+    with storage.write(modules.connect()) as write:
+        return settings.update(write, lineup_size=size)
+
+
 def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:
     """Change a **Wallpaper**'s **Verdict** from **History**, then reconcile the **Library**. An **Ignore** is
     how **History** withdraws a **Verdict**. Returns the line **History** now shows.
@@ -116,15 +137,18 @@ def delete_mix(modules: Modules, name: str) -> SettingsRefused | None:
 
 @dataclass(frozen=True, slots=True)
 class PoolReset:
-    """What a **Pool reset** removed: the **Pool** members, the unsubmitted **Batches** and the thumbnails."""
+    """What a **Pool reset** removed: the **Pool** members, the unsubmitted **Batches**, the live
+    **Line-up** and the thumbnails."""
 
     members: int
     batches_discarded: int
+    lineups_discarded: int
     eviction: ThumbnailEviction
 
 
 def reset_pool(modules: Modules) -> PoolReset:
-    """Empty the **Pool** and discard the live **Batch** in one transaction, then evict thumbnails (ADR 0025).
+    """Empty the **Pool** and discard the live **Batch** and **Line-up** in one transaction, then evict
+    thumbnails (ADR 0025).
 
     The refill restocks to the **Pool target size** on its next look. Nothing is reconciled: no **Verdict**
     changes. Eviction comes after the commit, when what was purged is no longer awaited.
@@ -133,8 +157,11 @@ def reset_pool(modules: Modules) -> PoolReset:
     with storage.write(connection) as write:
         members = pool.clear(write)
         discarded = batches.discard_live(write)
+        lineups_discarded = lineup.discard_live(write)
     eviction = modules.thumbnails.evict(connection, thumbnails.cap_bytes(settings.get(connection)))
-    return PoolReset(members=members, batches_discarded=discarded, eviction=eviction)
+    return PoolReset(
+        members=members, batches_discarded=discarded, lineups_discarded=lineups_discarded, eviction=eviction
+    )
 
 
 def download_favourites(modules: Modules) -> FavouriteDownload:

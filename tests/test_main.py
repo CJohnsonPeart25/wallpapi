@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 
 from tests.conftest import Harness, live, make_harness, submit_with
 from tests.fakes import catalogue_of
-from wallpapi import batches, pool, settings, workflows
+from wallpapi import batches, lineup, pool, settings, workflows
 from wallpapi.compose import Modules
 from wallpapi.main import main
 from wallpapi.model import Verdict
@@ -41,22 +41,26 @@ def test_reset_pool_resets_through_the_modules_it_builds_and_says_what_it_remove
     stocked: Harness, capsys: pytest.CaptureFixture[str]
 ) -> None:
     live(stocked)
+    stocked.modules.lineups.next(stocked.connect())
 
     main(["reset-pool"], build=lambda: stocked.modules, serve=never_serve)
 
     assert pool.members(stocked.connect()) == []
-    assert batches.showing(stocked.connect()) == set()
+    assert batches.showing(stocked.connect()) == lineup.showing(stocked.connect()) == set()
     assert capsys.readouterr().out == (
-        "Pool members removed: 6\nLive Batch discarded: yes\nThumbnails evicted: 6\n"
+        "Pool members removed: 6\nLive Batch discarded: yes\nLive Line-up discarded: yes\n"
+        "Thumbnails evicted: 6\n"
     )
 
 
-def test_reset_pool_says_when_there_was_no_live_batch(
+def test_reset_pool_says_when_there_was_no_live_batch_or_lineup(
     stocked: Harness, capsys: pytest.CaptureFixture[str]
 ) -> None:
     main(["reset-pool"], build=lambda: stocked.modules, serve=never_serve)
 
-    assert "Live Batch discarded: no\n" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Live Batch discarded: no\n" in out
+    assert "Live Line-up discarded: no\n" in out
 
 
 def test_no_command_serves_and_builds_nothing() -> None:

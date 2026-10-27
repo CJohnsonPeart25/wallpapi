@@ -40,11 +40,12 @@ from tests.fakes import (
     StubEmbed,
     catalogue_of,
 )
-from wallpapi import batches, evidence_log, pool, settings, storage, workflows
+from wallpapi import batches, evidence_log, lineup, pool, settings, storage, workflows
 from wallpapi.batches import Batch, Batches, SubmissionRefused, Submitted
 from wallpapi.compose import Modules, compose
-from wallpapi.evidence_log import HistoryEntry, HistoryRefused
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
+from wallpapi.lineup import Lineup, LineupRefused, Lineups, Picked
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EMBED_BATCH, Embeddings
@@ -182,6 +183,7 @@ def make_harness(
         similarity=embeddings,
         random_source=SeededRandom(seed),
         refill_random_source=SeededRandom(seed),
+        lineup_random_source=SeededRandom(seed),
         clock=clock,
     )
     harness = Harness(
@@ -464,6 +466,58 @@ def batches_rig(
     with closing(storage.connect(database)) as connection:
         storage.migrate(connection)
         yield BatchesRig(connection, FakeSimilarities(similarities), FakeClock(FIXED_NOW))
+
+
+@dataclass
+class LineupRig(BatchesRig):
+    """`Lineups` beside the `Batches` it draws with, over the same database and fakes: the **Line-up** is
+    drawn as a **Batch** is, by `Batches.ranked` and the **Embeddings**, so a **Batch** can be live beside it.
+    `next` is still the **Batch**; `lineup` is the **Line-up**."""
+
+    lineups_minted: list[str] = field(default_factory=list[str])
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        ids = count(1)
+
+        def new_id() -> str:
+            self.lineups_minted.append(f"lineup-{next(ids)}")
+            return self.lineups_minted[-1]
+
+        self.lineups = Lineups(
+            self.batches.ranked,
+            self.embeddings,
+            lambda: self.status,
+            self.clock,
+            SeededRandom(2),
+            new_id=new_id,
+        )
+
+    def lineup(self) -> Lineup:
+        """The live **Line-up**, minted if there is none, as `/compare/lineup` serves it."""
+        shown = self.lineups.next(self.connection)
+        assert isinstance(shown, Lineup), shown
+        return shown
+
+    def pick(
+        self, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+    ) -> Picked | LineupRefused:
+        """Answer the **Line-up** with `winner`, or "none of these" with `None`, in its own write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.pick(write, lineup_id, winner, theme=theme)
+
+    def discard_lineup(self) -> int:
+        """Drop the live **Line-up**, as a **Pool reset** does."""
+        with storage.write(self.connection) as write:
+            return lineup.discard_live(write)
+
+
+@contextmanager
+def lineup_rig() -> Generator[LineupRig]:
+    """A `LineupRig` over a migrated in-memory database, nothing in the **Pool**."""
+    with closing(storage.connect(":memory:")) as connection:
+        storage.migrate(connection)
+        yield LineupRig(connection, FakeSimilarities(None), FakeClock(FIXED_NOW))
 
 
 def decide(connection: sqlite3.Connection, clock: Clock, verdict: Verdict, *wallpaper_ids: str) -> None:

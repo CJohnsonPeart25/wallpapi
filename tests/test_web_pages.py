@@ -31,7 +31,7 @@ def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(web: We
     files, and the grid script fetches nothing of its own."""
     _, client = web
 
-    bodies = {path: client.get(path).text for path in ("/", "/history", "/settings")}
+    bodies = {path: client.get(path).text for path in ("/", "/compare", "/history", "/settings")}
     loaded = {asset for body in bodies.values() for asset in ASSETS.findall(body)}
     answers = {asset: client.get(asset) for asset in loaded}
 
@@ -164,6 +164,54 @@ def test_submit_and_skip_post_the_theme_the_browser_resolved(web: Web) -> None:
         assert vals.group(1).lstrip().startswith("js:{theme:")
         assert "dataset.theme" in vals.group(1)
         assert "matchMedia('(prefers-color-scheme: dark)')" in vals.group(1)
+
+
+def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_button_or_0(web: Web) -> None:
+    """htmx attributes, no script of its own: each tile posts itself as the winner on a click or on its
+    number key, the nav's "none of these" posts no winner on a click or 0, and every answer carries the
+    **Line-up** ID and the theme, targets `#lineup` and is dropped while another is in flight. A key is no
+    answer with a modifier held, held down, or typed into a field."""
+    _, client = web
+    shell = client.get("/compare").text
+    fragment = client.get("/compare/lineup?instrument=pick").text
+
+    tiles = re.findall(r"<button\b[^>]*data-wallpaper-id=[^>]*>", fragment)
+    none = re.search(r"<form\b[^>]*data-none-of-these[^>]*>", shell)
+    assert len(tiles) == 4
+    assert none is not None
+    answers = [*tiles, none.group(0)]
+    for number, control in enumerate(answers, start=1):
+        key = number % len(answers)
+        trigger = re.search(r'hx-trigger="([^"]*)"', control)
+        assert trigger is not None
+        assert f"keydown[key=='{key}'&&" in trigger.group(1)
+        assert trigger.group(1).endswith("] from:body")
+        for guard in ("!ctrlKey", "!metaKey", "!altKey", "!repeat", "input,select,textarea"):
+            assert guard in trigger.group(1)
+        assert 'hx-post="/compare/pick"' in control
+        assert 'hx-target="#lineup"' in control
+        assert 'hx-sync="#lineup:drop"' in control
+        assert 'hx-include="#lineup-id"' in control
+    for tile in tiles:
+        winner = re.search(r'data-wallpaper-id="(\w+)"', tile)
+        assert winner is not None
+        assert f'hx-vals=\'{{"wallpaper_id": "{winner.group(1)}"}}\'' in tile
+    assert re.search(r'<ul class="lineup"[^>]*hx-vals="js:\{theme:', fragment)
+    assert re.search(r'hx-vals="js:\{theme:', none.group(0))
+    assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
+
+
+def test_the_lineup_size_switcher_offers_two_to_eight_and_marks_the_stored_size(db_path: Path) -> None:
+    harness = make_harness(db_path)
+    workflows.save_settings(harness.modules, lineup_size=6)
+
+    with serving(harness) as client:
+        shell = client.get("/compare").text
+
+    switcher = shell[shell.index('<section id="lineup-size"') : shell.index("</section>")]
+    assert re.findall(r'<option value="(\d)"', switcher) == [str(n) for n in range(2, 9)]
+    assert 'value="6" selected' in switcher
+    assert shell.count('<li class="placeholder">') == 6
 
 
 def test_each_tile_says_its_zone_in_words(db_path: Path) -> None:
