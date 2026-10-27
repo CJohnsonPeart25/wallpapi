@@ -36,9 +36,13 @@ Locked. The original spec issue lists it under "Technology"; if the two disagree
 
 What the page does to the server is an htmx attribute; what can be CSS is CSS. `web/static/wallpapi.js` sizes
 the **Batch** grid and nothing else. Alpine owns four inline `x-data` islands (the preview `<dialog>`, the
-**Mix** dropdown, the theme button, each settings **Mix** row's total), never on markup htmx replaces.
+**Mix** dropdown, the theme button, each settings **Mix** row's total), never on markup htmx replaces. A key
+is an htmx trigger on its control, `keydown[key=='0'&&{{ key_guard }}] from:body` with the guard from
+`key_guard.html`; F, the number keys, 0 and Enter all bind this way.
 
-Run **single-worker**: `--workers N` is N refill threads and N writers on one SQLite file.
+Run **single-worker**: `--workers N` is N refill threads and N writers on one SQLite file. The commands
+`reset-pool` and `evaluate` build without the background loops, so they run beside a server; `evaluate`
+replays the **Evidence log** read-only to test a candidate `--radius` or `--decay`.
 
 **Done** means `uv run lefthook run ci` exits 0: `ruff check`, `ruff format`, `pyright` strict and `pytest`,
 the smoke test that serves every page among them. The lefthook hooks and CI run them, so nobody re-runs them
@@ -101,7 +105,8 @@ Decided, not built. Defer explicitly; do not quietly forget.
 - Renaming a **Mix**: delete and add covers it; a rename must move `active_mix` in the same transaction.
 - **Evidence log** backup: `VACUUM INTO`, the database being one file.
 - Evicting a thumbnail on a **History** edit: the next submission's eviction picks it up (`thumbnails.py`).
-- Fading old **Verdicts**: a half-life in **Judgements** since, not time; nothing real to tune it against yet.
+- Fading old **Verdicts** and **Wear**: a half-life in **Judgements** since, not time; nothing real to tune
+  either against yet (ADR 0028).
 - Showing decided **Wallpapers** again: must answer near-duplicates; dormant pre-marking waits for it.
 - **Dud** build-up in the **Pool**: for now, **Ignore** a page of them and submit, or reset the **Pool**
   (`reset-pool`, ADR 0025). Not **Ban**: it spreads −100 and grows the **Dud** zone (ADR 0023).
