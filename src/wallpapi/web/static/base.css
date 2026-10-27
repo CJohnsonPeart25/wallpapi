@@ -155,7 +155,7 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
   text-transform: uppercase;
 }
 
-/* ---------- the rail: three segments across the foot of the thumbnail, one per verdict ---------- */
+/* ---------- the rail: a segment per verdict; Like and Ban on a tile, all three on the preview ---------- */
 
 .tile .verdicts {
   position: absolute;
@@ -208,6 +208,52 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
 
 :is(.tile .verdict, .preview-verdict).marked {
   box-shadow: inset 0 0 0 2px var(--pico-contrast);
+}
+
+/* ---------- the star: Favourite on any tile that holds one (star.html) ---------- */
+
+/* The prototype's star: a round dark button in the top corner the Zone label leaves free, clear of the rail.
+   Unstarred it waits for the pointer or keyboard focus, as the rail does; starred it stays, in the favourite
+   colour, so a starred tile reads from across the screen. Keyed to the star's own aria-pressed and its
+   parent, never to the grid, so any tile can hold one. */
+.star {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background-color: rgb(0 0 0 / 60%);
+  color: #fff;
+  font-size: 0; /* hides the word, as the rail does, and keeps it for anything reading the page aloud */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.star::before {
+  content: "★";
+  display: block;
+  font-size: 1.1rem;
+  line-height: 2rem;
+  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 55%));
+}
+
+:hover > .star,
+:focus-within > .star,
+.star[aria-pressed="true"] {
+  opacity: 1;
+}
+
+.star:hover,
+.star[aria-pressed="true"] {
+  color: var(--favourite);
+}
+
+.star:hover {
+  background-color: rgb(0 0 0 / 80%);
 }
 
 /* ---------- History: a Pico table; only the thumbnail and the row's controls need saying ---------- */
@@ -361,7 +407,8 @@ article.preview img:fullscreen {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tile .verdicts {
+  .tile .verdicts,
+  .star {
     transition: none;
   }
 }

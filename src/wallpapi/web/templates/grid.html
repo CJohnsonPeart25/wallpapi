@@ -23,7 +23,7 @@
         hx-target="#batch-grid"
         hx-swap="outerHTML"
         hx-sync="#batch-grid:replace"
-        hx-disabled-elt=".verdict"
+        hx-disabled-elt=".verdict, .star"
       >{{ choice }} all</button>
     {% endfor %}
     {# Select-none posts an empty **Verdict**, the same clear a marked tile control posts. #}
@@ -36,7 +36,7 @@
       hx-target="#batch-grid"
       hx-swap="outerHTML"
       hx-sync="#batch-grid:replace"
-      hx-disabled-elt=".verdict"
+      hx-disabled-elt=".verdict, .star"
     >clear all</button>
   </div>
   <ul class="batch">

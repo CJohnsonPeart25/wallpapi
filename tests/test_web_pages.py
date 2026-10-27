@@ -8,6 +8,7 @@ modules composed as the app composes them (ADR 0019).
 
 from __future__ import annotations
 
+import html
 import re
 from pathlib import Path
 
@@ -45,10 +46,11 @@ def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(web: We
 
 
 def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web) -> None:
-    """**Ignore** has no control: it is what leaving a tile alone says. One post per tile at a time
-    (`closest .tile:drop`): with a sync per button, Ban clicked while Like is in flight lands on a detached
-    tile and the screen shows **Like** while the server holds **Ban**. Bulk and tile controls disable each
-    other. The **Batch** has its select-all and select-none controls once."""
+    """The star and the rail's **Like** and **Ban**. **Ignore** has no control: it is what leaving a tile
+    alone says. One post per tile at a time (`closest .tile:drop`): with a sync per button, Ban clicked
+    while Like is in flight lands on a detached tile and the screen shows **Like** while the server holds
+    **Ban**. Bulk and tile controls, the star among them, disable each other. The **Batch** has its
+    select-all and select-none controls once."""
     harness, client = web
     body = client.get("/batch").text
     shown = live(harness).wallpapers[0].id
@@ -68,8 +70,49 @@ def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web)
         bulk = re.search(rf'<button\b[^>]*data-bulk-verdict="{choice}"[^>]*>', body)
         assert bulk is not None
         assert 'hx-sync="#batch-grid:replace"' in bulk.group(0)
-        assert 'hx-disabled-elt=".verdict"' in bulk.group(0)
+        assert 'hx-disabled-elt=".verdict, .star"' in bulk.group(0)
     assert 'data-bulk-verdict="ignore"' not in body
+
+
+def test_every_tile_has_one_star_beside_its_rail_that_f_presses_on_the_focused_or_hovered_tile(
+    web: Web,
+) -> None:
+    """The star is a direct child of its tile, outside the rail, since that is how its F key finds the tile;
+    F is an htmx trigger on the body beside the click, so neither `wallpapi.js` nor a new Alpine island
+    decides it. Never with a modifier (Ctrl+F is the browser's find), on a held key, or in a field."""
+    harness, client = web
+    body = client.get("/batch").text
+
+    tiles = re.findall(r'<li class="tile".*?</li>', body, flags=re.DOTALL)
+    assert len(tiles) == len(live(harness).wallpapers)
+    for tile in tiles:
+        (star,) = re.findall(r'<button\b[^>]*class="star"[^>]*>', tile)
+        assert 'data-verdict="favourite"' in star
+        rail = tile[tile.index('<div class="verdicts">') :]
+        assert 'class="star"' not in rail
+        assert re.findall(r'data-verdict="(\w+)"', rail) == ["like", "ban"]
+        trigger = html.unescape(re.search(r'hx-trigger="([^"]*)"', star).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+        assert trigger.startswith("click, keydown[")
+        assert trigger.endswith("] from:body")
+        for condition in ("'f'", "!repeat", "!ctrlKey", "!metaKey", "!altKey", "this.parentElement"):
+            assert condition in trigger
+        for state in (":focus-visible", ":hover"):
+            assert state in trigger
+
+
+def test_the_preview_rail_marks_through_the_tiles_own_controls_the_star_among_them(web: Web) -> None:
+    """The rail posts nothing of its own: it clicks the tile's control for the same **Verdict**, which for a
+    **Favourite** is the star, not a rail segment; after any swap it reads the tile's mark back."""
+    _, client = web
+    shell = client.get("/").text
+
+    dialog = shell[shell.index("<dialog") : shell.index("</dialog>")]
+    rail = re.findall(r'class="preview-verdict"\s+data-verdict="(\w+)"', dialog)
+    assert rail == ["favourite", "like", "ban"]
+    assert "querySelector('[data-verdict=' + verdict + ']')" in dialog
+    assert "'.verdict[data-verdict=" not in dialog
+    assert "tile.dataset.draftVerdict" in dialog
+    assert 'x-on:htmx:after-settle.camel.window="sync()"' in dialog
 
 
 def test_the_preview_fetches_nothing_until_it_is_opened(web: Web) -> None:
