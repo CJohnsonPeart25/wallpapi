@@ -17,11 +17,11 @@ import pytest
 
 from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, live, make_harness
 from tests.fakes import FakeLibraryWriter, catalogue_of, wallpaper
-from wallpapi import evidence_log, settings, workflows
+from wallpapi import evidence_log, lineup, settings, workflows
 from wallpapi.batches import Batch
 from wallpapi.evidence_log import HistoryEntry
 from wallpapi.library import Library
-from wallpapi.lineup import Lineup, Ordered, Picked
+from wallpapi.lineup import Gauntleted, Lineup, Ordered, Picked
 from wallpapi.model import Verdict
 
 ONE, TWO, THREE = (w.id for w in catalogue_of(3))
@@ -343,6 +343,46 @@ def test_a_lineup_answered_with_a_star_reconciles_the_library_after_the_evidence
     assert sorted(w.wallpaper_id for w in harness.library.written) == sorted(
         [failing, starred.wallpapers[0].id]
     )
+
+
+def test_a_gauntlet_draws_the_next_around_its_winner_then_reconciles_the_library_only_when_starred(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """**Gauntlet**'s tail: the next **Line-up** is drawn as the answer commits, keeping the winner where it
+    won, so the page's next ask finds it live; after "none of these" nothing is drawn until asked. A starred
+    answer then reconciles, a failed download leaving the **Judgement** standing; an unstarred one, or a
+    "none of these", leaves the failed download alone, and the next starred one picks it up beside its own."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    first = live_lineup(harness)
+    _, b, _, d = (w.id for w in first.wallpapers)
+    harness.library.fail_for.add(d)
+    workflows.star_lineup_tile(harness.modules, first.id, d, starred=True)
+
+    answered = workflows.gauntlet(harness.modules, first.id, b)
+
+    assert isinstance(answered, Gauntleted)
+    assert answered.starred == (d,)
+    second = lineup.live(harness.connect())
+    assert second is not None
+    assert (second.champion, second.streak, second.wallpapers[1].id) == (b, 1, b)
+    assert evidence_log.favourites(harness.connect()) == [d]
+    assert harness.library.written == []
+
+    harness.library.fail_for.clear()
+    workflows.gauntlet(harness.modules, second.id, b)
+    third = lineup.live(harness.connect())
+    assert third is not None
+    assert (third.champion, third.streak) == (b, 2)
+    workflows.gauntlet(harness.modules, third.id, None)
+
+    assert lineup.live(harness.connect()) is None
+    assert harness.library.written == []
+
+    starred = live_lineup(harness)
+    workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[0].id, starred=True)
+    workflows.gauntlet(harness.modules, starred.id, None)
+
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted([d, starred.wallpapers[0].id])
 
 
 def test_an_order_answered_with_a_star_reconciles_the_library_whether_ranking_or_submitting_answered_it(
