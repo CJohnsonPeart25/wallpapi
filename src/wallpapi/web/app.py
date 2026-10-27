@@ -25,10 +25,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import Lifespan
 
-from wallpapi import batches, decisions, pool, settings, workflows
+from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
-from wallpapi.decisions import HistoryEntry, HistoryRefused, ResolvedVerdict
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import (
     FORM_FIELDS,
@@ -318,7 +318,7 @@ def history_page(request: Request, modules: Wired, verdict: str = "", page: int 
     """**History**, filtered by resolved **Verdict** and paged; a page out of range is clamped."""
     connection = modules.connect()
     chosen = parse_verdict(verdict, required=False)
-    listing = decisions.history(connection, chosen, page)
+    listing = evidence_log.history(connection, chosen, page)
     return templates.TemplateResponse(
         request,
         "history.html",
@@ -326,7 +326,7 @@ def history_page(request: Request, modules: Wired, verdict: str = "", page: int 
             "history": listing,
             "rows": _history_rows(connection, listing.entries),
             "verdict": chosen,
-            "verdicts": decisions.HISTORY_FILTERS,
+            "verdicts": evidence_log.HISTORY_FILTERS,
         },
     )
 

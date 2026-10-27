@@ -19,9 +19,9 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import Harness, batch_id_of, favourite, judge, live, make_harness, serving
 from tests.fakes import STUB_DIRECTION, THUMBNAIL_BYTES, catalogue_of, wallpaper
-from wallpapi import batches, decisions, pool, settings, workflows
+from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import SubmissionRefused
-from wallpapi.decisions import HISTORY_PAGE_SIZE, HistoryRefused
+from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
 from wallpapi.web.app import REFUSALS
@@ -176,7 +176,7 @@ def test_posting_the_same_batch_twice_is_refused_and_still_refetches(web: Web) -
     assert second.status_code == HTTPStatus.CONFLICT
     assert "already" in second.text.lower()
     assert second.headers["HX-Trigger"] == "batch-submitted"
-    assert len(decisions.entries(harness.connect())) == 8
+    assert [len(j.shown) for j in evidence_log.judgements(harness.connect())] == [8]
 
 
 def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None:
@@ -191,7 +191,7 @@ def test_a_skip_records_nothing_says_so_and_triggers_a_refetch(web: Web) -> None
     assert response.headers["HX-Trigger"] == "batch-submitted"
     assert "Skipped — nothing was recorded." in response.text
     assert batch_id_of(following) != shown
-    assert decisions.entries(harness.connect()) == []
+    assert evidence_log.judgements(harness.connect()) == []
 
 
 def test_skipping_the_same_batch_twice_is_refused_in_words_and_still_refetches(web: Web) -> None:
@@ -264,14 +264,18 @@ def test_a_post_no_control_sends_is_refused_and_changes_nothing(
     harness, client = web
     judge(harness, wp0000=Verdict.LIKE)
     batch_id = batch_id_of(client.get("/batch").text)
-    before = (decisions.entries(harness.connect()), live(harness).drafts, settings.get(harness.connect()))
+    before = (
+        evidence_log.judgements(harness.connect()),
+        live(harness).drafts,
+        settings.get(harness.connect()),
+    )
 
     response = client.post(path, data=data(batch_id))
 
     assert response.status_code == status
     assert said in response.text
     assert (
-        decisions.entries(harness.connect()),
+        evidence_log.judgements(harness.connect()),
         live(harness).drafts,
         settings.get(harness.connect()),
     ) == before
@@ -487,7 +491,9 @@ def test_the_history_filter_narrows_the_listing_and_an_unknown_one_is_refused(db
 def test_history_is_paged_and_the_links_carry_the_filter(db_path: Path) -> None:
     count = HISTORY_PAGE_SIZE + 1
     harness = make_harness(db_path, catalogue=catalogue_of(count), page_size=count)
-    judge(harness, **{f"wp{n:04d}": Verdict.LIKE for n in range(count)})
+    for n in range(count):
+        harness.clock.advance(1)
+        judge(harness, **{f"wp{n:04d}": Verdict.LIKE})
 
     with serving(harness) as client:
         first = client.get("/history?verdict=like").text
@@ -515,7 +521,7 @@ def test_a_history_edit_answers_with_its_row_alone(db_path: Path, verdict: Verdi
     assert f'data-resolved-verdict="{verdict.value}"' in response.text
     assert re.sub(r"\{#.*?#\}", "", response.text, flags=re.S).lstrip().startswith("<tr")
     assert response.text.rstrip().endswith("</tr>")
-    assert decisions.resolve(harness.connect(), ["judged"])["judged"].verdict is verdict
+    assert evidence_log.resolve(harness.connect(), ["judged"])["judged"].verdict is verdict
 
 
 # -- settings ----------------------------------------------------------------------------------------

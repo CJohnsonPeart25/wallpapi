@@ -4,7 +4,7 @@ cap behind it, and the background downloader that fetches every **Pool** member'
 The cache directory is handed in. Each file is named by its **Wallpaper** id, which is the whole mapping
 from a file to a **Wallpaper**, and the **Similarity provider** reads the same directory by the same rule.
 What is still to be shown and what has an **Explicit Verdict** standing are asked of `pool`, `batches` and
-`decisions`; nothing here reads their tables.
+`evidence_log`; nothing here reads their tables.
 
 Eviction runs at the tail of a submission and never on a **History** edit. A **Wallpaper** with an
 **Explicit Verdict** is never evicted, by either pass, because **History** renders its thumbnail: a cache
@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from wallpapi import batches, decisions, pool, settings
+from wallpapi import batches, evidence_log, pool, settings
 from wallpapi.files import url_suffix, write_atomically
 from wallpapi.model import Wallpaper
 from wallpapi.taste.clock import Clock
@@ -138,7 +138,7 @@ class Thumbnails:
         if not cached:
             return _NOTHING_EVICTED
 
-        decided = decisions.explicitly_decided(connection)
+        decided = evidence_log.explicitly_decided(connection)
         # The live **Batch** is named apart from the **Pool**: a **Filter** change prunes only the **Pool**.
         awaiting = {w.id for w in pool.members(connection)} | batches.showing(connection)
         evicted: list[str] = []

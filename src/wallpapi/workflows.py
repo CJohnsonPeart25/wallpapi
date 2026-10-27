@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from wallpapi import batches, decisions, pool, settings, storage, thumbnails
+from wallpapi import batches, evidence_log, pool, settings, storage, thumbnails
 from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
-from wallpapi.decisions import HistoryEntry, HistoryRefused
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused
 from wallpapi.library import FavouriteDownload
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
@@ -44,7 +44,7 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
     """Submit the **Batch**, then reconcile the **Library** and evict thumbnails.
 
     The tail is outside the transaction: a download is a network call, and nothing the **Library** does may
-    roll the **Decision log** back. Eviction comes before the next **Batch** is drawn, so nothing about to be
+    roll the **Evidence log** back. Eviction comes before the next **Batch** is drawn, so nothing about to be
     drawn is counted as evictable.
     """
     connection = modules.connect()
@@ -71,7 +71,7 @@ def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> Histo
     """
     connection = modules.connect()
     with storage.write(connection) as write:
-        edited = decisions.edit(write, wallpaper_id, verdict, at=modules.clock.now())
+        edited = evidence_log.edit(write, wallpaper_id, verdict, clock=modules.clock)
     if isinstance(edited, HistoryEntry):
         modules.library.reconcile(connection, settings.get(connection).library_path)
     return edited

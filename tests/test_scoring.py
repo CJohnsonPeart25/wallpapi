@@ -16,7 +16,7 @@ import pytest
 from tests.conftest import BatchesRig, batches_rig
 from tests.fakes import catalogue_of
 from wallpapi.allocation import ScoredWallpaper
-from wallpapi.decisions import HistoryEntry
+from wallpapi.evidence_log import HistoryEntry
 from wallpapi.model import Verdict, Zone
 
 POOL_SIZE = 5

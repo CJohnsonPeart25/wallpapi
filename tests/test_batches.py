@@ -1,8 +1,8 @@
-"""**Batches**: the draw, the **Draft Batch** and submitting it into the **Decision log**.
+"""**Batches**: the draw, the **Draft Batch** and submitting it into the **Evidence log**.
 
 `draw` is a pure function and is tested as one, over a classified sequence a test arranges by hand. The rest
 goes through `batches` alone, on `conftest.BatchesRig`: a real in-memory database, a real `Embeddings`
-falling back to hand-defined similarities, and the fake clock. A **Draft Batch** is not the **Decision log**
+falling back to hand-defined similarities, and the fake clock. A **Draft Batch** is not the **Evidence log**
 (marks set rather than toggle, and only submitting appends), and a **Batch** is submitted once.
 """
 
@@ -19,15 +19,18 @@ from numpy.typing import NDArray
 
 from tests.conftest import FIXED_NOW, BatchesRig, batches_rig
 from tests.fakes import catalogue_of, wallpaper
-from wallpapi import batches, decisions, pool, settings, storage
+from wallpapi import batches, evidence_log, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
-from wallpapi.decisions import HistoryEntry, ResolvedVerdict
+from wallpapi.evidence_log import HistoryEntry, ResolvedVerdict
 from wallpapi.model import Mix, Verdict, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
 from wallpapi.taste.clip import NEAR_DUPLICATE_SIMILARITY
+from wallpapi.taste.judgement import ItemResponse, Judgement, Shown
 from wallpapi.taste.rng import SeededRandom
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
+from wallpapi.taste.verdict_grid import Verdict as GridVerdict
 
 SCORE = 50.0
 """A **Score** well clear of zero either way, for an arranged **Banger** or **Dud**."""
@@ -235,10 +238,9 @@ def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_
     **Unknowns**; a **Mix** of all **Duds** then draws only **Duds**, labelled as the classification has them.
     """
     rig.stock([wallpaper("loved"), wallpaper("loathed")])
+    rig.decide(Verdict.FAVOURITE, "loved")
+    rig.decide(Verdict.BAN, "loathed")
     with storage.write(rig.connection) as write:
-        decisions.append(
-            write, {"loved": Verdict.FAVOURITE, "loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW
-        )
         pool.retire(write, ["loved", "loathed"])
         settings.save_mix(write, "duds only", unknown=0, banger=0, dud=100)
     ids = [w.id for w in catalogue_of(24)]
@@ -259,9 +261,8 @@ def _ban_near_everything(rig: BatchesRig) -> None:
     """A **Ban** outside the **Pool** that every member sits within the radius of: the whole **Pool** a
     **Dud**, as the maintainer's was at 0.15 (ADR 0023)."""
     rig.stock([wallpaper("loathed")])
-    with storage.write(rig.connection) as write:
-        decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
-        pool.retire(write, ["loathed"])
+    rig.decide(Verdict.BAN, "loathed")
+    rig.retire("loathed")
     rig.similarity.similarity_by_pair.update({(w.id, "loathed"): 1.0 for w in catalogue_of(24)})
 
 
@@ -358,9 +359,8 @@ def _ban_one_outside_the_pool(rig: BatchesRig, *, repost: NDArray[np.float32] | 
     """**Ban** "loathed", retired as every decision is, embedded at `(1, 0)`; `REPOST` gets `repost`, or no
     **Embedding**. The fallback calls the pair 0.95, so without the veto `REPOST` is a **Dud**."""
     rig.stock([wallpaper("loathed")])
-    with storage.write(rig.connection) as write:
-        decisions.append(write, {"loathed": Verdict.BAN}, batch_id=None, at=FIXED_NOW)
-        pool.retire(write, ["loathed"])
+    rig.decide(Verdict.BAN, "loathed")
+    rig.retire("loathed")
     rig.similarity.similarity_by_pair[(REPOST, "loathed")] = 0.95
     rig.store.store("loathed", np.array([1.0, 0.0], dtype=np.float32))
     if repost is not None:
@@ -395,8 +395,7 @@ def test_a_history_edit_away_from_ban_brings_the_near_duplicate_back(rig: Batche
     _ban_one_outside_the_pool(rig, repost=unit_at(1.0))
     assert REPOST not in _zones(rig)
 
-    with storage.write(rig.connection) as write:
-        decisions.edit(write, "loathed", Verdict.IGNORE, at=FIXED_NOW)
+    assert isinstance(rig.edit("loathed", Verdict.IGNORE), HistoryEntry)
 
     assert _zones(rig)[REPOST] is Zone.DUD
 
@@ -420,9 +419,8 @@ def _favour_one_outside_the_pool(rig: BatchesRig, *, embedded: bool) -> None:
     """**Favourite** "loved", retired as every decision is. The fallback calls `NEWCOMER` 0.95 to it, inside
     the radius, so while the fallback answers `NEWCOMER` is a **Banger**."""
     rig.stock([wallpaper("loved")])
-    with storage.write(rig.connection) as write:
-        decisions.append(write, {"loved": Verdict.FAVOURITE}, batch_id=None, at=FIXED_NOW)
-        pool.retire(write, ["loved"])
+    rig.decide(Verdict.FAVOURITE, "loved")
+    rig.retire("loved")
     rig.similarity.similarity_by_pair[(NEWCOMER, "loved")] = 0.95
     rig.store.store("loved" if embedded else NEWCOMER, np.array([1.0, 0.0], dtype=np.float32))
 
@@ -529,12 +527,12 @@ def test_bulk_marking_one_batch_leaves_an_earlier_batchs_record_alone(rig: Batch
     first = rig.next()
     rig.set_draft(first.id, first.wallpapers[0].id, Verdict.FAVOURITE)
     rig.submit(first.id)
-    recorded_before = rig.logged(first.id)
+    recorded_before = rig.logged()
 
     second = rig.next()
     rig.set_all_drafts(second.id, Verdict.BAN)
 
-    assert rig.logged(first.id) == recorded_before
+    assert rig.logged() == recorded_before
     assert rig.next().drafts == {w.id: Verdict.BAN for w in second.wallpapers}
 
 
@@ -618,15 +616,15 @@ def test_two_submits_of_one_batch_append_once_and_the_second_is_refused(rig: Bat
 
     assert first == Submitted(batch_id=batch.id, recorded=8, ignored=7)
     assert second == SubmissionRefused(reason=SubmissionRefused.Reason.ALREADY_SUBMITTED)
-    assert len(rig.logged()) == 8
+    assert [len(judgement.shown) for judgement in rig.logged()] == [8]
 
 
 @pytest.mark.parametrize("cleared_first", [False, True], ids=["untouched", "select-all then select-none"])
-def test_an_empty_submission_records_an_ignore_for_every_wallpaper_shown(
+def test_an_empty_submission_records_every_wallpaper_shown_unmarked_and_each_is_an_ignore(
     rig: BatchesRig, cleared_first: bool
 ) -> None:
-    """Clearing the **Batch** is not recording nothing: absence in the draft is what an **Ignore** is derived
-    from."""
+    """Clearing the **Batch** is not recording nothing: a submitted **Judgement** of blank tiles, each of
+    which stands at an **Ignore**."""
     batch = rig.next()
     if cleared_first:
         rig.set_all_drafts(batch.id, Verdict.FAVOURITE)
@@ -635,15 +633,16 @@ def test_an_empty_submission_records_an_ignore_for_every_wallpaper_shown(
     summary = rig.submit(batch.id)
 
     assert summary == Submitted(batch_id=batch.id, recorded=8, ignored=8)
-    assert {e.wallpaper_id: e.entry for e in rig.logged(batch.id)} == dict.fromkeys(
-        (w.id for w in batch.wallpapers), Verdict.IGNORE
+    assert _tiles(rig) == dict.fromkeys((w.id for w in batch.wallpapers), TileResponse())
+    shown = [w.id for w in batch.wallpapers]
+    assert {w: s.verdict for w, s in evidence_log.resolve(rig.connection, shown).items()} == dict.fromkeys(
+        shown, Verdict.IGNORE
     )
 
 
-def test_submitting_records_the_drafted_verdicts_plus_an_ignore_for_everything_unmarked(
-    rig: BatchesRig,
-) -> None:
-    """Select-all, then one tile changed and one cleared: exactly what the screen showed."""
+def test_submitting_records_each_tile_as_the_screen_showed_it(rig: BatchesRig) -> None:
+    """Select-all, then one tile changed and one cleared: exactly what the screen showed, a **Favourite** as
+    the flag and the cleared tile unmarked."""
     batch = rig.next()
     rig.set_all_drafts(batch.id, Verdict.LIKE)
     favourite, cleared, *_ = [w.id for w in batch.wallpapers]
@@ -653,28 +652,55 @@ def test_submitting_records_the_drafted_verdicts_plus_an_ignore_for_everything_u
     summary = rig.submit(batch.id)
 
     assert summary == Submitted(batch_id=batch.id, recorded=8, ignored=1)
-    changed = {favourite: Verdict.FAVOURITE, cleared: Verdict.IGNORE}
-    assert {e.wallpaper_id: e.entry for e in rig.logged(batch.id)} == {
-        w.id: changed.get(w.id, Verdict.LIKE) for w in batch.wallpapers
+    changed = {favourite: TileResponse(favourite=True), cleared: TileResponse()}
+    assert _tiles(rig) == {
+        w.id: changed.get(w.id, TileResponse(verdict=GridVerdict.LIKE)) for w in batch.wallpapers
     }
 
 
-def test_the_whole_submission_shares_one_utc_timestamp_and_an_ascending_sequence(rig: BatchesRig) -> None:
-    """One transaction, since an append-only log cannot retract a half-recorded **Batch**; the shared
-    timestamp is what makes the sequence load-bearing (invariant 4). `submitted_at` is the same moment, stored
-    as an ISO 8601 UTC string from the injected clock (invariant 5)."""
+def test_a_submission_is_one_judgement_of_the_whole_screen_with_why_each_tile_was_there(
+    rig: BatchesRig,
+) -> None:
+    """One **Judgement**, so nothing inside it competes for "latest" (invariant 4): the verdict grid version
+    1 on the batch **Screen**, every tile in on-screen order with the **Zone** it was drawn from and the
+    **Mix** it was minted under (not the one active at submission), submitted at the clock's time with its
+    local offset, first shown when it was minted. `submitted_at` is the same moment (invariant 5)."""
+    rig.clock.offset = dt.timedelta(hours=1)
     batch = rig.next()
+    rig.set_draft(batch.id, batch.wallpapers[2].id, Verdict.BAN)
+    rig.configure(active_mix=REFINE_MIX.name)
     rig.clock.advance(60)
     submitted_at = FIXED_NOW + dt.timedelta(minutes=1)
 
     rig.submit(batch.id)
 
-    logged = rig.logged(batch.id)
-    assert {e.recorded_at for e in logged} == {submitted_at}
-    assert [e.seq for e in logged] == sorted({e.seq for e in logged})
+    (judgement,) = rig.logged()
+    assert judgement == Judgement(
+        instrument=VERDICT_GRID_V1,
+        screen="batch",
+        shown=tuple(
+            Shown(
+                f"wallhaven:{w.id}",
+                TileResponse(verdict=GridVerdict.BAN) if n == 2 else TileResponse(),
+                {"zone": batch.zones[w.id].value, "mix": EXPLORE_MIX.name},
+            )
+            for n, w in enumerate(batch.wallpapers)
+        ),
+        recorded_at=submitted_at,
+        app="wallpapi",
+        app_version=evidence_log.APP_VERSION,
+        response=GridResponse(submitted=True),
+        utc_offset=dt.timedelta(hours=1),
+        first_shown_at=FIXED_NOW,
+    )
     (stored,) = rig.connection.execute("SELECT submitted_at FROM batches").fetchone()
     assert stored == submitted_at.isoformat()
     assert dt.datetime.fromisoformat(stored).tzinfo == dt.UTC
+
+
+def _tiles(rig: BatchesRig) -> dict[str, ItemResponse]:
+    """The last **Judgement**'s tiles, by bare id, as they were recorded."""
+    return {evidence_log.wallpaper_id(s.item): s.response for s in rig.logged()[-1].shown}
 
 
 def test_submitting_retires_everything_shown_and_clears_the_draft(rig: BatchesRig) -> None:
@@ -841,7 +867,7 @@ def test_a_history_edit_does_not_reach_the_batch_already_open(rig: BatchesRig) -
 
     assert rig.next() == open_batch, "the edit neither rerolled nor re-marked the open Batch"
     rig.submit(open_batch.id)
-    assert decisions.resolve(rig.connection, [SUBJECT])[SUBJECT].verdict is Verdict.IGNORE
+    assert evidence_log.resolve(rig.connection, [SUBJECT])[SUBJECT].verdict is Verdict.IGNORE
 
 
 def test_a_reshown_wallpaper_comes_up_marked_with_its_latest_verdict(rig: BatchesRig) -> None:
@@ -875,10 +901,12 @@ def test_leaving_a_reshown_wallpaper_alone_records_its_verdict_again(rig: Batche
 
     rig.submit(rig.next().id)
 
-    assert [e.entry for e in decisions.entries(rig.connection, wallpaper_id=SUBJECT)] == [
-        Verdict.LIKE,
-        Verdict.LIKE,
+    edited, submitted = rig.logged()
+    assert [edited.shown[0], _tiles(rig)[SUBJECT]] == [
+        Shown(f"wallhaven:{SUBJECT}", TileResponse(verdict=GridVerdict.LIKE)),
+        TileResponse(verdict=GridVerdict.LIKE),
     ]
-    assert decisions.resolve(rig.connection, [SUBJECT])[SUBJECT] == ResolvedVerdict(
+    assert submitted.screen == "batch"
+    assert evidence_log.resolve(rig.connection, [SUBJECT])[SUBJECT] == ResolvedVerdict(
         verdict=Verdict.LIKE, value=50
     )

@@ -13,17 +13,20 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import raw_connection, write_log_entries, write_old_pool
+from tests.conftest import BatchesRig, batches_rig, raw_connection, write_log_entries, write_old_pool
 from tests.fakes import catalogue_of
 from wallpapi import evidence_log, pool, settings, storage
-from wallpapi.model import Clearance, Verdict
+from wallpapi.batches import zone_of
+from wallpapi.model import Clearance, Verdict, Zone
 from wallpapi.settings import (
     RETUNED_SIMILARITY_RADIUS,
     SUPERSEDED_POOL_TARGET_SIZE,
     SUPERSEDED_SIMILARITY_RADIUS,
 )
 from wallpapi.taste.clock import iso_utc
+from wallpapi.taste.evidence import AbsoluteEvidence
 from wallpapi.taste.judgement import Judgement, Shown
+from wallpapi.taste.ranking import rank
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
 RETUNED = [
@@ -138,13 +141,15 @@ class OldEntry:
 
 def _old_log(db_path: Path, batches: Sequence[OldBatch], entries: Sequence[OldEntry]) -> None:
     """A database at version 11 holding these **Batches** and **Decision log** entries, written as the old
-    code wrote them (`iso_utc` times), every **Wallpaper** among them recorded."""
+    code wrote them (`iso_utc` times), every **Wallpaper** among them recorded. A database already at 11 is
+    added to."""
     named = {e.wallpaper_id for e in entries} | {w for b in batches for w, _ in b.tiles}
     with raw_connection(db_path) as connection:
         storage.migrate(connection, to=11)
         with storage.write(connection) as write:
             write.executemany(
-                "INSERT INTO wallpapers VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
+                "INSERT OR IGNORE INTO wallpapers"
+                " VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
                 [(w,) for w in sorted(named)],
             )
             for batch in batches:
@@ -400,3 +405,97 @@ def test_the_users_log_at_its_size_converts_in_well_under_a_second(db_path: Path
 
     assert tuple(counts) == (118, 818)
     assert took < 0.5
+
+
+OLD_VALUES = {"favourite": 100.0, "like": 50.0, "ignore": -10.0, "ban": -100.0, "cleared": 0.0}
+"""What each **Decision log** entry resolved to before the **Evidence log**, `cleared` standing at nothing."""
+
+
+def _scored_as_the_decision_log_scored(rig: BatchesRig, db_path: Path) -> dict[str, tuple[float, Zone]]:
+    """The **Scores** the code before migration 12 gave: the latest entry by sequence decides, one piece of
+    Evidence per decided **Wallpaper** in id order, a **Ban** never a candidate, through the same ranking."""
+    with raw_connection(db_path) as connection:
+        rows = connection.execute("SELECT wallpaper_id, verdict FROM decision_log ORDER BY seq").fetchall()
+    latest = {str(row["wallpaper_id"]): str(row["verdict"]) for row in rows}
+    judged = sorted(latest)
+    candidates = [w for w in pool.members(rig.connection) if latest.get(w.id) != "ban"]
+    wallpapers = {w.id: w for w in [*candidates, *pool.wallpapers(rig.connection, judged).values()]}
+    old_evidence = [
+        AbsoluteEvidence(
+            item=w, strength=OLD_VALUES[latest[w]], judgement_id=f"decision-log:{w}", recorded_at=T
+        )
+        for w in judged
+    ]
+    current = settings.get(rig.connection)
+    ranking = rank(
+        old_evidence,
+        [w.id for w in candidates],
+        lambda rows, columns: rig.embeddings.similarities(
+            [wallpapers[r] for r in rows], [wallpapers[c] for c in columns]
+        ),
+        radius=current.similarity_radius,
+        decay=current.similarity_decay,
+    )
+    return {w.id: (score, zone_of(score)) for w, score in zip(candidates, ranking.scores, strict=True)}
+
+
+def test_scores_and_zones_are_the_same_after_the_conversion(db_path: Path) -> None:
+    """Story 35: ranking reads the converted log and every **Score** comes out to the bit as before. Most
+    entries share one moment, so only the conversion's microsecond moves keep the old sequence's answers:
+    the **Favourite** edit over the **Like**, the **Ignore** edit over the **Ban**, a reshown **Like** over
+    the **Ignore** before it. A **Clearance** stands at nothing, and a **Ban** still in the **Pool** is no
+    candidate.
+
+    Bit for bit, which needs the decided columns in the old id order: the **Like** recorded earliest is the
+    first the log names, and the similarities near it, the **Favourite** and the **Ignore** were found by
+    search to sum one ulp apart in the two orders.
+
+    Worked by hand as well: near the **Favourite** a **Banger**, near the **Ignore** a **Dud**, near the
+    reshown **Like** a **Banger**, near the **Clearance** an **Unknown**, near the **Favourite**, the
+    **Ignore** and the early **Like** a **Banger**."""
+    with raw_connection(db_path) as connection:
+        storage.migrate(connection, to=11)
+    write_old_pool(db_path, catalogue_of(11))
+    _old_log(
+        db_path,
+        [
+            OldBatch("b1", T, (("wp0000", None), ("wp0001", None), ("wp0002", None))),
+            OldBatch("b2", T, (("wp0003", None), ("wp0002", None))),
+        ],
+        [
+            OldEntry(1, "wp0000", "like", T, "b1"),
+            OldEntry(2, "wp0001", "ban", T, "b1"),
+            OldEntry(3, "wp0002", "ignore", T, "b1"),
+            OldEntry(4, "wp0000", "favourite", T),
+            OldEntry(5, "wp0001", "ignore", T),
+            OldEntry(6, "wp0003", "favourite", T, "b2"),
+            OldEntry(7, "wp0002", "like", T, "b2"),
+            OldEntry(8, "wp0003", "cleared", T + dt.timedelta(seconds=1)),
+            OldEntry(9, "wp0004", "ban", T),
+            OldEntry(10, "wp0010", "like", T - dt.timedelta(seconds=1)),
+        ],
+    )
+    with raw_connection(db_path) as connection, storage.write(connection) as write:
+        pool.retire(write, ["wp0000", "wp0001", "wp0002", "wp0003", "wp0010"])
+    near = {
+        ("wp0005", "wp0000"): 0.95,
+        ("wp0006", "wp0001"): 0.95,
+        ("wp0007", "wp0002"): 0.95,
+        ("wp0008", "wp0003"): 0.95,
+        ("wp0009", "wp0000"): 0.91,
+        ("wp0009", "wp0001"): 0.92,
+        ("wp0009", "wp0010"): 0.92,
+    }
+
+    with batches_rig(db_path, near) as rig:
+        after = {s.wallpaper.id: (s.score, s.zone) for s in rig.batches.classify(rig.connection)}
+        before = _scored_as_the_decision_log_scored(rig, db_path)
+
+    assert after == before
+    assert {w: zone for w, (_, zone) in after.items()} == {
+        "wp0005": Zone.BANGER,
+        "wp0006": Zone.DUD,
+        "wp0007": Zone.BANGER,
+        "wp0008": Zone.UNKNOWN,
+        "wp0009": Zone.BANGER,
+    }
