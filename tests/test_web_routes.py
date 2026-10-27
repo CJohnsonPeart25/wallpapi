@@ -26,6 +26,7 @@ from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryRefused
 from wallpapi.lineup import LineupRefused
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import EXPLORE_MIX, MAX_BATCH_SIZE, REFINE_MIX, SettingsRefused
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.verdict_grid import GridResponse, TileResponse
@@ -505,29 +506,34 @@ def lineup_of(body: str) -> tuple[str, list[str]]:
 
 
 def test_the_compare_shell_mints_nothing_and_fetches_the_lineup_for_its_instrument(web: Web) -> None:
-    """The **Instrument** is carried in the URL, **Pick** when none is named, **Order** beside it; one the tab
-    does not offer is a 404. A load, or a restore from the back-forward cache, is a visit (ADR 0029). The
-    choice links each **Instrument** the tab offers and marks the one on screen."""
+    """The **Instrument** is carried in the URL, **Pick** when none is named, **Order** and **Gauntlet**
+    beside it; one the tab does not offer is a 404. A load, or a restore from the back-forward cache, is a
+    visit (ADR 0029). The choice links each **Instrument** the tab offers and marks the one on screen."""
     _, client = web
 
     shell = client.get("/compare").text
     named = client.get("/compare?instrument=pick")
     order = client.get("/compare?instrument=order")
+    gauntlet = client.get("/compare?instrument=gauntlet")
 
     assert 'hx-get="/compare/lineup?instrument=pick"' in shell
     assert 'hx-trigger="load, pageshow[persisted] from:window"' in shell
     assert 'data-wallpaper-id="' not in shell
-    assert named.status_code == order.status_code == HTTPStatus.OK
+    assert named.status_code == order.status_code == gauntlet.status_code == HTTPStatus.OK
     assert 'hx-get="/compare/lineup?instrument=order"' in order.text
+    assert 'hx-get="/compare/lineup?instrument=gauntlet"' in gauntlet.text
     choice = r'<a href="/compare\?instrument=(\w+)"( aria-current="page")?>'
     assert [(name, bool(current)) for name, current in re.findall(choice, shell)] == [
         ("pick", True),
         ("order", False),
+        ("gauntlet", False),
     ]
     assert [(name, bool(current)) for name, current in re.findall(choice, order.text)] == [
         ("pick", False),
         ("order", True),
+        ("gauntlet", False),
     ]
+    assert [current for _, current in re.findall(choice, gauntlet.text)] == ["", "", ' aria-current="page"']
     assert client.get("/compare?instrument=stream").status_code == HTTPStatus.NOT_FOUND
     assert client.get("/compare/lineup?instrument=stream").status_code == HTTPStatus.NOT_FOUND
 
@@ -743,6 +749,113 @@ def _lineup_stars(body: str) -> list[str]:
 def _lineup_starred(body: str) -> list[bool]:
     """Whether each **Line-up** tile's star shows pressed, in on-screen order."""
     return ['aria-pressed="true"' in star for star in _lineup_stars(body)]
+
+
+CROWN = re.compile(r'<span class="crown"[^>]*>\s*♛ (\d+)\s*</span>')
+
+
+def _crowns(body: str) -> list[int | None]:
+    """The streak on each **Line-up** tile's crown, in on-screen order, `None` for a tile without one."""
+    tiles = re.findall(r'<li class="lineup-tile".*?</li>', body, flags=re.DOTALL)
+    crowns = [CROWN.search(tile) for tile in tiles]
+    return [None if crown is None else int(crown.group(1)) for crown in crowns]
+
+
+def test_a_gauntlet_round_keeps_the_winner_in_place_under_a_crown_and_none_of_these_ends_it(web: Web) -> None:
+    """Each answer is one post and one swap. The winner comes back in its place with the crown counting its
+    streak, the other tiles new; "none of these" brings a new **Line-up** whole, with no crown. Each screen
+    records one **Gauntlet** **Judgement** with the streak it carried and the theme. Nothing leaves the
+    **Pool**."""
+    harness, client = web
+    visit = client.get("/compare/lineup?instrument=gauntlet").text
+    first, first_tiles = lineup_of(visit)
+    members = pool.members(harness.connect())
+    champion = first_tiles[1]
+    assert _crowns(visit) == [None] * 4, "no crown on a first screen"
+
+    won = client.post(
+        "/compare/gauntlet", data={"lineup_id": first, "wallpaper_id": champion, "theme": "dark"}
+    )
+
+    assert won.status_code == HTTPStatus.OK
+    second, second_tiles = lineup_of(won.text)
+    assert second != first
+    assert second_tiles[1] == champion
+    assert not set(second_tiles) - {champion} & set(first_tiles)
+    assert _crowns(won.text) == [None, 1, None, None]
+    assert 'hx-post="/compare/gauntlet"' in won.text, "the next answers the same Instrument"
+    assert 'aria-label="Pick 2, the champion, 1 in a row"' in won.text
+
+    again = client.post("/compare/gauntlet", data={"lineup_id": second, "wallpaper_id": champion})
+    third, third_tiles = lineup_of(again.text)
+    assert third_tiles[1] == champion
+    assert _crowns(again.text) == [None, 2, None, None]
+
+    dismissed = client.post("/compare/gauntlet", data={"lineup_id": third})
+
+    assert dismissed.status_code == HTTPStatus.OK
+    _, fourth_tiles = lineup_of(dismissed.text)
+    assert not set(fourth_tiles) & set(third_tiles)
+    assert _crowns(dismissed.text) == [None] * 4
+    judgements = evidence_log.judgements(harness.connect())
+    assert [(j.instrument, j.screen) for j in judgements] == [(GAUNTLET_V1, "compare")] * 3
+    assert [j.response for j in judgements] == [
+        GauntletResponse(streak=0),
+        GauntletResponse(streak=1),
+        GauntletResponse(streak=2, none_of_these=True),
+    ]
+    assert [s.response for s in judgements[1].shown] == [GauntletTile(picked=n == 1) for n in range(4)]
+    assert judgements[1].shown[1].provenance["kept"] == "champion"
+    assert [j.context for j in judgements] == [{"theme": "dark"}, {}, {}]
+    assert pool.members(harness.connect()) == members
+
+
+def test_a_reload_starts_a_new_gauntlet_and_the_crowned_screen_it_replaced_is_refused_in_words(
+    web: Web,
+) -> None:
+    """A streak lives as long as its screen (ADR 0029): a visit, a reload included, draws a new **Line-up**
+    with no crown and records nothing, and an answer to the crowned one is a 409 that shows the new one."""
+    harness, client = web
+    first, tiles = lineup_of(client.get("/compare/lineup?instrument=gauntlet").text)
+    crowned, _ = lineup_of(
+        client.post("/compare/gauntlet", data={"lineup_id": first, "wallpaper_id": tiles[0]}).text
+    )
+
+    reloaded = client.get("/compare/lineup?instrument=gauntlet").text
+    stale = client.post("/compare/gauntlet", data={"lineup_id": crowned, "wallpaper_id": tiles[0]})
+
+    after_reload, _ = lineup_of(reloaded)
+    assert after_reload != crowned
+    assert _crowns(reloaded) == [None] * 4
+    assert stale.status_code == HTTPStatus.CONFLICT
+    assert "That line-up is no longer on screen" in " ".join(stale.text.split())
+    assert lineup_of(stale.text)[0] == after_reload
+    assert len(evidence_log.judgements(harness.connect())) == 1
+
+
+def test_a_winner_starred_on_a_gauntlet_reaches_the_library_and_its_streak_ends_there(web: Web) -> None:
+    """The star on a **Gauntlet** is the star on a **Pick**: posted for the **Instrument** on screen, it
+    swaps back the crowned **Line-up**, and the answer that records it puts the **Wallpaper** in the
+    **Library** and out of the **Pool**, so it cannot be kept and the next comes whole."""
+    harness, client = web
+    first, tiles = lineup_of(client.get("/compare/lineup?instrument=gauntlet").text)
+    won = client.post("/compare/gauntlet", data={"lineup_id": first, "wallpaper_id": tiles[2]}).text
+    second, _ = lineup_of(won)
+
+    starred = client.post(
+        "/compare/star?instrument=gauntlet",
+        data={"lineup_id": second, "wallpaper_id": tiles[2], "starred": "true"},
+    )
+    assert _crowns(starred.text) == [None, None, 1, None], "a star keeps the crown"
+    assert 'hx-post="/compare/gauntlet"' in starred.text
+    answered = client.post("/compare/gauntlet", data={"lineup_id": second, "wallpaper_id": tiles[2]})
+
+    assert _crowns(answered.text) == [None] * 4
+    assert tiles[2] not in lineup_of(answered.text)[1]
+    _, judgement = evidence_log.judgements(harness.connect())
+    assert [s.response for s in judgement.shown][2] == GauntletTile(picked=True, favourite=True)
+    assert [written.wallpaper_id for written in harness.library.written] == [tiles[2]]
+    assert tiles[2] not in [w.id for w in pool.members(harness.connect())]
 
 
 def test_a_star_answers_with_the_same_lineup_starred_and_records_nothing(web: Web) -> None:

@@ -11,7 +11,10 @@
   live **Line-up**, which holds it while it is live: an unranked tile is ranked next, a ranked one taken
   back, and its rank is shown on it; the response is the same **Line-up** as it now stands, or the next one
   once all but the last tile are ranked, which answers the **Order**. Like the star, it says what a click
-  should leave, so a replayed click changes nothing. The number is a `<kbd>` because it is the key to
+  should leave, so a replayed click changes nothing. On a **Gauntlet** it posts the winner as on a **Pick**,
+  and the next **Line-up** keeps it in the same place. The champion a **Gauntlet** kept wears a crown with
+  its streak on it, whichever **Instrument** is on screen: it is a fact of the **Line-up**, not of the
+  page. The number is a `<kbd>` because it is the key to
   press. Every tile is the same size whatever its **Zone**, and no **Zone** is shown: a label is not what
   is being compared.
 
@@ -34,6 +37,7 @@
   <ul class="lineup" data-size="{{ lineup.wallpapers | length }}" hx-vals="{{ theme_value }}">
     {% for wallpaper in lineup.wallpapers %}
       {% set rank = lineup.rank_of(wallpaper.id) %}
+      {% set crowned = wallpaper.id == lineup.champion %}
       <li class="lineup-tile">
         <button
           type="button"
@@ -48,7 +52,7 @@
             hx-post="/compare/order/rank"
             hx-vals='{"wallpaper_id": "{{ wallpaper.id }}", "ranked": "{{ 'false' if rank else 'true' }}"}'
           {% else %}
-            aria-label="Pick {{ loop.index }}"
+            aria-label="Pick {{ loop.index }}{{ ', the champion, %d in a row' % lineup.streak if crowned }}"
             hx-post="/compare/{{ instrument }}"
             hx-vals='{"wallpaper_id": "{{ wallpaper.id }}"}'
           {% endif %}
@@ -60,6 +64,9 @@
           <img src="/thumb/{{ wallpaper.id }}" alt="" />
           <kbd class="key">{{ loop.index }}</kbd>
           {% if rank %}<span class="rank">{{ rank }}</span>{% endif %}
+          {% if crowned %}
+            <span class="crown" title="Won {{ lineup.streak }} in a row">♛ {{ lineup.streak }}</span>
+          {% endif %}
         </button>
         {% set starred = wallpaper.id in lineup.starred %}
         {% call star(starred) %}

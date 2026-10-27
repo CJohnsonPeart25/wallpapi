@@ -166,14 +166,18 @@ def test_submit_and_skip_post_the_theme_the_browser_resolved(web: Web) -> None:
         assert "matchMedia('(prefers-color-scheme: dark)')" in vals.group(1)
 
 
-def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_button_or_0(web: Web) -> None:
+@pytest.mark.parametrize("instrument", ["pick", "gauntlet"])
+def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_button_or_0(
+    web: Web, instrument: str
+) -> None:
     """htmx attributes, no script of its own: each tile posts itself as the winner on a click or on its
     number key, the nav's "none of these" posts no winner on a click or 0, and every answer carries the
     **Line-up** ID and the theme, targets `#lineup` and is dropped while another is in flight. A key is no
-    answer with a modifier held, held down, or typed into a field."""
+    answer with a modifier held, held down, or typed into a field. A **Gauntlet** answers as a **Pick**
+    does, at its own route: 0 is its "none of these" too."""
     _, client = web
-    shell = client.get("/compare").text
-    fragment = client.get("/compare/lineup?instrument=pick").text
+    shell = client.get(f"/compare?instrument={instrument}").text
+    fragment = client.get(f"/compare/lineup?instrument={instrument}").text
 
     tiles = re.findall(r"<button\b[^>]*data-wallpaper-id=[^>]*>", fragment)
     none = re.search(r"<form\b[^>]*data-none-of-these[^>]*>", shell)
@@ -188,7 +192,7 @@ def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_b
         assert trigger.group(1).endswith("] from:body")
         for guard in ("!ctrlKey", "!metaKey", "!altKey", "!repeat", "input,select,textarea"):
             assert guard in trigger.group(1)
-        assert 'hx-post="/compare/pick"' in control
+        assert f'hx-post="/compare/{instrument}"' in control
         assert 'hx-target="#lineup"' in control
         assert 'hx-sync="#lineup:drop"' in control
         assert 'hx-include="#lineup-id"' in control
@@ -248,6 +252,26 @@ def test_an_order_tile_ranks_on_a_click_or_its_number_and_submit_is_a_button_or_
     assert "key=='0'" not in shell + fragment
     assert "data-none-of-these" not in shell
     assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
+
+
+def test_a_gauntlets_champion_wears_its_crown_on_its_own_pick_and_says_so_in_words(web: Web) -> None:
+    """The crown is inside the champion's tile, so it sits on the thumbnail and is part of what a click
+    picks, with its streak in the tile's name for a screen reader; no other tile has one, and no Alpine
+    island is added for it."""
+    _, client = web
+    first = client.get("/compare/lineup?instrument=gauntlet").text
+    lineup_id = re.search(r'name="lineup_id" value="(\w+)"', first).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+    tiles = re.findall(r'data-wallpaper-id="(\w+)"', first)
+
+    fragment = client.post("/compare/gauntlet", data={"lineup_id": lineup_id, "wallpaper_id": tiles[3]}).text
+
+    buttons = re.findall(r'<button\b[^>]*class="pick".*?</button>', fragment, flags=re.DOTALL)
+    crowned = [button for button in buttons if 'class="crown"' in button]
+    assert len(crowned) == 1
+    assert f'data-wallpaper-id="{tiles[3]}"' in crowned[0]
+    assert 'aria-label="Pick 4, the champion, 1 in a row"' in crowned[0]
+    assert re.search(r'<span class="crown" title="Won 1 in a row">\s*♛ 1\s*</span>', crowned[0])
+    assert "x-data" not in fragment
 
 
 def test_every_lineup_tile_has_the_grids_star_beside_its_pick_never_inside_it(web: Web) -> None:
