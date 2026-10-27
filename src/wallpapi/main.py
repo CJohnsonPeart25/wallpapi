@@ -120,6 +120,16 @@ def main(
 
 
 @dataclass(frozen=True, slots=True)
+class _Candidate:
+    """A candidate radius and decay, its accuracy and its paired comparison with the current settings."""
+
+    radius: float
+    decay: float
+    accuracy: tuple[Accuracy, ...]
+    comparisons: tuple[Comparison, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _Evaluated:
     """What `evaluate` prints: the current settings' accuracy, a candidate's and the comparison where one was
     given, and how many tested **Wallpapers** had no **Embedding**."""
@@ -127,7 +137,7 @@ class _Evaluated:
     radius: float
     decay: float
     current: tuple[Accuracy, ...]
-    candidate: tuple[float, float, tuple[Accuracy, ...], tuple[Comparison, ...]] | None
+    candidate: _Candidate | None
     tested: int
     unembedded: int
 
@@ -155,11 +165,11 @@ def _evaluate(modules: Modules, *, radius: float | None, decay: float | None) ->
         radius = current.similarity_radius if radius is None else radius
         decay = current.similarity_decay if decay is None else decay
         replayed = evaluation.replay(judgements, similarity, radius=radius, decay=decay)
-        candidate = (
+        candidate = _Candidate(
             radius,
             decay,
-            evaluation.pairwise_accuracy(replayed),
-            evaluation.compare(baseline, replayed),
+            accuracy=evaluation.pairwise_accuracy(replayed),
+            comparisons=evaluation.compare(baseline, replayed),
         )
     tested = list(dict.fromkeys(evidence_log.wallpaper_id(key) for each in baseline for key in each.items))
     return _Evaluated(
@@ -186,14 +196,14 @@ def _print_evaluation(evaluated: _Evaluated) -> None:
     print()
     print(f"Current settings: radius {evaluated.radius:g}, decay {evaluated.decay:g}")
     _print_accuracy(evaluated.current)
-    if evaluated.candidate is not None:
-        radius, decay, accuracy, comparisons = evaluated.candidate
+    candidate = evaluated.candidate
+    if candidate is not None:
         print()
-        print(f"Candidate: radius {radius:g}, decay {decay:g}")
-        _print_accuracy(accuracy)
+        print(f"Candidate: radius {candidate.radius:g}, decay {candidate.decay:g}")
+        _print_accuracy(candidate.accuracy)
         print()
         print("Candidate minus current")
-        _print_comparisons(comparisons)
+        _print_comparisons(candidate.comparisons)
     print()
     print(f"Tested Wallpapers with no Embedding: {evaluated.unembedded} of {evaluated.tested}")
 
