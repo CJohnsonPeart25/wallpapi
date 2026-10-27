@@ -22,9 +22,14 @@
 
   The rail is the preview's own **Verdict** rail, below the image where it covers nothing; the two pills
   in the top corner are the way out to Wallhaven and fullscreen. The rail posts nothing of its own: it
-  clicks the matching control on the tile behind, so there is one route, one swap and one marked state.
-  After any swap the rail reads the tile's mark back, which is how the ring and the rail agree. Marking
-  does not dismiss the preview.
+  clicks the matching control on the tile behind (for a **Favourite**, the tile's star), so there is one
+  route, one swap and one marked state. After any swap the rail reads the tile's mark back, which is how
+  the ring, the star and the rail agree. Marking does not dismiss the preview.
+
+  Opening it is recorded on the **Draft Batch**, so it goes in with the tile at submission; like a mark, it
+  lives only as long as the **Batch** does, and a reload replaces that (ADR 0029). The post is an htmx form
+  inside the dialog, outside anything htmx swaps: `open` sets the tile and fires its `preview-opened` event,
+  and the form posts it with the **Batch** ID. Nothing comes back to swap.
 #}
 <dialog
   id="preview-dialog"
@@ -47,6 +52,7 @@
       this.$refs.source.setAttribute('href', tile.dataset.pageUrl);
       this.sync();
       this.$el.showModal();
+      this.$nextTick(() => this.$refs.opened.dispatchEvent(new Event('preview-opened')));
     },
     dismiss(event) {
       if (document.fullscreenElement) {
@@ -57,7 +63,7 @@
     },
     mark(verdict) {
       const tile = this.tile();
-      const control = tile && tile.querySelector('.verdict[data-verdict=' + verdict + ']');
+      const control = tile && tile.querySelector('[data-verdict=' + verdict + ']');
       if (control) control.click();
     },
     fullscreen() {
@@ -75,6 +81,16 @@
   x-on:close="closed()"
   x-on:htmx:after-settle.camel.window="sync()"
 >
+  <form
+    x-ref="opened"
+    hidden
+    hx-post="/draft/preview"
+    hx-include="#batch-id"
+    hx-trigger="preview-opened"
+    hx-swap="none"
+  >
+    <input type="hidden" name="wallpaper_id" x-bind:value="showing" />
+  </form>
   <article class="preview">
     <img x-ref="image" alt="" />
     <div class="preview-bar">

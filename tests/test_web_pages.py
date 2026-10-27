@@ -8,6 +8,7 @@ modules composed as the app composes them (ADR 0019).
 
 from __future__ import annotations
 
+import html
 import re
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(web: We
     files, and the grid script fetches nothing of its own."""
     _, client = web
 
-    bodies = {path: client.get(path).text for path in ("/", "/history", "/settings")}
+    bodies = {path: client.get(path).text for path in ("/", "/compare", "/history", "/settings")}
     loaded = {asset for body in bodies.values() for asset in ASSETS.findall(body)}
     answers = {asset: client.get(asset) for asset in loaded}
 
@@ -45,10 +46,11 @@ def test_every_page_loads_only_what_the_app_serves_and_all_of_it_answers(web: We
 
 
 def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web) -> None:
-    """**Ignore** has no control: it is what leaving a tile alone says. One post per tile at a time
-    (`closest .tile:drop`): with a sync per button, Ban clicked while Like is in flight lands on a detached
-    tile and the screen shows **Like** while the server holds **Ban**. Bulk and tile controls disable each
-    other. The **Batch** has its select-all and select-none controls once."""
+    """The star and the rail's **Like** and **Ban**. **Ignore** has no control: it is what leaving a tile
+    alone says. One post per tile at a time (`closest .tile:drop`): with a sync per button, Ban clicked
+    while Like is in flight lands on a detached tile and the screen shows **Like** while the server holds
+    **Ban**. Bulk and tile controls, the star among them, disable each other. The **Batch** has its
+    select-all and select-none controls once."""
     harness, client = web
     body = client.get("/batch").text
     shown = live(harness).wallpapers[0].id
@@ -68,8 +70,50 @@ def test_every_tile_has_its_three_controls_and_each_posts_with_hx_sync(web: Web)
         bulk = re.search(rf'<button\b[^>]*data-bulk-verdict="{choice}"[^>]*>', body)
         assert bulk is not None
         assert 'hx-sync="#batch-grid:replace"' in bulk.group(0)
-        assert 'hx-disabled-elt=".verdict"' in bulk.group(0)
+        assert 'hx-disabled-elt=".verdict, .star"' in bulk.group(0)
     assert 'data-bulk-verdict="ignore"' not in body
+
+
+def test_every_tile_has_one_star_beside_its_rail_that_f_presses_on_the_focused_or_hovered_tile(
+    web: Web,
+) -> None:
+    """The star is a direct child of its tile, outside the rail, since that is how its F key finds the tile;
+    F is an htmx trigger on the body beside the click, so neither `wallpapi.js` nor a new Alpine island
+    decides it. Never with a modifier (Ctrl+F is the browser's find), on a held key, or in a field."""
+    harness, client = web
+    body = client.get("/batch").text
+
+    tiles = re.findall(r'<li class="tile".*?</li>', body, flags=re.DOTALL)
+    assert len(tiles) == len(live(harness).wallpapers)
+    for tile in tiles:
+        (star,) = re.findall(r'<button\b[^>]*class="star"[^>]*>', tile)
+        assert 'data-verdict="favourite"' in star
+        rail = tile[tile.index('<div class="verdicts">') :]
+        assert 'class="star"' not in rail
+        assert re.findall(r'data-verdict="(\w+)"', rail) == ["like", "ban"]
+        trigger = html.unescape(re.search(r'hx-trigger="([^"]*)"', star).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+        assert trigger.startswith("click, keydown[")
+        assert trigger.endswith("] from:body")
+        for condition in ("'f'", "!repeat", "!ctrlKey", "!metaKey", "!altKey", "this.parentElement"):
+            assert condition in trigger
+        assert "!target.closest('input,select,textarea')" in trigger
+        for state in (":focus-visible", ":hover"):
+            assert state in trigger
+
+
+def test_the_preview_rail_marks_through_the_tiles_own_controls_the_star_among_them(web: Web) -> None:
+    """The rail posts nothing of its own: it clicks the tile's control for the same **Verdict**, which for a
+    **Favourite** is the star, not a rail segment; after any swap it reads the tile's mark back."""
+    _, client = web
+    shell = client.get("/").text
+
+    dialog = shell[shell.index("<dialog") : shell.index("</dialog>")]
+    rail = re.findall(r'class="preview-verdict"\s+data-verdict="(\w+)"', dialog)
+    assert rail == ["favourite", "like", "ban"]
+    assert "querySelector('[data-verdict=' + verdict + ']')" in dialog
+    assert "'.verdict[data-verdict=" not in dialog
+    assert "tile.dataset.draftVerdict" in dialog
+    assert 'x-on:htmx:after-settle.camel.window="sync()"' in dialog
 
 
 def test_the_preview_fetches_nothing_until_it_is_opened(web: Web) -> None:
@@ -90,16 +134,199 @@ def test_the_preview_fetches_nothing_until_it_is_opened(web: Web) -> None:
         assert f'href="{shown.page_url}"' not in body, "the tile renders no link of its own"
 
 
+def test_opening_the_preview_posts_from_the_dialog_which_no_swap_replaces(web: Web) -> None:
+    """The preview-opened post is an htmx form inside the shell's `<dialog>`, carrying the **Batch** ID the
+    last fetch left and swapping nothing; the **Batch** fragment htmx replaces holds none of it."""
+    _, client = web
+    shell = client.get("/").text
+    fragment = client.get("/batch").text
+
+    dialog = shell[shell.index("<dialog") : shell.index("</dialog>")]
+    form = re.search(r'<form\b[^>]*hx-post="/draft/preview"[^>]*>', dialog)
+    assert form is not None
+    for attribute in ('hx-trigger="preview-opened"', 'hx-include="#batch-id"', 'hx-swap="none"'):
+        assert attribute in form.group(0)
+    assert 'name="wallpaper_id"' in dialog
+    assert "preview-opened" in dialog[: dialog.index("<form")], "the dialog's open() must fire it"
+    assert "/draft/preview" not in fragment
+
+
+def test_submit_and_skip_post_the_theme_the_browser_resolved(web: Web) -> None:
+    """`system` is no `data-theme` at all, so the page asks the OS the way Pico does; the value goes as an
+    htmx value with the **Batch** ID."""
+    _, client = web
+    shell = client.get("/").text
+
+    for path in ("/submit", "/skip"):
+        form = re.search(rf'<form\b[^>]*hx-post="{path}"[^>]*>', shell)
+        assert form is not None
+        vals = re.search(r'hx-vals="([^"]*)"', form.group(0))
+        assert vals is not None
+        assert vals.group(1).lstrip().startswith("js:{theme:")
+        assert "dataset.theme" in vals.group(1)
+        assert "matchMedia('(prefers-color-scheme: dark)')" in vals.group(1)
+
+
+@pytest.mark.parametrize("instrument", ["pick", "gauntlet"])
+def test_a_lineup_tile_answers_on_a_click_or_its_number_and_none_of_these_on_a_button_or_0(
+    web: Web, instrument: str
+) -> None:
+    """htmx attributes, no script of its own: each tile posts itself as the winner on a click or on its
+    number key, the nav's "none of these" posts no winner on a click or 0, and every answer carries the
+    **Line-up** ID and the theme, targets `#lineup` and is dropped while another is in flight. A key is no
+    answer with a modifier held, held down, or typed into a field. A **Gauntlet** answers as a **Pick**
+    does, at its own route: 0 is its "none of these" too."""
+    _, client = web
+    shell = client.get(f"/compare?instrument={instrument}").text
+    fragment = client.get(f"/compare/lineup?instrument={instrument}").text
+
+    tiles = re.findall(r"<button\b[^>]*data-wallpaper-id=[^>]*>", fragment)
+    none = re.search(r"<form\b[^>]*data-none-of-these[^>]*>", shell)
+    assert len(tiles) == 4
+    assert none is not None
+    answers = [*tiles, none.group(0)]
+    for number, control in enumerate(answers, start=1):
+        key = number % len(answers)
+        trigger = re.search(r'hx-trigger="([^"]*)"', control)
+        assert trigger is not None
+        assert f"keydown[key=='{key}'&&" in trigger.group(1)
+        assert trigger.group(1).endswith("] from:body")
+        for guard in ("!ctrlKey", "!metaKey", "!altKey", "!repeat", "input,select,textarea"):
+            assert guard in trigger.group(1)
+        assert f'hx-post="/compare/{instrument}"' in control
+        assert 'hx-target="#lineup"' in control
+        assert 'hx-sync="#lineup:drop"' in control
+        assert 'hx-include="#lineup-id"' in control
+    for tile in tiles:
+        winner = re.search(r'data-wallpaper-id="(\w+)"', tile)
+        assert winner is not None
+        assert f'hx-vals=\'{{"wallpaper_id": "{winner.group(1)}"}}\'' in tile
+    assert re.search(r'<ul class="lineup"[^>]*hx-vals="js:\{theme:', fragment)
+    assert re.search(r'hx-vals="js:\{theme:', none.group(0))
+    assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
+
+
+def test_an_order_tile_ranks_on_a_click_or_its_number_and_submit_is_a_button_or_enter_with_0_unbound(
+    web: Web,
+) -> None:
+    """On an **Order**, each tile posts its rank on a click or its number key, an unranked one to be ranked
+    and a ranked one, its rank on it, to be taken back; the nav's Submit posts the **Order** as it stands on
+    a click or Enter, which a focused button or link keeps for itself. Every post carries the **Line-up** ID
+    and the theme, targets `#lineup` and is dropped while another is in flight, under the same key guard as
+    a **Pick**'s. 0 answers nothing, and the page has no "none of these"."""
+    _, client = web
+    shell = client.get("/compare?instrument=order").text
+    fragment = client.get("/compare/lineup?instrument=order").text
+    lineup_id = re.search(r'name="lineup_id" value="(\w+)"', fragment).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+    first = re.search(r'data-wallpaper-id="(\w+)"', fragment).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+    fragment = client.post(
+        "/compare/order/rank", data={"lineup_id": lineup_id, "wallpaper_id": first, "ranked": "true"}
+    ).text
+
+    tiles = re.findall(r"<button\b[^>]*data-wallpaper-id=[^>]*>", fragment)
+    submit = re.search(r"<form\b[^>]*data-submit-order[^>]*>", shell)
+    assert len(tiles) == 4
+    assert submit is not None
+    for number, tile in enumerate(tiles, start=1):
+        trigger = re.search(r'hx-trigger="([^"]*)"', tile)
+        assert trigger is not None
+        assert trigger.group(1).startswith(f"click, keydown[key=='{number}'&&")
+        assert trigger.group(1).endswith("] from:body")
+        for guard in ("!ctrlKey", "!metaKey", "!altKey", "!repeat", "input,select,textarea"):
+            assert guard in trigger.group(1)
+        wallpaper_id = re.search(r'data-wallpaper-id="(\w+)"', tile).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+        offered = "false" if wallpaper_id == first else "true"
+        assert 'hx-post="/compare/order/rank"' in tile
+        assert f'"wallpaper_id": "{wallpaper_id}", "ranked": "{offered}"' in html.unescape(tile)
+        assert 'hx-target="#lineup"' in tile
+        assert 'hx-sync="#lineup:drop"' in tile
+        assert 'hx-include="#lineup-id"' in tile
+    assert re.findall(r'<span class="rank">(\d)</span>', fragment) == ["1"]
+    assert 'hx-post="/compare/order"' in submit.group(0)
+    assert 'hx-target="#lineup"' in submit.group(0)
+    assert 'hx-sync="#lineup:drop"' in submit.group(0)
+    assert 'hx-include="#lineup-id"' in submit.group(0)
+    assert re.search(r'hx-vals="js:\{theme:', submit.group(0))
+    submit_trigger = html.unescape(re.search(r'hx-trigger="([^"]*)"', submit.group(0)).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+    assert submit_trigger.startswith("submit, keydown[key=='Enter'&&")
+    assert "!target.closest('button,a')" in submit_trigger
+    assert "key=='0'" not in shell + fragment
+    assert "data-none-of-these" not in shell
+    assert "x-data" not in fragment, "no Alpine island on markup htmx replaces"
+
+
+def test_a_gauntlets_champion_wears_its_crown_on_its_own_pick_and_says_so_in_words(web: Web) -> None:
+    """The crown is inside the champion's tile, so it sits on the thumbnail and is part of what a click
+    picks, with its streak in the tile's name for a screen reader; no other tile has one, and no Alpine
+    island is added for it."""
+    _, client = web
+    first = client.get("/compare/lineup?instrument=gauntlet").text
+    lineup_id = re.search(r'name="lineup_id" value="(\w+)"', first).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+    tiles = re.findall(r'data-wallpaper-id="(\w+)"', first)
+
+    fragment = client.post("/compare/gauntlet", data={"lineup_id": lineup_id, "wallpaper_id": tiles[3]}).text
+
+    buttons = re.findall(r'<button\b[^>]*class="pick".*?</button>', fragment, flags=re.DOTALL)
+    crowned = [button for button in buttons if 'class="crown"' in button]
+    assert len(crowned) == 1
+    assert f'data-wallpaper-id="{tiles[3]}"' in crowned[0]
+    assert 'aria-label="Pick 4, the champion, 1 in a row"' in crowned[0]
+    assert re.search(r'<span class="crown" title="Won 1 in a row">\s*♛ 1\s*</span>', crowned[0])
+    assert "x-data" not in fragment
+
+
+def test_every_lineup_tile_has_the_grids_star_beside_its_pick_never_inside_it(web: Web) -> None:
+    """The same star as the grid's (star.html), by click or F, as a direct child of the tile so F finds it,
+    and a sibling of the Pick rather than inside it, so a click on the star is never a click on the tile.
+    It posts the tile's star to the live **Line-up** for the **Instrument** on screen, carrying the
+    **Line-up** ID, and swaps the **Line-up** back; it is synced with the answers on `#lineup`, so a star and
+    an answer are never in flight together."""
+    _, client = web
+    fragment = client.get("/compare/lineup?instrument=pick").text
+
+    tiles = re.findall(r'<li class="lineup-tile">(.*?)</li>', fragment, flags=re.DOTALL)
+    assert len(tiles) == 4
+    for tile in tiles:
+        (star,) = re.findall(r'<button\b[^>]*class="star"[^>]*>', tile)
+        pick = tile[tile.index('class="pick"') : tile.index("</button>")]
+        assert 'class="star"' not in pick
+        assert tile.index("</button>") < tile.index('class="star"'), "the star follows the Pick, outside it"
+        wallpaper_id = re.search(r'data-wallpaper-id="(\w+)"', tile).group(1)  # pyright: ignore[reportOptionalMemberAccess]
+        assert 'hx-post="/compare/star?instrument=pick"' in star
+        assert 'hx-target="#lineup"' in star
+        assert 'hx-sync="#lineup:drop"' in star
+        assert 'hx-include="#lineup-id"' in star
+        assert f'"wallpaper_id": "{wallpaper_id}", "starred": "true"' in html.unescape(star)
+        assert 'aria-pressed="false"' in star
+        trigger = html.unescape(re.search(r'hx-trigger="([^"]*)"', star).group(1))  # pyright: ignore[reportOptionalMemberAccess]
+        assert trigger.startswith("click, keydown[")
+        assert "'f'" in trigger
+        assert trigger.endswith("] from:body")
+
+
+def test_the_lineup_size_switcher_offers_two_to_eight_and_marks_the_stored_size(db_path: Path) -> None:
+    harness = make_harness(db_path)
+    workflows.save_settings(harness.modules, lineup_size=6)
+
+    with serving(harness) as client:
+        shell = client.get("/compare").text
+
+    switcher = shell[shell.index('<section id="lineup-size"') : shell.index("</section>")]
+    assert re.findall(r'<option value="(\d)"', switcher) == [str(n) for n in range(2, 9)]
+    assert 'value="6" selected' in switcher
+    assert shell.count('<li class="placeholder">') == 6
+
+
 def test_each_tile_says_its_zone_in_words(db_path: Path) -> None:
     """`data-zone` for the stylesheet, and the word itself, since states told apart only by colour are
     states nobody colour-blind can tell apart."""
     harness = make_harness(db_path)
-    loved = live(harness).wallpapers[0].id
-    harness.similarity.similarity_by_pair.update({(f"wp{n:04d}", loved): 0.95 for n in range(24)})
 
     with serving(harness) as client:
         first = client.get("/batch").text
         batch_id = batch_id_of(first)
+        loved = live(harness).wallpapers[0].id
+        harness.similarity.similarity_by_pair.update({(f"wp{n:04d}", loved): 0.95 for n in range(24)})
         client.post("/draft", data={"batch_id": batch_id, "wallpaper_id": loved, "verdict": "favourite"})
         client.post("/submit", data={"batch_id": batch_id})
         second = client.get("/batch").text
@@ -284,7 +511,10 @@ def test_the_settings_page_counts_what_a_pool_reset_would_throw_away(web: Web) -
 
     assert "The pool holds 24 wallpapers." in before
     assert "No batch is on screen." in before
-    assert "The batch on screen has 2 marks, which a reset throws away." in after
+    assert (
+        "The batch on screen has 2 marks. A reset throws them away, as your next visit to the batches page"
+        " would." in after
+    )
     assert 'hx-post="/settings/pool/reset"' in after
     assert (
         'hx-confirm="Reset the pool? 24 wallpapers leave it, and the batch on screen goes with its 2 marks.'

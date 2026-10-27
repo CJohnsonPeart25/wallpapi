@@ -17,7 +17,7 @@ from enum import StrEnum
 from http import HTTPStatus
 from mimetypes import guess_type
 from pathlib import Path
-from typing import Annotated, Literal, overload
+from typing import Annotated, Final, Literal, overload
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -25,20 +25,25 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.types import Lifespan
 
-from wallpapi import batches, decisions, pool, settings, workflows
+from wallpapi import batches, evidence_log, pool, settings, workflows
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused
 from wallpapi.compose import Modules, background_loops
-from wallpapi.decisions import HistoryEntry, HistoryRefused, ResolvedVerdict
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, ResolvedVerdict, Theme
+from wallpapi.lineup import Gauntleted, Lineup, LineupRefused, LineupUnavailable, Ordered, Picked
 from wallpapi.model import Verdict, Wallpaper
 from wallpapi.settings import (
     FORM_FIELDS,
     MAX_MIX_NAME_LENGTH,
     MIX_FORM_FIELDS,
     MIX_TOTAL,
+    Settings,
     SettingsRefused,
     form_values,
     mix_form,
 )
+from wallpapi.taste.gauntlet import GAUNTLET_V1
+from wallpapi.taste.order import ORDER_V1
+from wallpapi.taste.pick import PICK_V1
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -65,7 +70,8 @@ REFUSALS: dict[StrEnum, Refusal] = {
     ),
     SubmissionRefused.Reason.UNKNOWN_BATCH: Refusal(
         HTTPStatus.NOT_FOUND,
-        "That batch is no longer live here: it was skipped or reset, or this instance never drew it.",
+        "That batch is no longer live here: it was skipped or reset, or replaced when the page was opened "
+        "again in another tab, or this instance never drew it. Nothing was recorded.",
         banner=True,
     ),
     SubmissionRefused.Reason.IGNORE_DRAFTED: Refusal(
@@ -73,10 +79,22 @@ REFUSALS: dict[StrEnum, Refusal] = {
     ),
     SubmissionRefused.Reason.NOT_IN_BATCH: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
     HistoryRefused.Reason.UNKNOWN_WALLPAPER: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
+    LineupRefused.Reason.UNKNOWN_LINEUP: Refusal(
+        HTTPStatus.CONFLICT,
+        "That line-up is no longer on screen: it was answered or reset, or replaced when the compare tab was "
+        "opened again in another tab, or a key was pressed twice. Nothing more was recorded; this is the one "
+        "on screen now.",
+        banner=True,
+    ),
+    LineupRefused.Reason.NOT_IN_LINEUP: Refusal(HTTPStatus.NOT_FOUND, "unknown wallpaper"),
 }
-"""Every refusal the **Batch** and **History** pages answer, as the page answers it. Settings refusals are
-not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds, so they
-stay beside the field (ADR 0004)."""
+"""Every refusal the **Batch**, **History** and compare pages answer, as the page answers it. Settings
+refusals are not here: each is a 400 in `settings.py`'s words, which fill in the refused field's own bounds,
+so they stay beside the field (ADR 0004)."""
+
+COMPARE_INSTRUMENTS: Final = (PICK_V1.name, ORDER_V1.name, GAUNTLET_V1.name)
+"""The **Instruments** the compare tab offers, by the name each is recorded under, the first the default:
+the choice the URL carries (`?instrument=`), each answered at its own route, `/compare/<name>`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +142,15 @@ def parse_verdict(posted: str, *, required: bool) -> Verdict | None:
         raise HTTPException(status_code=HTTPStatus.BAD_REQUEST, detail="unknown verdict") from None
 
 
+def parse_theme(posted: str) -> Theme | None:
+    """The page's resolved theme, if it posted `light` or `dark`. Anything else is dropped rather than
+    refused: the theme describes the moment and must never cost the submission it rides on."""
+    try:
+        return Theme(posted)
+    except ValueError:
+        return None
+
+
 def _refuse(request: Request, reason: StrEnum) -> HTMLResponse:
     """The banner for a refusal a stale tab can provoke; a bare status for any other."""
     refusal = REFUSALS[reason]
@@ -167,6 +194,68 @@ def _mix_context(connection: sqlite3.Connection) -> dict[str, object]:
         "mixes": tuple(listed.mix for listed in settings.list_mixes(connection)),
         "active_mix": settings.get(connection).active_mix,
     }
+
+
+def _instrument(named: str) -> str:
+    """The **Instrument** the URL names, the tab's first when it names none; one it does not offer is a
+    404."""
+    if not named:
+        return COMPARE_INSTRUMENTS[0]
+    if named not in COMPARE_INSTRUMENTS:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="unknown instrument")
+    return named
+
+
+def _lineup_size_context(connection: sqlite3.Connection) -> dict[str, object]:
+    """What the **Line-up** size switcher needs: the stored size, and every size the setting accepts."""
+    field = Settings.lineup_size
+    return {
+        "lineup_size": settings.get(connection).lineup_size,
+        "lineup_sizes": range(int(field.minimum or 0), int(field.maximum or 0) + 1),
+    }
+
+
+def _lineup_view(
+    request: Request,
+    instrument: str,
+    result: Lineup | LineupUnavailable,
+    *,
+    refused: Refusal | None = None,
+) -> HTMLResponse:
+    """The **Line-up** fragment, or the words for why there is none; after a refused answer, the one on
+    screen now under the words for why, at the refusal's status."""
+    context: dict[str, object] = {
+        "instrument": instrument,
+        "refused": None if refused is None else refused.message,
+    }
+    if isinstance(result, Lineup):
+        status = HTTPStatus.OK if refused is None else refused.status
+        return templates.TemplateResponse(
+            request, "lineup_view.html", {**context, "lineup": result}, status_code=status
+        )
+    # 503 and never a 500: nothing failed, there is too little to compare and the refill may fix it.
+    return templates.TemplateResponse(
+        request,
+        "lineup_view.html",
+        {**context, "unavailable": result},
+        status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+    )
+
+
+def _next_lineup_view(
+    request: Request,
+    modules: Modules,
+    instrument: str,
+    answered: Picked | Ordered | Gauntleted | LineupRefused,
+) -> HTMLResponse:
+    """What follows an answer: the next **Line-up**, at once. After a refusal, the one on screen now under
+    the words for why, or a bare status for one no control posts."""
+    refused = None
+    if isinstance(answered, LineupRefused):
+        refused = REFUSALS[answered.reason]
+        if not refused.banner:
+            raise HTTPException(status_code=refused.status, detail=refused.message)
+    return _lineup_view(request, instrument, modules.lineups.next(modules.connect()), refused=refused)
 
 
 def _pool_reset_context(connection: sqlite3.Connection) -> dict[str, object]:
@@ -235,7 +324,8 @@ async def _posted_mix(request: Request) -> dict[str, str]:
 
 @router.get("/", response_class=HTMLResponse)
 def batch_page(request: Request, modules: Wired) -> HTMLResponse:
-    """The **Batch** page's shell, which fetches its **Batch** from `/batch`. It mints nothing."""
+    """The **Batch** page's shell, which fetches a new **Batch** from `/batch` as it loads, and the next from
+    `/batch/next` after an answer. It mints nothing itself."""
     connection = modules.connect()
     return templates.TemplateResponse(
         request,
@@ -246,14 +336,25 @@ def batch_page(request: Request, modules: Wired) -> HTMLResponse:
 
 @router.get("/batch", response_class=HTMLResponse)
 def batch_view(request: Request, modules: Wired) -> HTMLResponse:
-    """The live **Batch** as the fragment the shell swaps in."""
+    """A new **Batch** for a visit, as the fragment the shell swaps in when it loads: the live one is
+    replaced, unrecorded, with its **Draft Batch** (ADR 0029)."""
+    return _batch_view(request, modules, modules.batches.fresh(modules.connect()))
+
+
+@router.get("/batch/next", response_class=HTMLResponse)
+def next_batch_view(request: Request, modules: Wired) -> HTMLResponse:
+    """The live **Batch**, or a new one if there is none, as the fragment the shell swaps in after a
+    submission or a **Skip**, refused or not: never a visit, so a refusal shows the one live now."""
     return _batch_view(request, modules, modules.batches.next(modules.connect()))
 
 
 @router.post("/submit", response_class=HTMLResponse)
-def submit(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-    """Submit the **Batch**, answer with the banner, and have the page fetch the next one, refused or not."""
-    result = workflows.submit(modules, batch_id)
+def submit(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], theme: Annotated[str, Form()] = ""
+) -> HTMLResponse:
+    """Submit the **Batch** with the page's theme, answer with the banner, and have the page fetch the next
+    one, refused or not."""
+    result = workflows.submit(modules, batch_id, theme=parse_theme(theme))
     if isinstance(result, SubmissionRefused):
         response = _refuse(request, result.reason)
     else:
@@ -265,9 +366,12 @@ def submit(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -
 
 
 @router.post("/skip", response_class=HTMLResponse)
-def skip(request: Request, modules: Wired, batch_id: Annotated[str, Form()]) -> HTMLResponse:
-    """Skip the **Batch** (ADR 0026) and answer as `/submit` does: the banner, and the same refetch."""
-    refused = workflows.skip(modules, batch_id)
+def skip(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], theme: Annotated[str, Form()] = ""
+) -> HTMLResponse:
+    """Skip the **Batch** (ADR 0026) with the page's theme and answer as `/submit` does: the banner, and the
+    same refetch."""
+    refused = workflows.skip(modules, batch_id, theme=parse_theme(theme))
     if refused is not None:
         response = _refuse(request, refused.reason)
     else:
@@ -306,11 +410,23 @@ def draft(
 def draft_all(
     request: Request, modules: Wired, batch_id: Annotated[str, Form()], verdict: Annotated[str, Form()] = ""
 ) -> HTMLResponse:
-    """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction (ADR 0002)."""
+    """Mark the whole **Batch**, or clear it, and swap the grid back: one post, one transaction."""
     live = workflows.set_all_drafts(modules, batch_id, parse_verdict(verdict, required=False))
     if isinstance(live, SubmissionRefused):
         return _refuse(request, live.reason)
     return templates.TemplateResponse(request, "grid.html", {"batch": live})
+
+
+@router.post("/draft/preview")
+def open_preview(
+    request: Request, modules: Wired, batch_id: Annotated[str, Form()], wallpaper_id: Annotated[str, Form()]
+) -> Response:
+    """Record that a tile's full-size preview was opened. Nothing on the page changes, so nothing comes
+    back: the preview swaps nothing in."""
+    opened = workflows.open_preview(modules, batch_id, wallpaper_id)
+    if isinstance(opened, SubmissionRefused):
+        return _refuse(request, opened.reason)
+    return Response(status_code=HTTPStatus.NO_CONTENT)
 
 
 @router.get("/history", response_class=HTMLResponse)
@@ -318,7 +434,7 @@ def history_page(request: Request, modules: Wired, verdict: str = "", page: int 
     """**History**, filtered by resolved **Verdict** and paged; a page out of range is clamped."""
     connection = modules.connect()
     chosen = parse_verdict(verdict, required=False)
-    listing = decisions.history(connection, chosen, page)
+    listing = evidence_log.history(connection, chosen, page)
     return templates.TemplateResponse(
         request,
         "history.html",
@@ -326,7 +442,7 @@ def history_page(request: Request, modules: Wired, verdict: str = "", page: int 
             "history": listing,
             "rows": _history_rows(connection, listing.entries),
             "verdict": chosen,
-            "verdicts": decisions.HISTORY_FILTERS,
+            "verdicts": evidence_log.HISTORY_FILTERS,
         },
     )
 
@@ -355,6 +471,122 @@ def choose_mix(request: Request, modules: Wired, mix: Annotated[str, Form()]) ->
         request,
         "mix.html",
         _mix_context(modules.connect()),
+        status_code=HTTPStatus.BAD_REQUEST if refused else HTTPStatus.OK,
+    )
+
+
+@router.get("/compare", response_class=HTMLResponse)
+def compare_page(request: Request, modules: Wired, instrument: str = "") -> HTMLResponse:
+    """The compare tab's shell for the **Instrument** the URL names, which fetches a new **Line-up** from
+    `/compare/lineup` as it loads. It draws nothing itself."""
+    return templates.TemplateResponse(
+        request,
+        "compare.html",
+        {
+            "instrument": _instrument(instrument),
+            "instruments": COMPARE_INSTRUMENTS,
+            **_lineup_size_context(modules.connect()),
+        },
+    )
+
+
+@router.get("/compare/lineup", response_class=HTMLResponse)
+def lineup_view(request: Request, modules: Wired, instrument: str = "") -> HTMLResponse:
+    """A new **Line-up** for a visit, as the fragment the shell swaps in, its tiles answering the named
+    **Instrument**: the live one is replaced, unrecorded, with its stars (ADR 0029)."""
+    chosen = _instrument(instrument)
+    return _lineup_view(request, chosen, modules.lineups.fresh(modules.connect()))
+
+
+@router.post("/compare/pick", response_class=HTMLResponse)
+def pick(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()] = "",
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Answer the **Line-up** with a **Pick**, or "none of these" when no wallpaper is posted, and answer
+    with the next one, so it comes at once. A stale answer gets the one on screen now, under the words."""
+    picked = workflows.pick(modules, lineup_id, wallpaper_id or None, theme=parse_theme(theme))
+    return _next_lineup_view(request, modules, PICK_V1.name, picked)
+
+
+@router.post("/compare/gauntlet", response_class=HTMLResponse)
+def gauntlet(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()] = "",
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Answer the **Line-up** as a **Gauntlet**, or "none of these" when no wallpaper is posted, and answer
+    with the next one at once, as a **Pick** does: its winner kept in place under its crown, or after "none
+    of these" a new one whole. A stale answer gets the one on screen now, under the words."""
+    answered = workflows.gauntlet(modules, lineup_id, wallpaper_id or None, theme=parse_theme(theme))
+    return _next_lineup_view(request, modules, GAUNTLET_V1.name, answered)
+
+
+@router.post("/compare/order", response_class=HTMLResponse)
+def order(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Answer the **Line-up** with the **Order** held against it as it stands, partial or empty, from Enter
+    or the nav's Submit, and answer with the next one, as a **Pick** does."""
+    ordered = workflows.order(modules, lineup_id, theme=parse_theme(theme))
+    return _next_lineup_view(request, modules, ORDER_V1.name, ordered)
+
+
+@router.post("/compare/order/rank", response_class=HTMLResponse)
+def rank_lineup_tile(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()],
+    ranked: Annotated[bool, Form()],
+    theme: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Rank one **Line-up** tile next on the **Order**, or take its rank back, and answer with the same
+    **Line-up** as it now stands; or, when that leaves only the last tile unranked, which answers the
+    **Order**, with the next one. A stale rank gets the one on screen now, under the words."""
+    held = workflows.rank_lineup_tile(
+        modules, lineup_id, wallpaper_id, ranked=ranked, theme=parse_theme(theme)
+    )
+    if isinstance(held, Lineup):
+        return _lineup_view(request, ORDER_V1.name, held)
+    return _next_lineup_view(request, modules, ORDER_V1.name, held)
+
+
+@router.post("/compare/star", response_class=HTMLResponse)
+def star_lineup_tile(
+    request: Request,
+    modules: Wired,
+    lineup_id: Annotated[str, Form()],
+    wallpaper_id: Annotated[str, Form()],
+    starred: Annotated[bool, Form()],
+    instrument: str = "",
+) -> HTMLResponse:
+    """Star one **Line-up** tile, or take its star off, and answer with the same **Line-up**, its tiles
+    answering the **Instrument** the URL names: a star never answers it or draws the next. A stale star gets
+    the one on screen now, under the words, as a stale answer does."""
+    chosen = _instrument(instrument)
+    held = workflows.star_lineup_tile(modules, lineup_id, wallpaper_id, starred=starred)
+    if isinstance(held, Lineup):
+        return _lineup_view(request, chosen, held)
+    return _next_lineup_view(request, modules, chosen, held)
+
+
+@router.post("/compare/size", response_class=HTMLResponse)
+def choose_lineup_size(request: Request, modules: Wired, size: Annotated[str, Form()] = "") -> HTMLResponse:
+    """Set the **Line-up** size for the next **Line-up**. The one on screen is untouched."""
+    refused = isinstance(workflows.choose_lineup_size(modules, size), SettingsRefused)
+    return templates.TemplateResponse(
+        request,
+        "lineup_size.html",
+        _lineup_size_context(modules.connect()),
         status_code=HTTPStatus.BAD_REQUEST if refused else HTTPStatus.OK,
     )
 

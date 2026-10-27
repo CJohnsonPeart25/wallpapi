@@ -6,7 +6,14 @@ Date: 2026-10-02
 
 Accepted. Supersedes ADR 0005's sentence *"Other Verdicts may reappear: an Ignore that removed a Wallpaper
 for ever would be an undocumented second Ban"*, and its default `pool_target_size` of 2000. Supersedes ADR
-0012 whole. ADR 0007 and ADR 0015 stand unchanged.
+0012 whole. ADR 0007 and ADR 0015 stand unchanged. Amended by ADR 0027: the **Evidence log** now records
+**Wallpapers** shown without being decided, so "the **Pool** holds no **Wallpaper** the **Decision log**
+mentions" becomes "the **Pool** holds no **Item** that has ever had a **Verdict** or a **Favourite**
+recorded", a legacy **Clearance** included. Only a **Verdict** or a **Favourite** drains the **Pool**, and a
+**Favourite** can be given on any tile. Being shown never does: a **Line-up** answered by **Pick**,
+**Order** or **Gauntlet**, and a skipped **Batch**, leave their **Items** in the **Pool**, bar any given a
+**Favourite**. The two mechanisms below are renamed: `Batches.submit` appends one **Judgement** and calls
+`pool.retire` in the same transaction, and `pool._ADMIT_TO_POOL` refuses by `evidence_log.DECIDED`.
 
 ## Context
 

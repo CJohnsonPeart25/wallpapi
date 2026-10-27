@@ -1,0 +1,96 @@
+{#
+  What `/compare/lineup` swaps into the compare shell's `#lineup`, and what an answer swaps in after it: the
+  **Line-up**, or why there is none, with a line above it when the answer that brought it was refused.
+
+  The **Line-up** ID rides along as `#lineup-id`, which every answer includes; the nav's "none of these"
+  holds no input of its own for the same reason the **Batch** page's Submit holds none. The page's theme is
+  on the list as an `hx-vals` every tile inherits, beside its own `wallpaper_id`.
+
+  Each tile is one button, the thumbnail and its number on it, answering the **Instrument** on screen. On a
+  **Pick** a click or the number key posts it as the winner. On an **Order** it posts the tile's rank to the
+  live **Line-up**, which holds it while it is live: an unranked tile is ranked next, a ranked one taken
+  back, and its rank is shown on it; the response is the same **Line-up** as it now stands, or the next one
+  once all but the last tile are ranked, which answers the **Order**. Like the star, it says what a click
+  should leave, so a replayed click changes nothing. On a **Gauntlet** it posts the winner as on a **Pick**,
+  and the next **Line-up** keeps it in the same place. The champion a **Gauntlet** kept wears a crown with
+  its streak on it, whichever **Instrument** is on screen: it is a fact of the **Line-up**, not of the
+  page. The number is a `<kbd>` because it is the key to
+  press. Every tile is the same size whatever its **Zone**, and no **Zone** is shown: a label is not what
+  is being compared.
+
+  Beside that button in the `<li>`, never inside it, is the grid's star (star.html), by click or F: a click
+  on it is never a click on the tile. It posts the tile's star to the live **Line-up**, which holds it while
+  it is live (a reload replaces it, stars and all) and records it when answered, and swaps the same
+  **Line-up** back, starred. Posting for the **Instrument**
+  on screen and holding nothing of its own, it serves every **Instrument** on the **Line-up** alike. It is
+  synced on `#lineup` with the answers, so a star and an answer are never in flight together: the server
+  must hold the star before the answer that records it is posted.
+#}
+{% from "star.html" import star %}
+{% if refused %}
+  <p class="lineup-refused" role="status">{{ refused }}</p>
+{% endif %}
+{% if lineup %}
+  {% set theme_value | trim %}{% include "theme_value.html" %}{% endset %}
+  {% set key_guard | trim %}{% include "key_guard.html" %}{% endset %}
+  <input type="hidden" id="lineup-id" name="lineup_id" value="{{ lineup.id }}" />
+  <ul class="lineup" data-size="{{ lineup.wallpapers | length }}" hx-vals="{{ theme_value }}">
+    {% for wallpaper in lineup.wallpapers %}
+      {% set rank = lineup.rank_of(wallpaper.id) %}
+      {% set crowned = wallpaper.id == lineup.champion %}
+      <li class="lineup-tile">
+        <button
+          type="button"
+          class="pick"
+          data-wallpaper-id="{{ wallpaper.id }}"
+          {% if instrument == "order" %}
+            {% if rank %}
+              aria-label="Take back {{ loop.index }}, ranked {{ rank }}" aria-pressed="true"
+            {% else %}
+              aria-label="Rank {{ loop.index }} next" aria-pressed="false"
+            {% endif %}
+            hx-post="/compare/order/rank"
+            hx-vals='{"wallpaper_id": "{{ wallpaper.id }}", "ranked": "{{ 'false' if rank else 'true' }}"}'
+          {% else %}
+            aria-label="Pick {{ loop.index }}{{ ', the champion, %d in a row' % lineup.streak if crowned }}"
+            hx-post="/compare/{{ instrument }}"
+            hx-vals='{"wallpaper_id": "{{ wallpaper.id }}"}'
+          {% endif %}
+          hx-include="#lineup-id"
+          hx-target="#lineup"
+          hx-sync="#lineup:drop"
+          hx-trigger="click, keydown[key=='{{ loop.index }}'&&{{ key_guard }}] from:body"
+        >
+          <img src="/thumb/{{ wallpaper.id }}" alt="" />
+          <kbd class="key">{{ loop.index }}</kbd>
+          {% if rank %}<span class="rank">{{ rank }}</span>{% endif %}
+          {% if crowned %}
+            <span class="crown" title="Won {{ lineup.streak }} in a row">♛ {{ lineup.streak }}</span>
+          {% endif %}
+        </button>
+        {% set starred = wallpaper.id in lineup.starred %}
+        {% call star(starred) %}
+          hx-post="/compare/star?instrument={{ instrument }}"
+          hx-vals='{"wallpaper_id": "{{ wallpaper.id }}", "starred": "{{ 'false' if starred else 'true' }}"}'
+          hx-include="#lineup-id"
+          hx-target="#lineup"
+          hx-sync="#lineup:drop"
+        {% endcall %}
+      </li>
+    {% endfor %}
+  </ul>
+{% elif unavailable.reason.value == "wallhaven_unreachable" %}
+  <p>Nothing to compare: wallpapi cannot reach Wallhaven, so the pool has not filled.</p>
+  <p><small>
+    The last attempt failed{% if unavailable.error_at %} at
+    {{ unavailable.error_at.strftime("%H:%M") }} UTC{% endif %}: {{ unavailable.error }}.
+    The refill keeps trying.
+  </small></p>
+  <p><a href="/compare?instrument={{ instrument }}">Try again</a></p>
+{% else %}
+  <p>
+    Nothing to compare yet — the pool holds fewer than two wallpapers that are not on the batch
+    being judged. The background refill fills it from Wallhaven; give it a moment and reload.
+  </p>
+  <p><a href="/compare?instrument={{ instrument }}">Try again</a></p>
+{% endif %}

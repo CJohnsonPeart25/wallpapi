@@ -21,13 +21,13 @@ from enum import StrEnum
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi import decisions, storage
+from wallpapi import evidence_log, storage
 from wallpapi import settings as settings_module
-from wallpapi.clock import Clock, iso_utc
 from wallpapi.model import Wallpaper
-from wallpapi.rng import SeededRandom
 from wallpapi.settings import Settings
 from wallpapi.similarity import Similarity
+from wallpapi.taste.clock import Clock, iso_utc
+from wallpapi.taste.rng import SeededRandom
 from wallpapi.wallhaven import REQUEST_TIMEOUT, RateLimited, SearchPage, Wallhaven
 
 SFW_PURITY = "100"
@@ -242,7 +242,7 @@ class Refill:
                 self._walk = _FRESH
             return
 
-        subjects = decisions.lookalike_subjects(connection)
+        subjects = evidence_log.lookalike_subjects(connection)
         with self._lock:
             strategy = _alternated(self._last_strategy, has_subjects=bool(subjects))
             self._last_strategy = strategy
@@ -316,7 +316,7 @@ class Refill:
         the **Similarity radius** scoring uses. Made afresh for each walk taken up, and never stored.
         """
         recorded = wallpapers(connection, subjects)
-        # Every subject has a row: the **Decision log**'s foreign key holds it.
+        # Every subject has a row: the **Evidence log**'s trigger holds it.
         ordered = [recorded[subject] for subject in subjects]
         grouped = similar_groups(self._similarities(ordered, ordered), radius)
         return [[subjects[i] for i in group] for group in grouped]
@@ -435,8 +435,8 @@ def admit(
     """Put the **Wallpapers** that pass every **Filter** into the **Pool**, inside the caller's write
     transaction, checked locally whatever was asked.
 
-    A **Wallpaper** already in the **Pool** keeps the `source` and `fetched_at` it arrived with. One the
-    **Decision log** mentions is refused (ADR 0016), though its `wallpapers` row is still refreshed.
+    A **Wallpaper** already in the **Pool** keeps the `source` and `fetched_at` it arrived with. One ever
+    decided is refused (ADR 0016, ADR 0027), though its `wallpapers` row is still refreshed.
     `fetched_at` is `at` as an ISO 8601 UTC string (invariant 5); a naive moment is refused.
     """
     fetched_at = iso_utc(at)
@@ -453,7 +453,7 @@ def prune(write: sqlite3.Connection, current: Settings) -> None:
     """Drop every **Pool** member that no longer passes the **Filters**; whoever updates the settings calls it
     in the same transaction.
 
-    Membership only: the `wallpapers` row and the **Decision log** stay, and the live **Batch** is untouched.
+    Membership only: the `wallpapers` row and the **Evidence log** stay, and the live **Batch** is untouched.
     """
     retire(write, [w.id for w in members(write) if not _passes_filters(w, current)])
 
@@ -508,7 +508,7 @@ def wallpapers(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> 
 
 
 def decided(connection: sqlite3.Connection) -> list[Wallpaper]:
-    """Every **Wallpaper** the **Decision log** mentions, in or out of the **Pool**, in a fixed order.
+    """Every **Wallpaper** ever decided (`evidence_log.DECIDED`), in or out of the **Pool**, in a fixed order.
 
     Whole **Wallpapers** because the **Similarity provider** is handed them; ordered so the matrix's columns,
     and so every **Score**, are reproducible.
@@ -603,10 +603,11 @@ def _wallpaper_row(wallpaper: Wallpaper) -> tuple[str | int, ...]:
 _ADMIT_TO_POOL = f"""
 INSERT INTO pool (wallpaper_id, fetched_at, source)
 SELECT :id, :fetched_at, :source
-WHERE :id NOT IN ({decisions.MENTIONED})
+WHERE :id NOT IN ({evidence_log.DECIDED})
 ON CONFLICT (wallpaper_id) DO NOTHING
 """
-"""Admit unless the **Decision log** mentions it at all, a legacy `cleared` entry included (ADR 0016).
+"""Admit unless it has ever had a **Verdict** or a **Favourite** recorded, a legacy **Clearance** included
+(ADR 0016, ADR 0027). Shown on a **Skip** alone, it is admitted.
 
 `DO NOTHING`, so `fetched_at` stays the first arrival.
 """
@@ -616,7 +617,7 @@ _COUNT_BY_SOURCE = "SELECT source, COUNT(*) FROM pool GROUP BY source"
 _SELECT_DECIDED_WALLPAPERS = f"""
 SELECT w.*
 FROM wallpapers AS w
-WHERE w.id IN ({decisions.MENTIONED})
+WHERE w.id IN ({evidence_log.DECIDED})
 ORDER BY w.id
 """
 

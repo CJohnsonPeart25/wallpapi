@@ -22,7 +22,7 @@
       try { var theme = localStorage.getItem("wallpapi-theme"); } catch (e) {}
       if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
     </script>
-    {# Vendored, never a third-party tag: these pages render the **Decision log**, and a personal tool
+    {# Vendored, never a third-party tag: these pages render the **Evidence log**, and a personal tool
        should not stop working because somebody else's host is unreachable. Pico is the base, base.css
        is what Pico cannot say (ADR 0014). #}
     <link rel="stylesheet" href="/static/pico.indigo.min.css" />

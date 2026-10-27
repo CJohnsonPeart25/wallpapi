@@ -38,19 +38,19 @@ body > nav [type="submit"] {
     var(--pico-nav-link-spacing-horizontal);
 }
 
-#mix-switcher {
+:is(#mix-switcher, #lineup-size) {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   margin: 0;
 }
 
-#mix-switcher label {
+:is(#mix-switcher, #lineup-size) label {
   margin: 0;
   white-space: nowrap;
 }
 
-#mix-select {
+:is(#mix-select, #lineup-size-select) {
   width: auto;
 }
 
@@ -126,8 +126,13 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
 }
 
 /* The ring: the mark, readable across the grid with the pointer nowhere near it. Ban also fades. One rule
-   for a tile's draft and a History row's resolved Verdict, so a favourite reads the same on both pages. */
-:is(.tile[data-draft-verdict="favourite"], .history-row[data-resolved-verdict="favourite"]) img {
+   for a tile's draft and a History row's resolved Verdict, so a favourite reads the same on both pages; a
+   starred Line-up tile, which has no draft, takes the favourite's ring from its pressed star. */
+:is(
+  .tile[data-draft-verdict="favourite"],
+  .history-row[data-resolved-verdict="favourite"],
+  .lineup-tile:has(> .star[aria-pressed="true"])
+) img {
   outline: 4px solid var(--favourite);
   outline-offset: -4px;
 }
@@ -155,7 +160,7 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
   text-transform: uppercase;
 }
 
-/* ---------- the rail: three segments across the foot of the thumbnail, one per verdict ---------- */
+/* ---------- the rail: a segment per verdict; Like and Ban on a tile, all three on the preview ---------- */
 
 .tile .verdicts {
   position: absolute;
@@ -191,12 +196,12 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
   filter: drop-shadow(0 1px 3px rgb(0 0 0 / 55%));
 }
 
-:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="favourite"]::before { content: "⭐"; }
+:is(.preview-verdict, .history-verdicts button)[data-verdict="favourite"]::before { content: "⭐"; }
 :is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="like"]::before { content: "👍"; }
 :is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="ban"]::before { content: "💩"; }
 
 /* Only the segment under the pointer takes colour, the colour its ring will be once clicked. */
-:is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="favourite"]:hover {
+:is(.preview-verdict, .history-verdicts button)[data-verdict="favourite"]:hover {
   background-color: var(--favourite);
 }
 :is(.tile .verdict, .preview-verdict, .history-verdicts button)[data-verdict="like"]:hover {
@@ -208,6 +213,52 @@ body:not(:has(#batch-id)) :is([data-submit], [data-skip], #mix-switcher) {
 
 :is(.tile .verdict, .preview-verdict).marked {
   box-shadow: inset 0 0 0 2px var(--pico-contrast);
+}
+
+/* ---------- the star: Favourite on any tile that holds one (star.html) ---------- */
+
+/* The prototype's star: a round dark button in the top corner the Zone label leaves free, clear of the rail.
+   Unstarred it waits for the pointer or keyboard focus, as the rail does; starred it stays, in the favourite
+   colour, so a starred tile reads from across the screen. Keyed to the star's own aria-pressed and its
+   parent, never to the grid, so any tile can hold one. */
+.star {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background-color: rgb(0 0 0 / 60%);
+  color: #fff;
+  font-size: 0; /* hides the word, as the rail does, and keeps it for anything reading the page aloud */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.star::before {
+  content: "★";
+  display: block;
+  font-size: 1.1rem;
+  line-height: 2rem;
+  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 55%));
+}
+
+:hover > .star,
+:focus-within > .star,
+.star[aria-pressed="true"] {
+  opacity: 1;
+}
+
+.star:hover,
+.star[aria-pressed="true"] {
+  color: var(--favourite);
+}
+
+.star:hover {
+  background-color: rgb(0 0 0 / 80%);
 }
 
 /* ---------- History: a Pico table; only the thumbnail and the row's controls need saying ---------- */
@@ -360,8 +411,135 @@ article.preview img:fullscreen {
   background: #0b0b0e; /* the frame's own dark, so the translucent segments read the same in both themes */
 }
 
+/* ---------- the compare tab: a Line-up of equal tiles, laid out from how many there are ---------- */
+
+/*
+  The column count is the Line-up's size's, so this needs no script: two side by side, four as two by two,
+  eight as four by two. The width is capped so every row of tiles fits one screen under the nav and the
+  hint, and the Line-up is centred in what is left: a comparison you have to scroll is not side by side.
+*/
+ul.lineup {
+  --tile-ratio: 3 / 2; /* thumbs.small, as on the grid */
+  --columns: 2;
+  --rows: 1;
+  --gap: 1rem;
+  display: grid;
+  grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
+  gap: var(--gap);
+  max-width: max(
+    30rem,
+    calc((100vh - 15rem) / var(--rows) * 3 / 2 * var(--columns) + (var(--columns) - 1) * var(--gap))
+  );
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+ul.lineup[data-size="3"] { --columns: 3; }
+ul.lineup[data-size="4"] { --rows: 2; }
+ul.lineup[data-size="5"] { --columns: 5; }
+ul.lineup[data-size="6"] { --columns: 3; --rows: 2; }
+ul.lineup:is([data-size="7"], [data-size="8"]) { --columns: 4; --rows: 2; }
+
+ul.lineup > li {
+  position: relative;
+  margin: 0;
+  list-style: none;
+}
+
+ul.lineup > li.placeholder {
+  aspect-ratio: var(--tile-ratio);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-sectioning-background-color);
+}
+
+/* The whole tile is the Pick: a Pico button undone down to the thumbnail, which says it is the control by
+   the ring it takes under the pointer or the keyboard's focus. */
+.lineup-tile .pick,
+.lineup-tile .pick:is(:hover, :active, :focus) {
+  --pico-box-shadow: none;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--pico-border-radius);
+  background: none;
+  cursor: pointer;
+}
+
+.lineup-tile .pick:is(:hover, :focus-visible) {
+  outline: 3px solid var(--pico-primary);
+  outline-offset: 3px;
+}
+
+.lineup-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--tile-ratio);
+  object-fit: cover;
+  background: var(--pico-card-sectioning-background-color);
+}
+
+/* The number to press, over the thumbnail's corner, where the prototype had it. */
+.lineup-tile .key {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  padding: 0 0.45rem;
+  border-radius: 0.3rem;
+  background: rgb(0 0 0 / 65%);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* An Order's rank on its tile, in the corner the star leaves free, where the prototype had it opposite the
+   key. Once anything is ranked, the tiles still unranked fade a little, so what is left to place stands
+   apart from what is placed; a tile under the pointer or the keyboard's focus is shown in full. */
+.lineup-tile .rank {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  display: grid;
+  place-items: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  background: var(--pico-primary-background);
+  color: var(--pico-primary-inverse);
+  font-weight: 700;
+}
+
+ul.lineup:has(.rank) .lineup-tile:not(:has(.rank)) .pick:not(:hover, :focus-visible) img {
+  opacity: 0.55;
+}
+
+/* A Gauntlet's champion: the crown and its streak, in the corner the key and the star leave free, where the
+   prototype had it. Over the thumbnail, so white on dark in either theme; not the Favourite's gold, which
+   would read as a star. */
+.lineup-tile .crown {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 0.3rem;
+  background: rgb(0 0 0 / 70%);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* Nothing to pass over or submit until a Line-up has loaded. Hidden rather than removed, so the nav does not
+   shift. */
+body:not(:has(#lineup-id)) :is([data-none-of-these], [data-submit-order]) {
+  visibility: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .tile .verdicts {
+  .tile .verdicts,
+  .star {
     transition: none;
   }
 }

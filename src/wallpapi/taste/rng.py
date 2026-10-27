@@ -16,6 +16,10 @@ class SeededRandom:
         """`k` distinct members of `population`, in a shuffled order."""
         return self._random.sample(population, k)
 
+    def choices[T](self, population: Sequence[T], k: int) -> list[T]:
+        """`k` members of `population` drawn with replacement, as the evaluation's bootstrap resamples."""
+        return self._random.choices(population, k=k)
+
     def fraction(self) -> float:
         """One number in `[0, 1)`, the primitive the leftover-slot roll is built on."""
         return self._random.random()

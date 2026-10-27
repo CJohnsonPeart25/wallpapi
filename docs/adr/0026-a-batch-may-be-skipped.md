@@ -5,9 +5,15 @@ Date: 2026-10-24
 ## Status
 
 Accepted. Supersedes ADR 0002's "There is no skip" and its rejected alternative "A skip that discards the
-Batch without recording anything". The rest of ADR 0002 stands: a refresh or a reopened tab still hands back
-the live **Batch**. Invariant 4 stands: a submitted **Batch** is never retracted. ADR 0016 stands: a skip
-decides nothing, so it retires nothing.
+Batch without recording anything". The rest of ADR 0002 stood until ADR 0029 superseded it: a refresh or a
+reopened tab now draws a new **Batch** and drops the live one unrecorded, which is not a **Skip**, since only
+a **Skip** is recorded. Invariant 4 stands: a submitted **Batch** is never retracted. ADR 0016 stands: a skip
+decides nothing, so it retires nothing. Amended by ADR 0027: a **Skip** is now recorded, as a **Judgement**
+with every **Response** blank, before the **Batch** and its **Draft Batch** are dropped. Its **Reduction**
+gives it zero weight, so it still teaches nothing and still retires nothing. So the Decision's "records
+nothing" below is history, and the banner after a skip says "nothing was decided". "A skip rerolls the
+**Unknown** and **Dud** slots" is a **Batch**'s: a **Line-up** has no **Skip**, and its draw goes by **Wear**
+(ADR 0028).
 
 ## Context
 

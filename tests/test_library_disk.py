@@ -18,7 +18,7 @@ import pytest
 
 from tests.conftest import LibraryRig, library_junction, library_rig, library_symlink
 from tests.fakes import catalogue_of
-from wallpapi import decisions
+from wallpapi import evidence_log
 from wallpapi.library import DownloadingLibraryWriter, confined_to_library, library_file_name
 from wallpapi.model import Verdict
 
@@ -253,7 +253,7 @@ def test_a_library_deleted_in_explorer_changes_nothing_until_one_download_brings
     with favourited(tmp_path, 3) as (rig, seen, ids):
         library_path = rig.library_path
         assert sorted(p.name for p in library_path.iterdir()) == [f"{i}.jpg" for i in ids]
-        before = decisions.history(rig.connection)
+        before = evidence_log.history(rig.connection)
 
         for file in library_path.iterdir():
             file.unlink()
@@ -261,8 +261,8 @@ def test_a_library_deleted_in_explorer_changes_nothing_until_one_download_brings
 
         assert (reconciled.written, reconciled.removed, reconciled.failed) == ((), (), ())
         assert len(seen) == 3
-        assert decisions.history(rig.connection) == before
-        assert all(r.verdict is Verdict.FAVOURITE for r in decisions.resolve(rig.connection, ids).values())
+        assert evidence_log.history(rig.connection) == before
+        assert all(r.verdict is Verdict.FAVOURITE for r in evidence_log.resolve(rig.connection, ids).values())
 
         pulled = rig.download_favourites()
 

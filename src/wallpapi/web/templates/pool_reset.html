@@ -14,19 +14,22 @@
     {% set evicted = reset.eviction.evicted | length %}
     <p>
       Removed {{ reset.members }} pool member{{ "" if reset.members == 1 else "s" }}
-      {%- if reset.batches_discarded %}, discarded the batch on screen{% endif %}
+      {%- set discarded = (["the batch"] if reset.batches_discarded else [])
+        + (["the line-up"] if reset.lineups_discarded else []) %}
+      {%- if discarded %}, discarded {{ discarded | join(" and ") }} on screen{% endif %}
       and evicted {{ evicted }} thumbnail{{ "" if evicted == 1 else "s" }}.
     </p>
   {% endif %}
   <p><small>
-    Starts the pool again from nothing: every wallpaper waiting in it leaves, and the batch on screen goes
-    too. Your decisions, scores and library are untouched, and the refill restocks the pool to its target
-    size.
+    Starts the pool again from nothing: every wallpaper waiting in it leaves, and the batch and the line-up
+    on screen go too. Your decisions, scores and library are untouched, and the refill restocks the pool to
+    its target size.
   </small></p>
   <p>
     The pool holds {{ pool_size }} wallpaper{{ "" if pool_size == 1 else "s" }}.
     {% if live %}
-      The batch on screen has {{ marks }} mark{{ "" if marks == 1 else "s" }}, which a reset throws away.
+      The batch on screen has {{ marks }} mark{{ "" if marks == 1 else "s" }}. A reset throws
+      {{ "it" if marks == 1 else "them" }} away, as your next visit to the batches page would.
     {% else %}
       No batch is on screen.
     {% endif %}

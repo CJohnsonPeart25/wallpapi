@@ -3,12 +3,18 @@
 {#
   The **Batch** page: a shell that fetches its **Batch** rather than drawing one.
 
-  `#batch` loads `/batch` as soon as the page is up, and again on `batch-submitted`, which `/submit` fires
-  when it has recorded one and `/skip` when it has dropped one (ADR 0026). So there is one route that draws
-  a **Batch**, one that records it, one that skips it, and none knows about the others; a refresh is a
-  plain GET of this shell and never offers to repost a form. Until the first fetch lands, `#batch` holds
-  one empty tile per **Batch** slot, so the grid is laid out at its real size and the thumbnails arrive
-  into it rather than pushing the page about.
+  `#batch` loads `/batch` as soon as the page is up, which draws a new **Batch** and replaces the one live
+  before, unrecorded, marks and all: each visit is a new screen (ADR 0029). A page the browser restores
+  from its back-forward cache sends no request, so `pageshow` with `persisted` counts as a visit too:
+  otherwise Back and Forward between this page and the compare tab would keep two screens live, as two
+  browser tabs do. On `batch-submitted`, which `/submit` fires when it has recorded one and `/skip` when it
+  has dropped one (ADR 0026), refused or not, `#batch-next` loads `/batch/next` into it instead: the live
+  **Batch**, or a new one if there is none, so a refused answer shows the one live now rather than
+  replacing another tab's. So there is one route that draws a **Batch** for a visit, one that hands back
+  the next, one that records it, one that skips it, and none knows about the others; a refresh is a plain
+  GET of this shell and never offers to repost a form. Until the first fetch lands, `#batch` holds one
+  empty tile per **Batch** slot, so the grid is laid out at its real size and the thumbnails arrive into it
+  rather than pushing the page about.
 
   Submit, Skip and the **Mix** are in the nav's right-hand list rather than anywhere near the grid. Submit
   because a button below a grid of thumbnails is a button you reach for a tile and hit by mistake — and
@@ -18,20 +24,24 @@
 
   htmx 2 swaps nothing on an error status, and a refusal (404, 409) and an empty **Pool** (503) are both
   the answer the page has to show, so each target says so for the one status it expects. The handler is
-  on the target and not on the form, because htmx fires `beforeSwap` on the element being swapped. The
-  grid's check is on `#batch` itself: a tile or bulk swap inside it bubbles its own event up through here.
+  on the target and not on the form, because htmx fires `beforeSwap` on the element being swapped, which
+  is also why `#batch-next` needs none of its own. The grid's check is on `#batch` itself: a tile or bulk
+  swap inside it bubbles its own event up through here.
 #}
 {% block actions %}
+  {# The page's theme as the browser resolved it, posted with a submission or a skip (theme_value.html). #}
+  {% set theme_value | trim %}{% include "theme_value.html" %}{% endset %}
   <li>
     {% include "mix.html" %}
   </li>
   <li>
-    {# Records nothing and asks nothing: the tiles stay in the Pool, and the refetch is the same as a
-       submission's (ADR 0026). #}
+    {# Decides nothing and asks nothing: the screen is recorded as passed over, the tiles stay in the
+       Pool, and the refetch is the same as a submission's (ADR 0026). #}
     <form
       data-skip
       hx-post="/skip"
       hx-include="#batch-id"
+      hx-vals="{{ theme_value }}"
       hx-target="#batch-banner"
       hx-disabled-elt="find button"
     >
@@ -45,6 +55,7 @@
       data-submit
       hx-post="/submit"
       hx-include="#batch-id"
+      hx-vals="{{ theme_value }}"
       hx-target="#batch-banner"
       hx-disabled-elt="find button"
     >
@@ -61,13 +72,20 @@
   <div
     id="batch"
     hx-get="/batch"
-    hx-trigger="load, batch-submitted from:body"
+    hx-trigger="load, pageshow[persisted] from:window"
     hx-on::before-swap="if (event.target === this && event.detail.xhr.status === 503) event.detail.shouldSwap = true"
   >
     <ul class="batch">
       {% for _ in range(batch_size) %}<li class="placeholder"></li>{% endfor %}
     </ul>
   </div>
+  <div
+    id="batch-next"
+    hidden
+    hx-get="/batch/next"
+    hx-trigger="batch-submitted from:body"
+    hx-target="#batch"
+  ></div>
 {% endblock %}
 {% block tail %}
   {% include "preview.html" %}

@@ -1,0 +1,24 @@
+{#
+  The **Line-up** size switcher: how many wallpapers the next **Line-up** puts side by side.
+
+  Rendered inside compare.html in the nav, and on its own as the htmx swap for a switch, as mix.html is on
+  the **Batch** page. It says "next line-up" because the size is read when a **Line-up** is drawn: the one
+  on screen keeps its size, as a **Batch** keeps its own. A plain `<select>`, so no Alpine: the closed
+  control shows "4 at once", which is all there is to say.
+#}
+<section id="lineup-size">
+  <label for="lineup-size-select">Next line-up</label>
+  <select
+    id="lineup-size-select"
+    name="size"
+    hx-post="/compare/size"
+    hx-trigger="change"
+    hx-target="#lineup-size"
+    hx-swap="outerHTML"
+    hx-sync="#lineup-size:replace"
+  >
+    {% for size in lineup_sizes %}
+      <option value="{{ size }}"{% if size == lineup_size %} selected{% endif %}>{{ size }} at once</option>
+    {% endfor %}
+  </select>
+</section>

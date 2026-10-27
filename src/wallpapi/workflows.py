@@ -7,20 +7,21 @@ the data: every refusal, filter and policy is a module's; a workflow orders the 
 
 A workflow owns every transaction that spans more than one module's tables or has a post-commit tail. A
 module may open its own short write over only its own tables when nothing composes it into a larger
-transaction: `Batches.next` minting a **Batch** (re-read under the lock, ADR 0002), `Refill.step` admitting a
-page after its network call, `EmbeddingCache` in its own file, and the **Library**'s per-file records (ADR
-0006).
+transaction: `Batches` and `Lineups` drawing a screen and dropping the one it replaces (ADR 0029),
+`Refill.step` admitting a page after its network call, `EmbeddingCache` in its own file, and the
+**Library**'s per-file records (ADR 0006).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from wallpapi import batches, decisions, pool, settings, storage, thumbnails
+from wallpapi import batches, evidence_log, lineup, pool, settings, storage, thumbnails
 from wallpapi.batches import Batch, SubmissionRefused, Submitted
 from wallpapi.compose import Modules
-from wallpapi.decisions import HistoryEntry, HistoryRefused
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload
+from wallpapi.lineup import Gauntleted, Lineup, LineupRefused, Ordered, Picked
 from wallpapi.model import Mix, Verdict
 from wallpapi.settings import Settings, SettingsRefused
 from wallpapi.thumbnails import ThumbnailEviction
@@ -40,16 +41,22 @@ def set_all_drafts(modules: Modules, batch_id: str, verdict: Verdict | None) -> 
         return batches.set_all_drafts(write, batch_id, verdict)
 
 
-def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
-    """Submit the **Batch**, then reconcile the **Library** and evict thumbnails.
+def open_preview(modules: Modules, batch_id: str, wallpaper_id: str) -> Batch | SubmissionRefused:
+    """Record on the **Draft Batch** that a tile's preview was opened."""
+    with storage.write(modules.connect()) as write:
+        return batches.open_preview(write, batch_id, wallpaper_id)
+
+
+def submit(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> Submitted | SubmissionRefused:
+    """Submit the **Batch** with the page's `theme`, then reconcile the **Library** and evict thumbnails.
 
     The tail is outside the transaction: a download is a network call, and nothing the **Library** does may
-    roll the **Decision log** back. Eviction comes before the next **Batch** is drawn, so nothing about to be
+    roll the **Evidence log** back. Eviction comes before the next **Batch** is drawn, so nothing about to be
     drawn is counted as evictable.
     """
     connection = modules.connect()
     with storage.write(connection) as write:
-        submitted = modules.batches.submit(write, batch_id)
+        submitted = modules.batches.submit(write, batch_id, theme=theme)
     if isinstance(submitted, Submitted):
         current = settings.get(connection)
         modules.library.reconcile(connection, current.library_path)
@@ -57,12 +64,96 @@ def submit(modules: Modules, batch_id: str) -> Submitted | SubmissionRefused:
     return submitted
 
 
-def skip(modules: Modules, batch_id: str) -> SubmissionRefused | None:
-    """Drop the live **Batch** unrecorded, or say why not (ADR 0026). No tail: nothing left the **Pool**,
-    so there is nothing to reconcile or evict.
+def skip(modules: Modules, batch_id: str, *, theme: Theme | None = None) -> SubmissionRefused | None:
+    """Record a **Skip**, with the page's `theme`, and drop the live **Batch**, or say why not (ADR 0026).
+    No tail: nothing left the **Pool** and nothing was decided, so there is nothing to reconcile or evict.
     """
     with storage.write(modules.connect()) as write:
-        return batches.skip(write, batch_id)
+        return modules.batches.skip(write, batch_id, theme=theme)
+
+
+def star_lineup_tile(
+    modules: Modules, lineup_id: str, wallpaper_id: str, *, starred: bool
+) -> Lineup | LineupRefused:
+    """Star one tile of the live **Line-up**, or take its star off. Held while the **Line-up** is live and
+    recorded only when it is answered, so nothing is decided yet and there is no tail."""
+    with storage.write(modules.connect()) as write:
+        return lineup.star(write, lineup_id, wallpaper_id, starred=starred)
+
+
+def pick(
+    modules: Modules, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+) -> Picked | LineupRefused:
+    """Answer the live **Line-up** with `winner`, or "none of these" with `None`, with the page's `theme`;
+    then, if a tile was starred, reconcile the **Library**, as a submission does.
+
+    Only a starred answer changes a **Favourite**, so only it reconciles: an unstarred **Pick** makes no
+    network call, and the next **Line-up** comes at once. No eviction: the only **Wallpapers** a **Pick**
+    takes out of the **Pool** are its **Favourites**, whose thumbnails are kept for ever, and every other
+    tile stays in the **Pool**.
+    """
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        picked = modules.lineups.pick(write, lineup_id, winner, theme=theme)
+    if isinstance(picked, Picked) and picked.starred:
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return picked
+
+
+def gauntlet(
+    modules: Modules, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+) -> Gauntleted | LineupRefused:
+    """Answer the live **Line-up** as a **Gauntlet** with `winner`, or "none of these" with `None`, with the
+    page's `theme`; then draw the next **Line-up** keeping the winner in its place, and, if a tile was
+    starred, reconcile the **Library**, as after a **Pick** and for the same reasons.
+
+    The next is drawn as soon as the answer commits, in a write of its own, because the champion it keeps is
+    held nowhere else until then. After "none of these" there is no champion, and the next is drawn when it
+    is asked for, as after a **Pick**.
+    """
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        answered = modules.lineups.gauntlet(write, lineup_id, winner, theme=theme)
+    if isinstance(answered, Gauntleted):
+        if answered.champion is not None:
+            modules.lineups.next(connection, keeping=answered.champion)
+        if answered.starred:
+            modules.library.reconcile(connection, settings.get(connection).library_path)
+    return answered
+
+
+def rank_lineup_tile(
+    modules: Modules, lineup_id: str, wallpaper_id: str, *, ranked: bool, theme: Theme | None = None
+) -> Lineup | Ordered | LineupRefused:
+    """Rank one tile of the live **Line-up** next on its **Order**, or take its rank back. Held while the
+    **Line-up** is live, as a star is, with no tail; but the rank that leaves only the last tile unranked
+    answers the **Order** with the page's `theme`, and then, if a tile was starred, the **Library** is
+    reconciled, as after a **Pick**."""
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        ranked_or_ordered = modules.lineups.rank(write, lineup_id, wallpaper_id, ranked=ranked, theme=theme)
+    if isinstance(ranked_or_ordered, Ordered) and ranked_or_ordered.starred:
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return ranked_or_ordered
+
+
+def order(modules: Modules, lineup_id: str, *, theme: Theme | None = None) -> Ordered | LineupRefused:
+    """Answer the live **Line-up** with the **Order** held against it as it stands, partial or empty, with
+    the page's `theme`; then, if a tile was starred, reconcile the **Library**, as after a **Pick**, and for
+    the same reasons: no network call for an unstarred answer, and no eviction."""
+    connection = modules.connect()
+    with storage.write(connection) as write:
+        ordered = modules.lineups.order(write, lineup_id, theme=theme)
+    if isinstance(ordered, Ordered) and ordered.starred:
+        modules.library.reconcile(connection, settings.get(connection).library_path)
+    return ordered
+
+
+def choose_lineup_size(modules: Modules, size: str) -> Settings | SettingsRefused:
+    """Set the **Line-up** size, or say why not. It changes no **Filter**, so the **Pool** is left as it is,
+    and the live **Line-up** keeps the size it was drawn with."""
+    with storage.write(modules.connect()) as write:
+        return settings.update(write, lineup_size=size)
 
 
 def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:
@@ -71,7 +162,7 @@ def edit_verdict(modules: Modules, wallpaper_id: str, verdict: Verdict) -> Histo
     """
     connection = modules.connect()
     with storage.write(connection) as write:
-        edited = decisions.edit(write, wallpaper_id, verdict, at=modules.clock.now())
+        edited = evidence_log.edit(write, wallpaper_id, verdict, clock=modules.clock)
     if isinstance(edited, HistoryEntry):
         modules.library.reconcile(connection, settings.get(connection).library_path)
     return edited
@@ -110,15 +201,18 @@ def delete_mix(modules: Modules, name: str) -> SettingsRefused | None:
 
 @dataclass(frozen=True, slots=True)
 class PoolReset:
-    """What a **Pool reset** removed: the **Pool** members, the unsubmitted **Batches** and the thumbnails."""
+    """What a **Pool reset** removed: the **Pool** members, the unsubmitted **Batches**, the live
+    **Line-up** and the thumbnails."""
 
     members: int
     batches_discarded: int
+    lineups_discarded: int
     eviction: ThumbnailEviction
 
 
 def reset_pool(modules: Modules) -> PoolReset:
-    """Empty the **Pool** and discard the live **Batch** in one transaction, then evict thumbnails (ADR 0025).
+    """Empty the **Pool** and discard the live **Batch** and **Line-up** in one transaction, then evict
+    thumbnails (ADR 0025).
 
     The refill restocks to the **Pool target size** on its next look. Nothing is reconciled: no **Verdict**
     changes. Eviction comes after the commit, when what was purged is no longer awaited.
@@ -127,8 +221,11 @@ def reset_pool(modules: Modules) -> PoolReset:
     with storage.write(connection) as write:
         members = pool.clear(write)
         discarded = batches.discard_live(write)
+        lineups_discarded = lineup.discard_live(write)
     eviction = modules.thumbnails.evict(connection, thumbnails.cap_bytes(settings.get(connection)))
-    return PoolReset(members=members, batches_discarded=discarded, eviction=eviction)
+    return PoolReset(
+        members=members, batches_discarded=discarded, lineups_discarded=lineups_discarded, eviction=eviction
+    )
 
 
 def download_favourites(modules: Modules) -> FavouriteDownload:

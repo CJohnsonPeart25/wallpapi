@@ -3,9 +3,10 @@ open, a colours-and-category baseline answers every pair where either side has n
 open, such a pair is 0.0 and the **Wallpaper** an honest **Unknown** (ADR 0024).
 
 One matrix, **Pool** x decided, never pairwise (invariant 2): a pairwise call forces a Python loop and tempts
-caching **Scores**. Cosine is mapped by `(1 + cosine) / 2` into `[0, 1]`. `onnxruntime`, `pillow` and the
-download's `httpx2` are imported inside the functions that use them: importing onnxruntime costs most of a
-second, and the app and the suite run without the model.
+caching **Scores**. The CLIP maths (preprocessing, the embed step, the mapped cosine, the near-duplicate
+threshold) is `taste/clip.py`'s; this fetches the model, opens it, decodes the thumbnails and keeps the
+**Embeddings**. `onnxruntime`, `pillow` and the download's `httpx2` are imported inside the functions that use
+them: importing onnxruntime costs most of a second, and the app and the suite run without the model.
 """
 
 from __future__ import annotations
@@ -14,14 +15,16 @@ import hashlib
 import sqlite3
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
 from wallpapi import storage
 from wallpapi.model import Wallpaper
+from wallpapi.taste import clip
 
 # -- the baseline ------------------------------------------------------------------------------------
 
@@ -133,15 +136,16 @@ MODEL_SHA256 = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299
 
 MODEL_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MODEL_FILE}"
 
-NEAR_DUPLICATE_SIMILARITY = 0.985
-"""The mapped similarity at which two **Embeddings** are one image reposted (ADR 0021): measured, not a
-setting. The identical pairs on the real **Pool** sat at 0.99 and the near-empty images at 0.984 and below.
-"""
+CLIP_SPACE = f"{MODEL_REPO}@{MODEL_REVISION}/{MODEL_FILE}"
+"""The **Space** of the pinned CLIP image tower: its repository, revision and file, since another revision
+or another file of the same model places **Wallpapers** differently."""
 
-IMAGE_SIZE = 224
+FALLBACK_SPACE = "colour-and-category"
+"""The **Space** of the colour-and-category baseline, `metadata_similarity`."""
 
-CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
-CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+BLENDED_SPACE = f"{CLIP_SPACE}+{FALLBACK_SPACE}"
+"""The **Space** of a matrix that held both: CLIP for the pairs with two **Embeddings** and the baseline for
+the rest, as `similarities` answers while the model is not open (ADR 0024)."""
 
 EMBED_BATCH = 16
 
@@ -180,6 +184,15 @@ _UNUSABLE = (
     "Image similarity could not open its model ({failure}) — wallpapers are being compared by colour and "
     "category instead. Deleting the file under `models/` will fetch it again."
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Measured:
+    """A `len(pool)` x `len(decided)` similarity matrix and the **Space** that produced it."""
+
+    matrix: NDArray[np.float32]
+    space: str
+
 
 type Similarity = Callable[[Sequence[Wallpaper], Sequence[Wallpaper]], NDArray[np.float32]]
 """A `len(pool)` x `len(decided)` matrix of similarities in `[0, 1]`: what `Embeddings` falls back to."""
@@ -240,49 +253,78 @@ class Embeddings:
 
     def similarities(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> NDArray[np.float32]:
         """A `len(pool)` x `len(decided)` float32 matrix in `[0, 1]`. A pair without two **Embeddings**
-        is the fallback's until the model is open and 0.0 after, beyond every radius (ADR 0024).
+        is the fallback's until the model is open and 0.0 after, beyond every radius below 1 (ADR 0024).
+        """
+        return self.measure(pool, decided).matrix
+
+    def measure(self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]) -> Measured:
+        """`similarities`, with the **Space** that answered, decided in the same call so the two cannot
+        disagree: `CLIP_SPACE` once the model is open, an unembedded pair's 0.0 being CLIP's own rule;
+        while it is not, `BLENDED_SPACE` if any pair had two **Embeddings** and `FALLBACK_SPACE` if none
+        did.
         """
         # Read once: `_open` sets it on the similarity thread, and a bool needs no lock.
-        if self._opened:
+        opened = self._opened
+        if opened:
             unembedded = np.zeros((len(pool), len(decided)), dtype=np.float32)
         else:
             unembedded = self._fallback(pool, decided)
-        embedded = self._embedded(pool, decided)
+        embedded = self._embedded([w.id for w in pool], [w.id for w in decided])
         if embedded is None:
-            return unembedded
+            return Measured(unembedded, CLIP_SPACE if opened else FALLBACK_SPACE)
         mapped, both = embedded
-        blended = np.where(both, mapped, unembedded)
-        return np.clip(blended, 0.0, 1.0).astype(np.float32)
+        blended = np.clip(np.where(both, mapped, unembedded), 0.0, 1.0).astype(np.float32)
+        if opened:
+            return Measured(blended, CLIP_SPACE)
+        return Measured(blended, BLENDED_SPACE if bool(both.any()) else FALLBACK_SPACE)
+
+    def stored_similarities(self, pool_ids: Sequence[str], decided_ids: Sequence[str]) -> NDArray[np.float32]:
+        """`similarities` as it answers once the model is open, whatever state the model is in, by
+        **Wallpaper** id: the mapped cosine where both sides have an **Embedding** and 0.0 where either has
+        none (ADR 0024). Reads the store and nothing else: it never opens, fetches or embeds, and never asks
+        the fallback, so a command can use it without the model.
+        """
+        embedded = self._embedded(pool_ids, decided_ids)
+        if embedded is None:
+            return np.zeros((len(pool_ids), len(decided_ids)), dtype=np.float32)
+        mapped, both = embedded
+        return np.clip(np.where(both, mapped, 0.0), 0.0, 1.0).astype(np.float32)
+
+    def unembedded(self, wallpaper_ids: Sequence[str]) -> set[str]:
+        """Those of `wallpaper_ids` with no **Embedding** `similarities` would use: none stored, or one of
+        another width or all zeros."""
+        held = self._store.vectors_for(wallpaper_ids)
+        width = next(iter(held.values())).size if held else 0
+        _, known = _rows(wallpaper_ids, held, width)
+        return {w for w, embedded in zip(wallpaper_ids, known, strict=True) if not embedded}
 
     def near_duplicates(self, pool: Sequence[Wallpaper], banned: Sequence[Wallpaper]) -> NDArray[np.bool_]:
         """A `len(pool)` x `len(banned)` mask of the pairs that are one image reposted (ADR 0021): both
-        sides embedded and at least `NEAR_DUPLICATE_SIMILARITY`. The fallback never enters it, because
-        flat-colour pairs score 1.0 there.
+        sides embedded and `clip.near_duplicates`. The fallback never enters it, because flat-colour pairs
+        score 1.0 there.
         """
-        embedded = self._embedded(pool, banned)
+        embedded = self._embedded([w.id for w in pool], [w.id for w in banned])
         if embedded is None:
             return np.zeros((len(pool), len(banned)), dtype=np.bool_)
         mapped, both = embedded
-        return both & (mapped >= NEAR_DUPLICATE_SIMILARITY)
+        return both & clip.near_duplicates(mapped)
 
     def _embedded(
-        self, pool: Sequence[Wallpaper], decided: Sequence[Wallpaper]
+        self, pool_ids: Sequence[str], decided_ids: Sequence[str]
     ) -> tuple[NDArray[np.float32], NDArray[np.bool_]] | None:
         """The mapped cosine of every pair and the mask of pairs where both sides have an **Embedding**, in
         one lookup; `None` when there is nothing to compare.
         """
-        if not pool or not decided:
+        if not pool_ids or not decided_ids:
             return None
-        held = self._store.vectors_for([w.id for w in pool] + [w.id for w in decided])
+        held = self._store.vectors_for([*pool_ids, *decided_ids])
         if not held:
             return None
         width = next(iter(held.values())).size
 
-        pool_rows, pool_known = _rows([w.id for w in pool], held, width)
-        decided_rows, decided_known = _rows([w.id for w in decided], held, width)
-        cosine = pool_rows @ decided_rows.T
-        # Not clipped at zero: a negative cosine means less in common than unrelated.
-        mapped = (1.0 + np.clip(cosine, -1.0, 1.0)) / 2.0
+        pool_rows, pool_known = _rows(pool_ids, held, width)
+        decided_rows, decided_known = _rows(decided_ids, held, width)
+        mapped = clip.similarities(pool_rows, decided_rows)
         return mapped, pool_known[:, None] & decided_known[None, :]
 
     def catch_up(self, thumbnails: Path, stop_event: threading.Event) -> float:
@@ -447,7 +489,7 @@ class EmbeddingCache:
         with storage.write(self._connect()) as write:
             write.execute(
                 "INSERT OR REPLACE INTO embeddings (wallpaper_id, dim, vector) VALUES (?, ?, ?)",
-                (wallpaper_id, int(flat.size), _normalised(flat).astype("<f4").tobytes()),
+                (wallpaper_id, int(flat.size), clip.normalised(flat).astype("<f4").tobytes()),
             )
 
     def embedded_ids(self) -> set[str]:
@@ -469,16 +511,15 @@ class EmbeddingCache:
 
 
 class OnnxClipEmbedder:
-    """The production `Embed`: a CLIP image tower run on the CPU by ONNX Runtime. Nothing is opened or
-    imported until the first call, so the app boots and the model downloads before anything needs it.
+    """The production `Embed`: a CLIP image tower run on the CPU by ONNX Runtime, through `clip.embed`.
+    Nothing is opened or imported until the first call, so the app boots and the model downloads before
+    anything needs it.
     """
 
     def __init__(self, model_path: Path, *, batch_size: int = EMBED_BATCH) -> None:
         self._model_path = model_path
         self._batch_size = batch_size
-        self._session: _OnnxSession | None = None
-        self._input_name: str = ""
-        self._output_index: int = 0
+        self._session: clip.Session | None = None
 
     def __call__(self, images: Sequence[Path]) -> NDArray[np.float32]:
         session = self._loaded()
@@ -487,29 +528,21 @@ class OnnxClipEmbedder:
         rows: list[NDArray[np.float32]] = []
         for start in range(0, len(images), self._batch_size):
             batch = images[start : start + self._batch_size]
-            pixels = np.stack([_preprocess(path) for path in batch])
-            outputs = session.run(None, {self._input_name: pixels})
-            rows.append(_as_vectors(outputs[self._output_index]))
-        stacked = np.concatenate(rows, axis=0)
-        return np.stack([_normalised(row) for row in stacked])
+            rows.append(clip.embed(session, np.stack([_pixels(path) for path in batch])))
+        return np.concatenate(rows, axis=0)
 
-    def _loaded(self) -> _OnnxSession:
+    def _loaded(self) -> clip.Session:
         if self._session is None:
             import onnxruntime
 
             if not self._model_path.exists():
                 raise RuntimeError(f"no CLIP image tower at {self._model_path}")
-            session = cast(
-                "_OnnxSession",
+            self._session = cast(
+                "clip.Session",
                 onnxruntime.InferenceSession(  # pyright: ignore[reportUnknownMemberType]
                     str(self._model_path), providers=["CPUExecutionProvider"]
                 ),
             )
-            self._session = session
-            self._input_name = session.get_inputs()[0].name
-
-            names = [output.name for output in session.get_outputs()]
-            self._output_index = names.index("image_embeds") if "image_embeds" in names else 0
         return self._session
 
 
@@ -565,47 +598,13 @@ class _Cancelled(Exception):
     """Shutdown arrived mid download."""
 
 
-class _OnnxNode(Protocol):
-    name: str
-
-
-class _OnnxSession(Protocol):
-    """Just enough of `onnxruntime.InferenceSession` to type: it ships no `py.typed`."""
-
-    def get_inputs(self) -> Sequence[_OnnxNode]: ...
-    def get_outputs(self) -> Sequence[_OnnxNode]: ...
-    def run(self, output_names: Sequence[str] | None, input_feed: Mapping[str, Any]) -> Sequence[Any]: ...
-
-
-def _preprocess(path: Path) -> NDArray[np.float32]:
-    """One thumbnail as CLIP's `(3, 224, 224)` input: resize the short side, centre crop, normalise."""
+def _pixels(path: Path) -> NDArray[np.float32]:
+    """One thumbnail file, decoded to RGB here and made CLIP's input by `clip.preprocess`."""
     from PIL import Image
 
     with Image.open(path) as handle:
         image = handle.convert("RGB")
-        width, height = image.size
-        scale = IMAGE_SIZE / min(width, height)
-        size = (max(1, round(width * scale)), max(1, round(height * scale)))
-        resized = image.resize(size, Image.Resampling.BICUBIC)
-    left = (resized.width - IMAGE_SIZE) // 2
-    top = (resized.height - IMAGE_SIZE) // 2
-    cropped = resized.crop((left, top, left + IMAGE_SIZE, top + IMAGE_SIZE))
-
-    pixels = np.asarray(cropped, dtype=np.float32) / 255.0
-    normalised = (pixels - np.array(CLIP_MEAN, dtype=np.float32)) / np.array(CLIP_STD, dtype=np.float32)
-    return np.transpose(normalised, (2, 0, 1)).astype(np.float32)
-
-
-def _as_vectors(output: Any) -> NDArray[np.float32]:
-    """The model's output as one row per image: the class token if the export gives `last_hidden_state`."""
-    array = np.asarray(output, dtype=np.float32)
-    return array[:, 0, :] if array.ndim == 3 else array
-
-
-def _normalised(vector: NDArray[np.float32]) -> NDArray[np.float32]:
-    """Unit length, or unchanged if there is no length to divide by."""
-    norm = float(np.linalg.norm(vector))
-    return vector if norm == 0.0 else (vector / norm).astype(np.float32)
+    return clip.preprocess(image)
 
 
 def _chunked(items: Sequence[str], size: int) -> Iterable[Sequence[str]]:

@@ -6,9 +6,9 @@ How a ticket goes from `ready-for-agent` to merged. Written down after the first
 ## One agent, one issue, one worktree
 
 - Each ticket is implemented by one agent in its own worktree: `C:\Users\Cameron\code\wallpapi-wt\<id>`
-  on branch `<id>-<short-slug>` (`<id>` the bead id), cut from the epic's integration branch (`origin/main`
-  for a lone ticket). Work never happens in the main checkout. The agent claims the bead first:
-  `bd update <id> --claim`.
+  on Windows, `~/code/wallpapi-wt/<id>` on Linux, on branch `<id>-<short-slug>` (`<id>` the bead id), cut
+  from the epic's integration branch (`origin/main` for a lone ticket). Work never happens in the main
+  checkout. The agent claims the bead first: `bd update <id> --claim`.
 - The agent reads, in order: `AGENTS.md`, `CONTEXT.md`, `docs/adr/`, the bead with all its comments
   (`bd show <id> --json --include-comments`; the "Agent Brief" and "Note from triaging" comments refine the
   body), the two most recent merged PRs for house style, then the code nearest the ticket.

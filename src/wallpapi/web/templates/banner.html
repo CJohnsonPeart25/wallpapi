@@ -1,14 +1,15 @@
 {#
-  What `/submit` and `/skip` swap into the shell's `#batch-banner`: what the submission recorded, that a skip
-  recorded nothing, or why nothing happened. Nothing stores it, so a refresh — a fresh shell — drops it.
+  What `/submit` and `/skip` swap into the shell's `#batch-banner`: what the submission recorded, that a
+  skip decided nothing (it is recorded, as a screen passed over), or why nothing happened. Nothing stores
+  it, so a refresh — a fresh shell — drops it.
 #}
 {% if refused %}
   <p>{{ refused }}</p>
 {% elif skipped %}
-  <p><small>Skipped — nothing was recorded.</small></p>
+  <p><small>Skipped — nothing was decided.</small></p>
 {% else %}
   {# Said as it was recorded: calling three Favourites "ignores" because most of the Batch was
-     unmarked would be a plain lie about what went into the Decision log. #}
+     unmarked would be a plain lie about what went into the Evidence log. #}
   <p><small>
     {% if recorded == ignored %}
       Recorded {{ ignored }} ignore{{ "" if ignored == 1 else "s" }}.

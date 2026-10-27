@@ -1,10 +1,10 @@
-"""The **Library**: reconciling it with the **Decision log**, the **Favourite** download, the confinement
+"""The **Library**: reconciling it with the **Evidence log**, the **Favourite** download, the confinement
 guard every write and deletion passes, and the writer behind them. Nothing else reads or writes
 `library_files`.
 
 Nothing is ever read back out of the **Library**, and the writer has no "does this exist" method. The one
 question ever asked of the folder, whether a recorded path is still there, is the **Favourite** download's.
-Both operations run after the **Decision log** has committed and take a connection, not a write handle: each
+Both operations run after the **Evidence log** has committed and take a connection, not a write handle: each
 file is downloaded first and recorded in a short transaction of its own, so no network call is ever made
 inside a write (ADR 0006).
 """
@@ -20,9 +20,9 @@ from typing import Protocol
 
 import httpx2
 
-from wallpapi import decisions, storage
-from wallpapi.clock import Clock, iso_utc
+from wallpapi import evidence_log, storage
 from wallpapi.files import url_suffix, write_atomically
+from wallpapi.taste.clock import Clock, iso_utc
 
 REQUEST_TIMEOUT = 10.0
 """Seconds. Below the shutdown join timeout, so shutdown cannot hang mid-download (invariant 12)."""
@@ -80,11 +80,11 @@ class Library:
         self._clock = clock
 
     def reconcile(self, connection: sqlite3.Connection, library_path: Path) -> LibraryReconciliation:
-        """Make the **Library** folder agree with the **Decision log**, and report what that took.
+        """Make the **Library** folder agree with the **Evidence log**, and report what that took.
 
         Idempotent and derived: a **Favourite** with no recorded file gets one, a recorded file whose
         **Wallpaper** is no longer a **Favourite** is deleted. Failures are collected rather than raised,
-        because this runs after the **Decision log** has committed. Nothing here stats a path.
+        because this runs after the **Evidence log** has committed. Nothing here stats a path.
         """
         favourites, rows = _candidates(connection)
 
@@ -260,7 +260,7 @@ def _candidates(connection: sqlite3.Connection) -> tuple[set[str], list[sqlite3.
     """The **Favourites**, and every row a reconciliation might act on: a **Favourite**, or one holding a
     recorded file.
     """
-    favourites = decisions.favourites(connection)
+    favourites = evidence_log.favourites(connection)
     # SQLite's parameter limit is 32,766 here, well above any count of **Favourites**.
     placeholders = ",".join("?" * len(favourites))
     rows = connection.execute(_LIBRARY_CANDIDATES.format(favourites=placeholders), favourites).fetchall()
@@ -276,7 +276,7 @@ ORDER BY w.id
 """
 """Everything a reconciliation might act on: a **Favourite** now, or holding a recorded file.
 
-`{favourites}` is placeholders built here; the ids from `decisions.favourites` are bound as parameters.
+`{favourites}` is placeholders built here; the ids from `evidence_log.favourites` are bound as parameters.
 """
 
 _RECORD_LIBRARY_FILE = """

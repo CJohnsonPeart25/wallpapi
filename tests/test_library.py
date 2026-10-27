@@ -3,7 +3,7 @@
 The **Library** is derived from the **Decision log**: a **Favourite** with no file gets one, and a file whose
 **Wallpaper** is no longer a **Favourite** loses it. That makes `reconcile` idempotent, which is what lets a
 failed download simply be retried. A real in-memory database; **Wallpapers** are admitted and **Verdicts**
-appended as `pool` and `decisions` do. The last section is the workflows calling it at the right moments,
+recorded as `pool` and `evidence_log` do. The last section is the workflows calling it at the right moments,
 on `make_harness`, because what it checks is a workflow's post-commit tail.
 """
 
@@ -17,10 +17,11 @@ import pytest
 
 from tests.conftest import FIXED_NOW, Harness, LibraryRig, library_rig, live, make_harness
 from tests.fakes import FakeLibraryWriter, catalogue_of, wallpaper
-from wallpapi import decisions, settings, workflows
+from wallpapi import evidence_log, lineup, settings, workflows
 from wallpapi.batches import Batch
-from wallpapi.decisions import HistoryEntry
+from wallpapi.evidence_log import HistoryEntry
 from wallpapi.library import Library
+from wallpapi.lineup import Gauntleted, Lineup, Ordered, Picked
 from wallpapi.model import Verdict
 
 ONE, TWO, THREE = (w.id for w in catalogue_of(3))
@@ -245,10 +246,10 @@ def library_harness(db_path: Path, library_path: Path, count: int) -> Harness:
     return harness
 
 
-def test_a_submitted_favourite_is_written_after_the_decision_log_commits(
+def test_a_submitted_favourite_is_written_after_the_evidence_log_commits(
     db_path: Path, tmp_path: Path
 ) -> None:
-    """A failed download cannot roll the **Decision log** back; the next submission's reconciliation picks
+    """A failed download cannot roll the **Evidence log** back; the next submission's reconciliation picks
     the **Favourite** up."""
     harness = library_harness(db_path, tmp_path / "Library", 2)
     batch = live(harness)
@@ -259,9 +260,7 @@ def test_a_submitted_favourite_is_written_after_the_decision_log_commits(
     workflows.submit(harness.modules, batch.id)
 
     assert [w.wallpaper_id for w in harness.library.written] == [written]
-    assert [e.entry for e in decisions.entries(harness.connect(), batch_id=batch.id)] == [
-        Verdict.FAVOURITE
-    ] * 2
+    assert evidence_log.favourites(harness.connect()) == sorted([failing, written])
 
     harness.library.fail_for.clear()
 
@@ -301,5 +300,125 @@ def test_unmarking_a_reshown_favourite_takes_its_file_away(
         assert isinstance(workflows.set_draft(harness.modules, batch.id, ONE, None), Batch)
     workflows.submit(harness.modules, batch.id)
 
-    assert decisions.resolve(harness.connect(), [ONE])[ONE].verdict is Verdict.IGNORE
+    assert evidence_log.resolve(harness.connect(), [ONE])[ONE].verdict is Verdict.IGNORE
     assert harness.library.removed == [written]
+
+
+def live_lineup(harness: Harness) -> Lineup:
+    """The live **Line-up**, drawn if there is none, as an answer is followed by the next."""
+    shown = harness.modules.lineups.next(harness.connect())
+    assert isinstance(shown, Lineup), shown
+    return shown
+
+
+def test_a_lineup_answered_with_a_star_reconciles_the_library_after_the_evidence_log_commits(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """The **Pick**'s tail, as a submission's: a failed download leaves the **Judgement** standing. Only an
+    answer with a star reconciles, since only it changes a **Favourite**: an unstarred one leaves the failed
+    download alone, and the next starred one picks it up beside its own."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    first = live_lineup(harness)
+    failing = first.wallpapers[0].id
+    harness.library.fail_for.add(failing)
+    assert isinstance(workflows.star_lineup_tile(harness.modules, first.id, failing, starred=True), Lineup)
+
+    assert workflows.pick(harness.modules, first.id, first.wallpapers[1].id) == Picked(
+        lineup_id=first.id, winner=first.wallpapers[1].id, starred=(failing,)
+    )
+
+    assert harness.library.written == []
+    assert evidence_log.favourites(harness.connect()) == [failing]
+
+    harness.library.fail_for.clear()
+    unstarred = live_lineup(harness)
+    workflows.pick(harness.modules, unstarred.id, None)
+
+    assert harness.library.written == []
+
+    starred = live_lineup(harness)
+    workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[0].id, starred=True)
+    workflows.pick(harness.modules, starred.id, None)
+
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted(
+        [failing, starred.wallpapers[0].id]
+    )
+
+
+def test_a_gauntlet_draws_the_next_around_its_winner_then_reconciles_the_library_only_when_starred(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """**Gauntlet**'s tail: the next **Line-up** is drawn as the answer commits, keeping the winner where it
+    won, so the page's next ask finds it live; after "none of these" nothing is drawn until asked. A starred
+    answer then reconciles, a failed download leaving the **Judgement** standing; an unstarred one, or a
+    "none of these", leaves the failed download alone, and the next starred one picks it up beside its own."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    first = live_lineup(harness)
+    _, b, _, d = (w.id for w in first.wallpapers)
+    harness.library.fail_for.add(d)
+    workflows.star_lineup_tile(harness.modules, first.id, d, starred=True)
+
+    answered = workflows.gauntlet(harness.modules, first.id, b)
+
+    assert isinstance(answered, Gauntleted)
+    assert answered.starred == (d,)
+    second = lineup.live(harness.connect())
+    assert second is not None
+    assert (second.champion, second.streak, second.wallpapers[1].id) == (b, 1, b)
+    assert evidence_log.favourites(harness.connect()) == [d]
+    assert harness.library.written == []
+
+    harness.library.fail_for.clear()
+    workflows.gauntlet(harness.modules, second.id, b)
+    third = lineup.live(harness.connect())
+    assert third is not None
+    assert (third.champion, third.streak) == (b, 2)
+    workflows.gauntlet(harness.modules, third.id, None)
+
+    assert lineup.live(harness.connect()) is None
+    assert harness.library.written == []
+
+    starred = live_lineup(harness)
+    workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[0].id, starred=True)
+    workflows.gauntlet(harness.modules, starred.id, None)
+
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted([d, starred.wallpapers[0].id])
+
+
+def test_an_order_answered_with_a_star_reconciles_the_library_whether_ranking_or_submitting_answered_it(
+    db_path: Path, tmp_path: Path
+) -> None:
+    """**Order**'s tail, as a **Pick**'s: the rank that leaves only the last tile unranked answers it, and so
+    does a submit. A starred answer reconciles after the **Judgement** commits, a failed download leaving it
+    standing; an unstarred one, answered either way, leaves the failed download alone, and the next starred
+    one picks it up beside its own."""
+    harness = library_harness(db_path, tmp_path / "Library", 8)
+    first = live_lineup(harness)
+    a, b, c, d = (w.id for w in first.wallpapers)
+    harness.library.fail_for.add(d)
+    workflows.star_lineup_tile(harness.modules, first.id, d, starred=True)
+    for w in (b, a):
+        assert isinstance(workflows.rank_lineup_tile(harness.modules, first.id, w, ranked=True), Lineup)
+
+    assert workflows.rank_lineup_tile(harness.modules, first.id, c, ranked=True) == Ordered(
+        lineup_id=first.id, ranked=(b, a, c, d), starred=(d,)
+    )
+    assert evidence_log.favourites(harness.connect()) == [d]
+    assert harness.library.written == []
+
+    harness.library.fail_for.clear()
+    submitted = live_lineup(harness)
+    workflows.order(harness.modules, submitted.id)
+    completed = live_lineup(harness)
+    for w in completed.wallpapers[:3]:
+        workflows.rank_lineup_tile(harness.modules, completed.id, w.id, ranked=True)
+
+    assert len(evidence_log.judgements(harness.connect())) == 3
+    assert harness.library.written == []
+
+    starred = live_lineup(harness)
+    workflows.star_lineup_tile(harness.modules, starred.id, starred.wallpapers[1].id, starred=True)
+    assert workflows.order(harness.modules, starred.id) == Ordered(
+        lineup_id=starred.id, ranked=(), starred=(starred.wallpapers[1].id,)
+    )
+    assert sorted(w.wallpaper_id for w in harness.library.written) == sorted([d, starred.wallpapers[1].id])

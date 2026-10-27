@@ -7,6 +7,7 @@ timeout rather than sleeping.
 from __future__ import annotations
 
 import ast
+import re
 import sqlite3
 import threading
 import time
@@ -152,6 +153,35 @@ def test_write_waits_for_a_held_lock_and_then_succeeds(migrated: Path) -> None:
         assert {"holder", "waiter"} <= keys
 
 
+def test_a_read_only_connection_refuses_a_write_and_is_handed_back_able_to_write(migrated: Path) -> None:
+    with closing(storage.connect(migrated)) as connection:
+        with (
+            storage.read_only(connection) as reading,
+            pytest.raises(sqlite3.OperationalError, match="readonly"),
+        ):
+            reading.execute("INSERT INTO settings (key, value) VALUES ('sneaked', '1')")
+
+        with storage.write(connection) as handle:
+            handle.execute("INSERT INTO settings (key, value) VALUES ('after', '1')")
+        keys = {str(row["key"]) for row in connection.execute("SELECT key FROM settings")}
+        assert "after" in keys
+        assert "sneaked" not in keys
+
+
+def test_a_read_only_block_sees_one_snapshot_while_another_connection_writes(migrated: Path) -> None:
+    """What makes the evaluation safe beside a running server: a **Judgement** committed between two of its
+    reads cannot be half seen."""
+    with closing(storage.connect(migrated)) as connection, closing(storage.connect(migrated)) as server:
+        with storage.read_only(connection) as reading:
+            before = reading.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+            with storage.write(server) as handle:
+                handle.execute("INSERT INTO settings (key, value) VALUES ('meanwhile', '1')")
+            during = reading.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+
+        assert during == before
+        assert connection.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == before + 1
+
+
 def _sqlite_calls(path: Path, *names: str) -> list[int]:
     """Lines calling `sqlite3.<name>`, or passing `detect_types`, which is how adapters get switched on.
     Parsed, not grepped: a docstring may say it."""
@@ -204,3 +234,70 @@ def test_the_sqlite3_guard_sees_every_spelling(tmp_path: Path) -> None:
     )
 
     assert _sqlite_calls(source, "register_adapter", "register_converter") == [3, 4, 5, 6]
+
+
+# -- the frozen Decision log and the Evidence log's tables (ADR 0027) ---------------------------------------
+
+DECISION_LOG_MIGRATIONS = frozenset({"_MIGRATION_1", "_steps", "_convert_decision_log"})
+"""The definitions in `storage` that may name `decision_log`: migration 1 made it, migration 10 indexed it
+and retired the **Pool** by it, and migration 12 converts it. Everything after reads the **Evidence log**."""
+
+EVIDENCE_LOG_TABLE = re.compile(r"\b(?:FROM|INTO|JOIN|UPDATE|TABLE|ON)\s+judgement(?:s|_items)\b")
+
+
+def naming(source: str, text: str) -> set[str]:
+    """The top-level definitions of a module whose code holds `text` in a string, f-strings included."""
+    named: set[str] = set()
+    for statement in ast.parse(source).body:
+        match statement:
+            case ast.FunctionDef(name=name) | ast.ClassDef(name=name):
+                pass
+            case ast.Assign(targets=[ast.Name(id=name), *_]) | ast.AnnAssign(target=ast.Name(id=name)):
+                pass
+            case _:
+                name = f"<line {statement.lineno}>"
+        if any(
+            isinstance(node, ast.Constant) and isinstance(node.value, str) and text in node.value
+            for node in ast.walk(statement)
+        ):
+            named.add(name)
+    return named
+
+
+def _sources() -> dict[str, str]:
+    return {
+        path.relative_to(SOURCE).as_posix(): path.read_text(encoding="utf-8") for path in SOURCE.rglob("*.py")
+    }
+
+
+def test_nothing_outside_the_migrations_reads_or_writes_the_decision_log() -> None:
+    """Frozen, unread and undropped (ADR 0027). Any spelling of the name counts, a comment included, and in
+    `storage` only the migrations that made, indexed and converted it may hold it."""
+    sources = _sources()
+
+    assert sorted(name for name, source in sources.items() if "decision_log" in source) == ["storage.py"]
+    assert naming(sources["storage.py"], "decision_log") == DECISION_LOG_MIGRATIONS
+
+
+def test_only_the_evidence_log_and_its_migration_name_its_tables() -> None:
+    """Every query over `judgements` and `judgement_items` is in `evidence_log`; `storage` made them and
+    wrote the converted rows."""
+    naming_them = sorted(name for name, source in _sources().items() if EVIDENCE_LOG_TABLE.search(source))
+
+    assert naming_them == ["evidence_log.py", "storage.py"]
+
+
+@pytest.mark.parametrize(
+    ("source", "named"),
+    [
+        ('X = "SELECT * FROM decision_log"', {"X"}),
+        ('def f():\n    return f"DELETE FROM {t} WHERE x IN (SELECT y FROM decision_log)"', {"f"}),
+        ('class C:\n    query = "decision_log"', {"C"}),
+        ('Y: str = "decision_log"', {"Y"}),
+        ('run("decision_log")', {"<line 1>"}),
+        ('Z = "decision log"', set[str]()),
+    ],
+    ids=["a constant", "an f-string in a function", "a class", "annotated", "a bare call", "not the name"],
+)
+def test_the_naming_guard_sees_every_spelling(source: str, named: set[str]) -> None:
+    assert naming(source, "decision_log") == named

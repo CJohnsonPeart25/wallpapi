@@ -37,7 +37,6 @@ from wallpapi.pool import RefillStrategy
 from wallpapi.similarity import (
     CATEGORY_SHARE,
     CAUGHT_UP,
-    NEAR_DUPLICATE_SIMILARITY,
     RETRY_MODEL,
     EmbeddingCache,
     Embeddings,
@@ -45,6 +44,7 @@ from wallpapi.similarity import (
     Similarity,
     metadata_similarity,
 )
+from wallpapi.taste.clip import NEAR_DUPLICATE_SIMILARITY
 from wallpapi.thumbnails import Thumbnails
 
 RED = ("#ff0000", "#880000")
@@ -216,6 +216,40 @@ def test_once_the_model_is_open_with_nothing_held_the_matrix_is_zero_and_the_fal
     assert matrix.dtype == np.float32
     assert not np.any(matrix)
     assert fallback.calls == []
+
+
+@pytest.mark.parametrize("missing", ["pool", "decided"])
+def test_the_stored_similarities_answer_as_an_open_model_would_and_never_open_one(missing: str) -> None:
+    """For `wallpapi evaluate`, by **Wallpaper** id: the model never tried, yet a side with no
+    **Embedding** is 0.0 as ADR 0024 has it once open, and neither the fallback, the model nor the embed
+    step is asked anything."""
+    pool, decided, held = _one_side_missing(missing)
+    fallback, model, embed = FakeSimilarities(), ModelOnDisk(), StubEmbed()
+    similarity = Embeddings(MemoryStore(held), embed, model, fallback=fallback)
+
+    matrix = similarity.stored_similarities([w.id for w in pool], [w.id for w in decided])
+
+    assert matrix.dtype == np.float32
+    assert matrix[_unembedded(missing)].tolist() == [0.0, 0.0]
+    assert float(matrix[1, 1]) == pytest.approx(0.5)
+    assert (fallback.calls, model.calls, embed.seen, embed.batches) == ([], 0, [], [])
+
+
+def test_the_stored_similarities_of_nothing_held_are_a_zero_matrix_of_the_shape_asked() -> None:
+    matrix = embeddings().stored_similarities(["a", "b", "c"], ["a", "b"])
+
+    assert matrix.shape == (3, 2)
+    assert not np.any(matrix)
+
+
+def test_the_unembedded_are_those_with_no_vector_or_one_this_store_cannot_use() -> None:
+    """What `similarities` would treat as absent: none stored, a zero row, or another width."""
+    similarity = embeddings(
+        {"a": EAST, "b": NORTH, "zero": np.zeros(2, dtype=np.float32), "wide": vector(1, 0, 0)}
+    )
+
+    assert similarity.unembedded(["a", "none", "b", "zero", "wide"]) == {"none", "zero", "wide"}
+    assert embeddings().unembedded(["a", "b"]) == {"a", "b"}
 
 
 def test_numpy_is_a_direct_dependency() -> None:

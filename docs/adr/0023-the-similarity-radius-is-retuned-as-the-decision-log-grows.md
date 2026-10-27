@@ -6,7 +6,8 @@ Date: 2026-10-06
 
 Accepted. Supersedes ADR 0013's **Similarity radius** default of 0.15 and nothing else in it: the
 provider, the cache, the mapping into `[0, 1]` and migration 9 all stand. Amends ADR 0016's remedy for
-**Dud** build-up.
+**Dud** build-up. Amended by ADR 0029: every visit mints a **Batch**, so the notice shows on every visit
+while the zone is short; only the live **Batch** handed back after a refused answer has nothing to say.
 
 ## Context
 

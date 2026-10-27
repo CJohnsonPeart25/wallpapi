@@ -40,15 +40,19 @@ from tests.fakes import (
     StubEmbed,
     catalogue_of,
 )
-from wallpapi import batches, decisions, pool, settings, storage, workflows
+from wallpapi import batches, evidence_log, lineup, pool, settings, storage, workflows
 from wallpapi.batches import Batch, Batches, SubmissionRefused, Submitted
 from wallpapi.compose import Modules, compose
-from wallpapi.decisions import HistoryEntry, HistoryRefused
+from wallpapi.evidence_log import HistoryEntry, HistoryRefused, Theme
 from wallpapi.library import FavouriteDownload, Library, LibraryReconciliation, LibraryWriter
-from wallpapi.model import Clearance, DecisionEntry, Verdict, Wallpaper
+from wallpapi.lineup import Champion, Gauntleted, Lineup, LineupRefused, Lineups, Ordered, Picked
+from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
-from wallpapi.rng import SeededRandom
 from wallpapi.similarity import EMBED_BATCH, Embeddings
+from wallpapi.taste.clock import Clock
+from wallpapi.taste.judgement import Judgement, Shown
+from wallpapi.taste.rng import SeededRandom
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
@@ -179,6 +183,7 @@ def make_harness(
         similarity=embeddings,
         random_source=SeededRandom(seed),
         refill_random_source=SeededRandom(seed),
+        lineup_random_source=SeededRandom(seed),
         clock=clock,
     )
     harness = Harness(
@@ -256,7 +261,7 @@ def judge(harness: Harness, **marks: Verdict) -> None:
 
 
 def live(harness: Harness) -> Batch:
-    """The live **Batch**, minted if there is none, as `/batch` serves it."""
+    """The live **Batch**, minted if there is none, as `/batch/next` serves it."""
     batch = harness.modules.batches.next(harness.connect())
     assert isinstance(batch, Batch), batch
     return batch
@@ -308,8 +313,7 @@ class LibraryRig:
             )
 
     def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
-        with storage.write(self.connection) as write:
-            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+        decide(self.connection, self.clock, verdict, *wallpaper_ids)
 
     def reconcile(self) -> LibraryReconciliation:
         return self.library.reconcile(self.connection, self.library_path)
@@ -355,7 +359,7 @@ QUIET = RefillStatus(
 class BatchesRig:
     """`Batches` over one database, with the fakes behind it: a real `Embeddings` falling back to hand-defined
     similarities, and the fake clock. **Wallpapers** are admitted, retired and decided as `pool` and
-    `decisions` do, each in its own write."""
+    `evidence_log` do, each in its own write."""
 
     connection: sqlite3.Connection
     similarity: FakeSimilarities
@@ -389,15 +393,14 @@ class BatchesRig:
             pool.retire(write, wallpaper_ids)
 
     def decide(self, verdict: Verdict, *wallpaper_ids: str) -> None:
-        """Append `verdict` for each, outside any **Batch**. They stay in the **Pool**; `retire` them to stand
+        """Record `verdict` for each, outside any **Batch**. They stay in the **Pool**; `retire` them to stand
         for a submission."""
-        with storage.write(self.connection) as write:
-            decisions.append(write, dict.fromkeys(wallpaper_ids, verdict), batch_id=None, at=self.clock.now())
+        decide(self.connection, self.clock, verdict, *wallpaper_ids)
 
     def edit(self, wallpaper_id: str, verdict: Verdict) -> HistoryEntry | HistoryRefused:
         """A **History** edit, which takes nothing out of the **Pool**."""
         with storage.write(self.connection) as write:
-            return decisions.edit(write, wallpaper_id, verdict, at=self.clock.now())
+            return evidence_log.edit(write, wallpaper_id, verdict, clock=self.clock)
 
     def open_model(self, nowhere: Path) -> None:
         """Open the similarity model, as the similarity thread does, with no thumbnails to embed."""
@@ -408,9 +411,19 @@ class BatchesRig:
             assert isinstance(settings.update(write, **fields), settings.Settings)
 
     def next(self) -> Batch:
+        """The live **Batch**, minted if there is none, as `/batch/next` serves it after an answer."""
         batch = self.batches.next(self.connection)
         assert isinstance(batch, Batch), batch
         return batch
+
+    def fresh(self) -> Batch:
+        """A new **Batch** replacing the live one, as `/batch` serves a visit."""
+        batch = self.batches.fresh(self.connection)
+        assert isinstance(batch, Batch), batch
+        return batch
+
+    def batch_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM batches").fetchone()[0])
 
     def set_draft(
         self, batch_id: str, wallpaper_id: str, verdict: Verdict | None
@@ -422,24 +435,32 @@ class BatchesRig:
         with storage.write(self.connection) as write:
             return batches.set_all_drafts(write, batch_id, verdict)
 
+    def open_preview(self, batch_id: str, wallpaper_id: str) -> Batch | SubmissionRefused:
+        with storage.write(self.connection) as write:
+            return batches.open_preview(write, batch_id, wallpaper_id)
+
     def submit(self, batch_id: str) -> Submitted | SubmissionRefused:
         with storage.write(self.connection) as write:
             return self.batches.submit(write, batch_id)
 
     def skip(self, batch_id: str) -> SubmissionRefused | None:
         with storage.write(self.connection) as write:
-            return batches.skip(write, batch_id)
+            return self.batches.skip(write, batch_id)
 
     def discard(self) -> int:
         """Drop every unsubmitted **Batch**, as a **Pool reset** does."""
         with storage.write(self.connection) as write:
             return batches.discard_live(write)
 
-    def logged(self, batch_id: str | None = None) -> list[DecisionEntry]:
-        return decisions.entries(self.connection, batch_id=batch_id)
+    def logged(self) -> list[Judgement]:
+        """Every **Judgement** in the **Evidence log**, in order."""
+        return evidence_log.judgements(self.connection)
 
     def drafted_rows(self) -> int:
         return int(self.connection.execute("SELECT COUNT(*) FROM draft_batch").fetchone()[0])
+
+    def previewed_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM draft_preview").fetchone()[0])
 
     def empty_the_pool(self) -> None:
         with storage.write(self.connection) as write:
@@ -455,6 +476,119 @@ def batches_rig(
     with closing(storage.connect(database)) as connection:
         storage.migrate(connection)
         yield BatchesRig(connection, FakeSimilarities(similarities), FakeClock(FIXED_NOW))
+
+
+@dataclass
+class LineupRig(BatchesRig):
+    """`Lineups` beside the `Batches` it draws with, over the same database and fakes: the **Line-up** is
+    drawn from `Batches.ranked` with the **Embeddings** and its own **Wear**, so a **Batch** can be live
+    beside it. `next` is still the **Batch**; `lineup` is the **Line-up**."""
+
+    lineups_minted: list[str] = field(default_factory=list[str])
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        ids = count(1)
+
+        def new_id() -> str:
+            self.lineups_minted.append(f"lineup-{next(ids)}")
+            return self.lineups_minted[-1]
+
+        self.lineups = Lineups(
+            self.batches.ranked,
+            self.embeddings,
+            lambda: self.status,
+            self.clock,
+            SeededRandom(2),
+            new_id=new_id,
+        )
+
+    def lineup(self, *, keeping: Champion | None = None) -> Lineup:
+        """The live **Line-up**, minted if there is none, as an answer is followed by the next: after a
+        **Gauntlet**, `keeping` its champion."""
+        shown = self.lineups.next(self.connection, keeping=keeping)
+        assert isinstance(shown, Lineup), shown
+        return shown
+
+    def fresh_lineup(self) -> Lineup:
+        """A new **Line-up** replacing the live one, as `/compare/lineup` serves a visit."""
+        shown = self.lineups.fresh(self.connection)
+        assert isinstance(shown, Lineup), shown
+        return shown
+
+    def pick(
+        self, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+    ) -> Picked | LineupRefused:
+        """Answer the **Line-up** with `winner`, or "none of these" with `None`, in its own write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.pick(write, lineup_id, winner, theme=theme)
+
+    def gauntlet(
+        self, lineup_id: str, winner: str | None, *, theme: Theme | None = None
+    ) -> Gauntleted | LineupRefused:
+        """Answer the **Line-up** as a **Gauntlet** with `winner`, or "none of these" with `None`, in its own
+        write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.gauntlet(write, lineup_id, winner, theme=theme)
+
+    def star(self, lineup_id: str, wallpaper_id: str, *, starred: bool = True) -> Lineup | LineupRefused:
+        """Star one tile of the **Line-up**, or take its star off with `starred=False`, in its own write."""
+        with storage.write(self.connection) as write:
+            return lineup.star(write, lineup_id, wallpaper_id, starred=starred)
+
+    def starred_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM lineup_stars").fetchone()[0])
+
+    def rank(
+        self, lineup_id: str, wallpaper_id: str, *, ranked: bool = True, theme: Theme | None = None
+    ) -> Lineup | Ordered | LineupRefused:
+        """Rank one tile next on the **Order**, or take it back with `ranked=False`, in its own write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.rank(write, lineup_id, wallpaper_id, ranked=ranked, theme=theme)
+
+    def order(self, lineup_id: str, *, theme: Theme | None = None) -> Ordered | LineupRefused:
+        """Submit the **Order** held against the **Line-up** as it stands, in its own write."""
+        with storage.write(self.connection) as write:
+            return self.lineups.order(write, lineup_id, theme=theme)
+
+    def ranked_rows(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM lineup_ranks").fetchone()[0])
+
+    def discard_lineup(self) -> int:
+        """Drop the live **Line-up**, as a **Pool reset** does."""
+        with storage.write(self.connection) as write:
+            return lineup.discard_live(write)
+
+
+@contextmanager
+def lineup_rig() -> Generator[LineupRig]:
+    """A `LineupRig` over a migrated in-memory database, nothing in the **Pool**."""
+    with closing(storage.connect(":memory:")) as connection:
+        storage.migrate(connection)
+        yield LineupRig(connection, FakeSimilarities(None), FakeClock(FIXED_NOW))
+
+
+def decide(connection: sqlite3.Connection, clock: Clock, verdict: Verdict, *wallpaper_ids: str) -> None:
+    """Give each a **Verdict** from **History**, one **Judgement** each, as `evidence_log.edit` records it."""
+    with storage.write(connection) as write:
+        for wallpaper_id in wallpaper_ids:
+            assert isinstance(evidence_log.edit(write, wallpaper_id, verdict, clock=clock), HistoryEntry)
+
+
+def record_legacy_clearance(write: sqlite3.Connection, wallpaper_id: str, at: dt.datetime) -> None:
+    """A converted **Clearance**, as migration 12 makes one of a **Decision log** that held it. Nothing
+    records one any more; this appends what the conversion would have."""
+    evidence_log.append(
+        write,
+        Judgement(
+            instrument=VERDICT_GRID_V0,
+            screen=evidence_log.SCREEN_HISTORY,
+            shown=(Shown(evidence_log.item_key(wallpaper_id), LegacyTileResponse(LegacyEntry.CLEARED)),),
+            recorded_at=evidence_log.recorded_time(write, [wallpaper_id], at),
+            app=evidence_log.APP,
+            app_version=evidence_log.APP_VERSION,
+        ),
+    )
 
 
 @contextmanager
@@ -494,10 +628,11 @@ def write_old_pool(db_path: Path, wallpapers: Sequence[Wallpaper]) -> None:
             )
 
 
-def write_log_entries(db_path: Path, entries: Mapping[str, Verdict | Clearance]) -> None:
-    """Append one **History**-style entry per **Wallpaper**, behind the seam."""
+def write_log_entries(db_path: Path, entries: Mapping[str, str]) -> None:
+    """Append one **History**-style **Decision log** entry per **Wallpaper**, in the old table's words
+    (`cleared` among them), behind the seam: for a database migration 12 has not yet converted."""
     with raw_connection(db_path) as connection:
         connection.executemany(
             "INSERT INTO decision_log (wallpaper_id, batch_id, verdict, recorded_at) VALUES (?, NULL, ?, ?)",
-            [(w, entry.value, FIXED_NOW.isoformat()) for w, entry in entries.items()],
+            [(w, entry, FIXED_NOW.isoformat()) for w, entry in entries.items()],
         )

@@ -1,18 +1,22 @@
-"""**Allocation** and the draw: turning a **Mix** into **Batch** slots, ordering each **Zone**, and choosing
-the **Batch** from a classified **Pool**. Pure functions over sequences; no storage.
+"""**Allocation** and the draw: turning a **Mix** into slots for a **Batch** or a **Line-up**, ordering each
+**Zone**, and choosing the screen from a classified **Pool**. Pure functions over sequences; no storage.
+
+A **Batch** is drawn by the **Mix** alone. A **Line-up** is drawn by the **Mix** and **Wear** (ADR 0028),
+which decides which **Wallpaper** fills a **Slot** and never how many **Slots** a **Zone** gets.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from itertools import groupby
 
 import numpy as np
 from numpy.typing import NDArray
 
 from wallpapi.model import Mix, Wallpaper, Zone
-from wallpapi.rng import SeededRandom
+from wallpapi.taste.rng import SeededRandom
 
 ZONE_ORDER: tuple[Zone, ...] = (Zone.UNKNOWN, Zone.BANGER, Zone.DUD)
 """The order the **Zones** are visited in and a shortfall is filled from; fixed so a seed allocates the same
@@ -20,6 +24,11 @@ way.
 """
 
 PERCENT = 100
+
+type Wear = Mapping[str, float]
+"""How long each **Wallpaper** should wait before it is drawn again, by id, zero or more: absent is zero. A
+**Line-up** reads it as the times each was compared (`lineup.wear`); the draw only orders by it, so another
+rule may replace that one without a change here (ADR 0028)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,40 +40,63 @@ class ScoredWallpaper:
     zone: Zone
 
 
+@dataclass(frozen=True, slots=True)
+class Drawn(ScoredWallpaper):
+    """One tile of a drawn screen: its **Wallpaper**, **Score** and the **Zone** it was drawn from, and
+    `slot`, the **Zone** its **Slot** was meant for. The two differ only after a **Shortfall**."""
+
+    slot: Zone
+
+
 def draw(
     mix: Mix,
     classified: Sequence[ScoredWallpaper],
     size: int,
     random: SeededRandom,
     vectors: NDArray[np.float32] | None = None,
-) -> list[ScoredWallpaper]:
-    """Which of the classified **Pool** a **Batch** of `size` shows: slots by `mix`, each **Zone** in its draw
-    order, and any **Shortfall** refilled in `ZONE_ORDER`. Each tile keeps the **Zone** it was drawn from.
+    *,
+    wear: Wear | None = None,
+) -> list[Drawn]:
+    """Which of the classified **Pool** a screen of `size` shows: slots by `mix`, each **Zone** in its draw
+    order, and any **Shortfall** refilled in `ZONE_ORDER`. Each tile keeps the **Zone** it was drawn from,
+    and beside it the **Zone** of the **Slot** it filled: a **Shortfall**'s slots, in `ZONE_ORDER`, go to
+    the tiles that made it up, in the order they were taken.
 
     `vectors` are the **Embeddings** row for row with `classified`, for the varied **Unknown** draw (ADR
-    0018); `None` leaves the **Unknowns** in their seeded order. Shuffled at the end, so a tile's **Zone**
-    cannot be read from its position.
+    0018); `None` leaves the **Unknowns** in their seeded order. `wear` is a **Line-up**'s (ADR 0028); a
+    **Batch** passes none, which draws exactly as a wear of zero for all does. Shuffled at the end, so a
+    tile's **Zone** cannot be read from its position.
     """
     if vectors is not None and vectors.shape[0] != len(classified):
         raise ValueError(f"{vectors.shape[0]} vectors for {len(classified)} classified Wallpapers")
+    worn = [0.0] * len(classified) if wear is None else [wear.get(s.wallpaper.id, 0.0) for s in classified]
+    for scored, times in zip(classified, worn, strict=True):
+        if times < 0:
+            raise ValueError(f"{scored.wallpaper.id} has a wear of {times}: it is never below zero")
     slots = allocate(mix, size, random)
-    orders = {zone: _draw_order(zone, classified, vectors, slots[zone], random) for zone in ZONE_ORDER}
+    orders = {zone: _draw_order(zone, classified, vectors, worn, slots[zone], random) for zone in ZONE_ORDER}
     taken = dict.fromkeys(ZONE_ORDER, 0)
-    chosen: list[ScoredWallpaper] = []
+    chosen: list[Drawn] = []
 
-    def take(zone: Zone, count: int) -> int:
-        """Up to `count` more from `zone`, in its draw order. Returns how many there were."""
-        available = orders[zone][taken[zone] : taken[zone] + count]
+    def take(zone: Zone, slot_zones: Sequence[Zone]) -> int:
+        """Up to one more from `zone` per slot in `slot_zones`, in its draw order, each into the next of
+        those slots. Returns how many there were."""
+        available = orders[zone][taken[zone] : taken[zone] + len(slot_zones)]
         taken[zone] += len(available)
-        chosen.extend(available)
+        chosen.extend(
+            Drawn(wallpaper=s.wallpaper, score=s.score, zone=s.zone, slot=slot)
+            for s, slot in zip(available, slot_zones, strict=False)
+        )
         return len(available)
 
-    shortfall = sum(slots[zone] - take(zone, slots[zone]) for zone in ZONE_ORDER)
+    unfilled: list[Zone] = []
+    for zone in ZONE_ORDER:
+        unfilled += [zone] * (slots[zone] - take(zone, [zone] * slots[zone]))
     # One pass is enough: after it every **Zone** is exhausted or the **Shortfall** is met.
     for zone in ZONE_ORDER:
-        if shortfall <= 0:
+        if not unfilled:
             break
-        shortfall -= take(zone, shortfall)
+        unfilled = unfilled[take(zone, unfilled) :]
     return random.sample(chosen, len(chosen))
 
 
@@ -72,23 +104,50 @@ def _draw_order(
     zone: Zone,
     classified: Sequence[ScoredWallpaper],
     vectors: NDArray[np.float32] | None,
+    worn: Sequence[float],
     slots: int,
     random: SeededRandom,
 ) -> list[ScoredWallpaper]:
-    """The order one **Zone** gives its **Wallpapers** up in, best first.
+    """The order one **Zone** gives its **Wallpapers** up in, best first, `worn` row for row with
+    `classified` (ADR 0028).
 
-    **Bangers** by **Score** over a random order, so ties break by the seed. **Duds** stay random.
-    **Unknowns** one per look-alike group first (ADR 0018), or random without `vectors`. Indices throughout,
-    so a row of `vectors` follows its **Wallpaper**.
+    **Bangers** by **Score** over one plus wear, over a random order, so ties break by the seed. **Duds**
+    fewest wear first, and random within one count. **Unknowns** fewest wear first, and within one count
+    one per look-alike group first (ADR 0018), or random without `vectors`. Indices throughout, so a row of
+    `vectors` follows its **Wallpaper**. With no wear at all this is the **Batch** draw, number for number.
     """
     members = [index for index, scored in enumerate(classified) if scored.zone is zone]
     ordered = random.sample(members, len(members))
     if zone is Zone.BANGER:
-        ordered.sort(key=lambda index: classified[index].score, reverse=True)
+        ordered.sort(key=lambda index: classified[index].score / (1.0 + worn[index]), reverse=True)
+        return [classified[index] for index in ordered]
+    # Stable, so the seeded order stands within each count.
+    ordered.sort(key=worn.__getitem__)
     if zone is Zone.UNKNOWN and vectors is not None:
-        favourites = [classified[index].wallpaper.favourites for index in ordered]
-        ordered = [ordered[i] for i in varied_order(vectors[ordered], favourites, slots, random)]
+        ordered = _varied_by_wear(classified, vectors, worn, ordered, slots, random)
     return [classified[index] for index in ordered]
+
+
+def _varied_by_wear(
+    classified: Sequence[ScoredWallpaper],
+    vectors: NDArray[np.float32],
+    worn: Sequence[float],
+    ordered: Sequence[int],
+    slots: int,
+    random: SeededRandom,
+) -> list[int]:
+    """The **Unknowns** `ordered` fewest wear first, each count in the varied order with `k` the **Slots**
+    still to fill when it is reached; a count reached once they are full keeps its seeded order. One count,
+    as a **Batch** always is, is `varied_order` over them all with `k` the **Slots**: ADR 0018 unchanged."""
+    varied: list[int] = []
+    for _, count in groupby(ordered, key=worn.__getitem__):
+        rows = list(count)
+        unfilled = slots - len(varied)
+        if unfilled > 0:
+            favourites = [classified[index].wallpaper.favourites for index in rows]
+            rows = [rows[i] for i in varied_order(vectors[rows], favourites, unfilled, random)]
+        varied += rows
+    return varied
 
 
 def allocate(mix: Mix, size: int, random: SeededRandom) -> dict[Zone, int]:

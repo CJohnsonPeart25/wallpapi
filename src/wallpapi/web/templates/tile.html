@@ -1,10 +1,13 @@
 {#
-  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, and its three **Explicit
+  One tile: a **Wallpaper**, its thumbnail from the **Thumbnail cache**, its star and its two **Explicit
   Verdict** controls. Included by grid.html and rendered on its own as the htmx swap for a mark.
 
-  Each control posts the **Verdict** the tile should *end up* with, so a replayed click lands on the same
-  state (`set_draft` in `batches.py` sets rather than toggles); the marked control posts an empty
-  **Verdict**, which clears it. **Ignore** has no control: it is derived at submit.
+  The star is the tile's **Favourite** (star.html), and the rail below holds **Like** and **Ban**. They are
+  one choice, not two: the **Draft Batch** keeps one value per tile, so starring replaces a **Like** or
+  **Ban** and marking either replaces the star. Each control posts the **Verdict** the tile should *end
+  up* with, so a replayed click lands on the same state (`set_draft` in `batches.py` sets rather than
+  toggles); the marked control posts an empty **Verdict**, which clears it. **Ignore** has no control: it is
+  derived at submit.
 
   One post per tile at a time: `hx-sync="closest .tile:drop"` drops a click on any of its controls while
   one is in flight. A sync per button let Ban go out while Like was in flight; Like's response swapped the
@@ -18,6 +21,17 @@
   `zone` is the **Zone** the **Wallpaper** was drawn from, recorded when the **Batch** was minted; absent,
   the label is not rendered.
 #}
+{% from "star.html" import star %}
+{# The post every control on this tile makes, for the **Verdict** it marks. #}
+{% macro marks(choice) -%}
+  data-verdict="{{ choice }}"
+  hx-post="/draft"
+  hx-vals='{"batch_id": "{{ batch.id }}", "wallpaper_id": "{{ wallpaper.id }}", "verdict": "{{ '' if draft == choice else choice }}"}'
+  hx-target="closest .tile"
+  hx-swap="outerHTML"
+  hx-sync="closest .tile:drop"
+  hx-disabled-elt=".bulk-verdict"
+{%- endmacro %}
 <li class="tile" data-wallpaper-id="{{ wallpaper.id }}" data-draft-verdict="{{ draft or '' }}" data-page-url="{{ wallpaper.page_url }}">
   {#
     No `width`/`height` attributes. A **Wallpaper**'s dimensions describe the file the preview loads,
@@ -29,19 +43,14 @@
   {% if zone %}
     <span class="zone" data-zone="{{ zone }}">{{ zone }}</span>
   {% endif %}
+  {% call star(draft == "favourite") %}{{ marks("favourite") }}{% endcall %}
   <div class="verdicts">
-    {% for choice in ["favourite", "like", "ban"] %}
+    {% for choice in ["like", "ban"] %}
       <button
         type="button"
         class="verdict{{ ' marked' if draft == choice else '' }}"
-        data-verdict="{{ choice }}"
         aria-pressed="{{ 'true' if draft == choice else 'false' }}"
-        hx-post="/draft"
-        hx-vals='{"batch_id": "{{ batch.id }}", "wallpaper_id": "{{ wallpaper.id }}", "verdict": "{{ '' if draft == choice else choice }}"}'
-        hx-target="closest .tile"
-        hx-swap="outerHTML"
-        hx-sync="closest .tile:drop"
-        hx-disabled-elt=".bulk-verdict"
+        {{ marks(choice) }}
       >{{ choice }}</button>
     {% endfor %}
   </div>

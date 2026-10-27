@@ -1,0 +1,1092 @@
+"""The **Line-up**: drawing one beside the live **Batch** on each visit, holding its stars and an **Order**'s
+ranks while it is live, and answering it with a **Pick**, an **Order** or a **Gauntlet**, through `lineup`
+alone.
+
+On `conftest.LineupRig`: a real in-memory database, `Lineups` drawing through the rig's own `Batches.ranked`
+and **Embeddings** as the composition root wires it, a real `Embeddings` falling back to hand-defined
+similarities, and the fake clock. What a **Pick**, an **Order** or a **Gauntlet** is worth is
+`test_reductions.py`'s; what the **Evidence log** makes of one is `test_evidence_log.py`'s.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from collections import Counter
+from collections.abc import Iterator, Mapping
+
+import pytest
+
+from tests.conftest import FIXED_NOW, LineupRig, lineup_rig
+from tests.fakes import catalogue_of, wallpaper
+from wallpapi import evidence_log, lineup, pool, settings, storage
+from wallpapi.batches import Batch, Submitted
+from wallpapi.evidence_log import Theme
+from wallpapi.lineup import Champion, Gauntleted, Lineup, LineupRefused, LineupUnavailable, Ordered, Picked
+from wallpapi.model import Verdict, Zone
+from wallpapi.pool import RefillStatus, RefillStrategy
+from wallpapi.settings import EXPLORE_MIX
+from wallpapi.similarity import FALLBACK_SPACE
+from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
+from wallpapi.taste.judgement import ItemResponse, Judgement, RankingStamp, Shown
+from wallpapi.taste.order import ORDER_V1, OrderTile
+from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
+
+STOCK = catalogue_of(12)
+IDS = [w.id for w in STOCK]
+
+
+@pytest.fixture
+def rig() -> Iterator[LineupRig]:
+    """Twelve in the **Pool**, every one **Unknown**: a **Batch** of eight leaves four for a **Line-up**."""
+    with lineup_rig() as made:
+        made.configure(batch_size=8)
+        made.stock(STOCK)
+        yield made
+
+
+def ids(shown: Batch | Lineup) -> list[str]:
+    """The **Wallpaper** ids a **Batch** or a **Line-up** shows, in on-screen order."""
+    return [w.id for w in shown.wallpapers]
+
+
+# -- drawing -----------------------------------------------------------------------------------------------
+
+
+def test_a_lineup_is_drawn_from_the_pool_without_the_live_batchs_tiles(rig: LineupRig) -> None:
+    """Twelve less the **Batch**'s eight is exactly the four a **Line-up** of four asks for, whatever the
+    seed draws."""
+    batch = rig.next()
+
+    shown = rig.lineup()
+
+    assert sorted(ids(shown)) == sorted(set(IDS) - set(ids(batch)))
+    assert shown.id == "lineup-1"
+
+
+def test_with_no_batch_live_a_lineup_of_the_configured_size_comes_from_the_whole_pool(rig: LineupRig) -> None:
+    rig.configure(lineup_size=6)
+
+    shown = rig.lineup()
+
+    assert len(ids(shown)) == 6
+    assert set(ids(shown)) <= set(IDS)
+
+
+def test_a_lineup_is_drawn_under_the_active_mix_and_records_where_each_tile_came_from(rig: LineupRig) -> None:
+    """A **Favourite** outside the **Pool** makes four **Bangers**; a **Mix** of all **Bangers** then
+    lines up exactly those four, each labelled as the classification has it, under that **Mix**'s name."""
+    rig.stock([wallpaper("loved")])
+    rig.decide(Verdict.FAVOURITE, "loved")
+    rig.retire("loved")
+    rig.similarity.similarity_by_pair.update({(i, "loved"): 0.95 for i in IDS[:4]})
+    with storage.write(rig.connection) as write:
+        settings.save_mix(write, "bangers only", unknown=0, banger=100, dud=0)
+    rig.configure(active_mix="bangers only")
+
+    shown = rig.lineup()
+
+    assert sorted(ids(shown)) == IDS[:4]
+    assert shown.zones == dict.fromkeys(IDS[:4], Zone.BANGER)
+    assert shown.slots == dict.fromkeys(IDS[:4], Zone.BANGER)
+    assert shown.mix == "bangers only"
+
+
+def test_a_tile_drawn_into_a_shortfall_remembers_the_zone_its_slot_was_meant_for(rig: LineupRig) -> None:
+    """Half and half of four from an all-**Unknown** **Pool**: two **Banger** slots made up from
+    **Unknown**."""
+    with storage.write(rig.connection) as write:
+        settings.save_mix(write, "halves", unknown=50, banger=50, dud=0)
+    rig.configure(active_mix="halves")
+
+    shown = rig.lineup()
+
+    assert Counter((shown.zones[w], shown.slots[w]) for w in ids(shown)) == {
+        (Zone.UNKNOWN, Zone.UNKNOWN): 2,
+        (Zone.UNKNOWN, Zone.BANGER): 2,
+    }
+
+
+def test_asking_for_the_next_hands_back_the_live_lineup_until_it_is_answered(rig: LineupRig) -> None:
+    """What a refused answer is shown (ADR 0029): the same screen, read back from storage, with its mint
+    time, **Mix** and **Ranking stamp**, and nothing minted a second time."""
+    rig.clock.advance(90)
+    minted = rig.lineup()
+    rig.clock.advance(60)
+
+    again = rig.lineup()
+
+    assert again == minted
+    assert again.created_at == FIXED_NOW + dt.timedelta(seconds=90)
+    assert again.ranking == RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0)
+    assert rig.lineups_minted == ["lineup-1"]
+
+
+# -- a visit draws a new Line-up (ADR 0029)
+
+
+def test_two_visits_draw_two_lineups_and_the_first_is_never_recorded(rig: LineupRig) -> None:
+    """A visit replaces the live **Line-up**: nothing is recorded, so it adds no **Wear**, and its tiles stay
+    in the **Pool**."""
+    members = pool.members(rig.connection)
+    first = rig.fresh_lineup()
+
+    second = rig.fresh_lineup()
+
+    assert (first.id, second.id) == ("lineup-1", "lineup-2")
+    assert rig.lineup() == second
+    assert rig.connection.execute("SELECT COUNT(*) FROM lineups").fetchone()[0] == 1
+    assert rig.logged() == []
+    assert set(evidence_log.times_compared(rig.connection, ids(first)).values()) == {0}
+    assert pool.members(rig.connection) == members
+
+
+def test_a_visit_drops_the_stars_of_the_lineup_it_replaces_and_records_none(rig: LineupRig) -> None:
+    """A star lives only while its **Line-up** does: replaced, it is gone, nothing is a **Favourite**, and the
+    starred **Wallpaper** stays in the **Pool**."""
+    members = pool.members(rig.connection)
+    first = rig.fresh_lineup()
+    rig.star(first.id, ids(first)[0])
+
+    second = rig.fresh_lineup()
+
+    assert second.starred == frozenset()
+    assert rig.starred_rows() == 0
+    assert rig.logged() == []
+    assert evidence_log.favourites(rig.connection) == []
+    assert pool.members(rig.connection) == members
+
+
+def test_answering_or_starring_a_replaced_lineup_is_refused_as_unknown_and_records_nothing(
+    rig: LineupRig,
+) -> None:
+    """Two tabs on the compare tab: the second visit replaced the first tab's **Line-up**, so its answer and
+    its star are refused, and the **Line-up** live now is untouched."""
+    stale = rig.fresh_lineup()
+    now_live = rig.fresh_lineup()
+
+    picked = rig.pick(stale.id, ids(stale)[0])
+    starred = rig.star(stale.id, ids(stale)[0])
+
+    unknown = LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert (picked, starred) == (unknown, unknown)
+    assert rig.logged() == []
+    assert rig.lineup() == now_live
+
+
+def test_a_visit_still_draws_without_the_live_batchs_tiles(rig: LineupRig) -> None:
+    batch = rig.next()
+    rig.fresh_lineup()
+
+    shown = rig.fresh_lineup()
+
+    assert sorted(ids(shown)) == sorted(set(IDS) - set(ids(batch)))
+
+
+def test_a_visit_with_too_few_to_draw_still_drops_the_live_lineup(rig: LineupRig) -> None:
+    """The **Line-up** drawn, then a **Batch** of eleven leaves one: a visit says there are too few, and the
+    screen before it has ended all the same, its stars with it."""
+    stale = rig.fresh_lineup()
+    rig.star(stale.id, ids(stale)[0])
+    rig.configure(batch_size=11)
+    rig.fresh()
+
+    result = rig.lineups.fresh(rig.connection)
+
+    assert result == LineupUnavailable(reason=LineupUnavailable.Reason.TOO_FEW)
+    assert lineup.live(rig.connection) is None
+    assert rig.starred_rows() == 0
+
+
+def test_a_new_size_or_mix_applies_to_the_next_lineup_and_not_the_one_on_screen(rig: LineupRig) -> None:
+    rig.stock(catalogue_of(12, prefix="more"))
+    minted = rig.lineup()
+
+    rig.configure(lineup_size=8, active_mix="refine")
+    still = rig.lineup()
+    rig.pick(minted.id, None)
+    following = rig.lineup()
+
+    assert (still.id, len(ids(still)), still.mix) == (minted.id, 4, EXPLORE_MIX.name)
+    assert (len(ids(following)), following.mix) == (8, "refine")
+
+
+def test_the_live_lineup_is_read_without_minting_one(rig: LineupRig) -> None:
+    assert lineup.live(rig.connection) is None
+    assert lineup.showing(rig.connection) == set()
+
+    shown = rig.lineup()
+
+    assert lineup.live(rig.connection) == shown
+    assert lineup.showing(rig.connection) == set(ids(shown))
+
+
+@pytest.mark.parametrize("left", [0, 1], ids=["an empty pool", "one wallpaper"])
+def test_fewer_than_two_to_compare_is_no_lineup(rig: LineupRig, left: int) -> None:
+    """One **Wallpaper** compares with nothing, so it is no **Line-up** either."""
+    rig.retire(*IDS[left:])
+
+    assert rig.lineups.next(rig.connection) == LineupUnavailable(reason=LineupUnavailable.Reason.TOO_FEW)
+    assert rig.lineups_minted == []
+
+
+def test_a_pool_all_on_the_live_batch_is_too_few_to_line_up(rig: LineupRig) -> None:
+    rig.configure(batch_size=12)
+    rig.next()
+
+    assert rig.lineups.next(rig.connection) == LineupUnavailable(reason=LineupUnavailable.Reason.TOO_FEW)
+
+
+def test_too_few_after_a_failed_refill_says_wallhaven_is_unreachable(rig: LineupRig) -> None:
+    rig.empty_the_pool()
+    rig.status = RefillStatus(
+        pool_size=0,
+        target_size=200,
+        running=True,
+        last_run_at=FIXED_NOW,
+        last_error="connection refused",
+        last_error_at=FIXED_NOW,
+        last_strategy=RefillStrategy.RANDOM,
+        by_strategy={RefillStrategy.RANDOM: 0, RefillStrategy.LIKE: 0},
+    )
+
+    assert rig.lineups.next(rig.connection) == LineupUnavailable(
+        reason=LineupUnavailable.Reason.WALLHAVEN_UNREACHABLE, error="connection refused", error_at=FIXED_NOW
+    )
+
+
+# -- wear (ADR 0028) ---------------------------------------------------------------------------------------
+
+
+def test_a_banger_shown_waits_until_its_score_over_one_plus_wear_is_the_best_again(rig: LineupRig) -> None:
+    """Bangers A, B and C at about 90, 50 and 35 (a **Favourite** and a **Like** outside the **Pool**), one
+    **Banger** **Slot** and the other an **Unknown**'s. A is shown first; once worn, A is worth 45 and B
+    comes; with B worn too, A at 45 beats B at 25 and C at 35 again."""
+    rig.stock([wallpaper("loved"), wallpaper("liked"), wallpaper("a"), wallpaper("b"), wallpaper("c")])
+    rig.decide(Verdict.FAVOURITE, "loved")
+    rig.decide(Verdict.LIKE, "liked")
+    rig.retire("loved", "liked")
+    rig.similarity.similarity_by_pair.update(
+        {("a", "loved"): 0.975, ("b", "liked"): 1.0, ("c", "liked"): 0.91}
+    )
+    with storage.write(rig.connection) as write:
+        settings.save_mix(write, "halves", unknown=50, banger=50, dud=0)
+    rig.configure(active_mix="halves", lineup_size=2)
+
+    bangers: list[str] = []
+    for _ in range(3):
+        shown = rig.lineup()
+        (banger,) = [w for w in ids(shown) if shown.zones[w] is Zone.BANGER]
+        bangers.append(banger)
+        rig.pick(shown.id, banger)
+
+    assert bangers == ["a", "b", "a"]
+
+
+def test_every_unknown_is_lined_up_once_before_any_is_lined_up_twice(rig: LineupRig) -> None:
+    """Twelve **Unknowns** and three **Line-ups** of four, picked or passed over: twelve different tiles. A
+    draw blind to wear would repeat one with a chance of all but 1 in 495."""
+    shown: list[str] = []
+    for answer in range(3):
+        lined_up = rig.lineup()
+        shown += ids(lined_up)
+        rig.pick(lined_up.id, None if answer == 1 else ids(lined_up)[0])
+
+    assert sorted(shown) == IDS
+
+
+def test_a_lineup_discarded_by_a_pool_reset_adds_no_wear(rig: LineupRig) -> None:
+    """Only an answered **Line-up** is recorded, so only an answered one wears its tiles."""
+    discarded = rig.lineup()
+    rig.discard_lineup()
+    answered = rig.lineup()
+    rig.pick(answered.id, None)
+
+    worn = evidence_log.times_compared(rig.connection, IDS)
+
+    assert {w for w, times in worn.items() if times} == set(ids(answered))
+    assert set(ids(discarded)) - set(ids(answered)), "the seed drew the discarded tiles again: no test"
+
+
+# -- answering ---------------------------------------------------------------------------------------------
+
+
+def _shown(shown: Lineup, tiles: Mapping[str, ItemResponse]) -> tuple[Shown, ...]:
+    """The **Shown set** a **Judgement** of `shown` holds: each tile in order with why it was there, a blank
+    **Pick** tile for one `tiles` does not name."""
+    return tuple(
+        Shown(
+            f"wallhaven:{w}",
+            tiles.get(w, PickTile()),
+            {"zone": shown.zones[w].value, "slot_zone": shown.slots[w].value, "mix": EXPLORE_MIX.name},
+        )
+        for w in ids(shown)
+    )
+
+
+def test_a_pick_records_one_judgement_of_the_whole_lineup_and_the_next_is_a_new_one(rig: LineupRig) -> None:
+    """**Pick** version 1 on the compare **Screen**: every tile in on-screen order, the winner marked, why
+    each was there, the stamp it was drawn under, first shown when it was minted, recorded at the clock's
+    time with its local offset and the page's theme."""
+    rig.clock.offset = dt.timedelta(hours=1)
+    shown = rig.lineup()
+    winner = ids(shown)[1]
+    rig.clock.advance(5)
+
+    picked = rig.pick(shown.id, winner, theme=Theme.DARK)
+
+    assert picked == Picked(lineup_id=shown.id, winner=winner)
+    assert rig.logged() == [
+        Judgement(
+            instrument=PICK_V1,
+            screen="compare",
+            shown=_shown(shown, {winner: PickTile(picked=True)}),
+            recorded_at=FIXED_NOW + dt.timedelta(seconds=5),
+            app="wallpapi",
+            app_version=evidence_log.APP_VERSION,
+            response=PickResponse(),
+            utc_offset=dt.timedelta(hours=1),
+            first_shown_at=FIXED_NOW,
+            ranking=RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0),
+            context={"theme": "dark"},
+        )
+    ]
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_none_of_these_records_a_judgement_with_no_winner_and_the_next_is_a_new_one(rig: LineupRig) -> None:
+    shown = rig.lineup()
+
+    picked = rig.pick(shown.id, None)
+
+    assert picked == Picked(lineup_id=shown.id, winner=None)
+    (judgement,) = rig.logged()
+    assert (judgement.instrument, judgement.screen) == (PICK_V1, "compare")
+    assert judgement.shown == _shown(shown, {})
+    assert judgement.response == PickResponse(none_of_these=True)
+    assert judgement.context == {}, "no theme sent, none stored"
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_answering_takes_nothing_out_of_the_pool_and_decides_nothing(rig: LineupRig) -> None:
+    """Being compared is not being decided (ADR 0027): every tile, picked or passed over, stays in the
+    **Pool**, may be drawn again, and has no standing in **History**."""
+    members = pool.members(rig.connection)
+    first = rig.lineup()
+    rig.pick(first.id, ids(first)[0])
+    second = rig.lineup()
+    rig.pick(second.id, None)
+
+    assert pool.members(rig.connection) == members
+    assert pool.decided(rig.connection) == []
+    assert evidence_log.history(rig.connection).total == 0
+    assert len(rig.logged()) == 2
+
+
+def test_a_lineup_already_answered_or_never_minted_is_refused_and_records_nothing(rig: LineupRig) -> None:
+    """Two tabs, or a key pressed twice: the second answer is about a screen that is gone."""
+    shown = rig.lineup()
+    rig.pick(shown.id, ids(shown)[0])
+
+    again = rig.pick(shown.id, ids(shown)[1])
+    unknown = rig.pick("never-minted", None)
+
+    gone = LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert (again, unknown) == (gone, gone)
+    assert len(rig.logged()) == 1
+
+
+def test_a_winner_the_lineup_does_not_show_is_refused_and_records_nothing(rig: LineupRig) -> None:
+    batch = rig.next()
+    shown = rig.lineup()
+
+    refused = rig.pick(shown.id, ids(batch)[0])
+
+    assert refused == LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    assert rig.logged() == []
+    assert rig.lineup() == shown
+
+
+# -- the star: a Favourite on any tile, held against the live Line-up while it is live
+
+
+def test_a_star_is_held_against_the_live_lineup_and_read_back_while_it_is_live(rig: LineupRig) -> None:
+    """Starring is not answering: nothing is recorded, nothing leaves the **Pool** and no new **Line-up** is
+    drawn. The live **Line-up** read back carries the star."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    starred = ids(shown)[2]
+
+    held = rig.star(shown.id, starred)
+    read_back = rig.lineup()
+
+    assert held == read_back
+    assert read_back.id == shown.id
+    assert read_back.starred == frozenset({starred})
+    assert rig.lineups_minted == ["lineup-1"]
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == members
+
+
+def test_a_star_is_set_rather_than_toggled_and_taken_off_the_same_way(rig: LineupRig) -> None:
+    """A replayed click lands on the same state, as a mark on the **Draft Batch** does."""
+    shown = rig.lineup()
+    first, second = ids(shown)[:2]
+
+    rig.star(shown.id, first)
+    rig.star(shown.id, first)
+    both = rig.star(shown.id, second)
+    assert isinstance(both, Lineup)
+    assert both.starred == frozenset({first, second})
+    assert rig.starred_rows() == 2
+
+    rig.star(shown.id, first, starred=False)
+    after = rig.star(shown.id, first, starred=False)
+
+    assert isinstance(after, Lineup)
+    assert after.starred == frozenset({second})
+    assert rig.lineup().starred == frozenset({second})
+
+
+def test_a_star_on_a_lineup_gone_or_a_tile_it_does_not_show_is_refused_and_writes_nothing(
+    rig: LineupRig,
+) -> None:
+    batch = rig.next()
+    shown = rig.lineup()
+
+    not_shown = rig.star(shown.id, ids(batch)[0])
+    unknown = rig.star("never-minted", ids(shown)[0])
+
+    assert not_shown == LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    assert unknown == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert rig.starred_rows() == 0
+
+
+@pytest.mark.parametrize("winner_at", [1, 0], ids=["another tile wins", "the starred tile wins"])
+def test_star_then_pick_records_one_judgement_with_the_favourite_and_the_pick(
+    rig: LineupRig, winner_at: int
+) -> None:
+    """The star rides in the one **Pick** **Judgement**, on its tile, as `PickTile.favourite`: the starred
+    **Wallpaper** is then a **Favourite**, whichever tile won."""
+    shown = rig.lineup()
+    starred, winner = ids(shown)[0], ids(shown)[winner_at]
+    rig.star(shown.id, starred)
+
+    picked = rig.pick(shown.id, winner)
+
+    assert picked == Picked(lineup_id=shown.id, winner=winner, starred=(starred,))
+    (judgement,) = rig.logged()
+    assert judgement.shown == _shown(
+        shown, {starred: PickTile(favourite=True), winner: PickTile(picked=True, favourite=winner == starred)}
+    )
+    assert judgement.response == PickResponse()
+    assert evidence_log.favourites(rig.connection) == [starred]
+    assert evidence_log.resolve(rig.connection, [starred])[starred].verdict is Verdict.FAVOURITE
+
+
+def test_none_of_these_with_a_starred_tile_still_records_the_favourite(rig: LineupRig) -> None:
+    """Passing the screen over says nothing relative, but the star is still a **Favourite**."""
+    shown = rig.lineup()
+    first, third = ids(shown)[0], ids(shown)[2]
+    rig.star(shown.id, third)
+    rig.star(shown.id, first)
+
+    picked = rig.pick(shown.id, None)
+
+    assert picked == Picked(lineup_id=shown.id, winner=None, starred=(first, third)), "on-screen order"
+    (judgement,) = rig.logged()
+    assert judgement.shown == _shown(shown, dict.fromkeys((first, third), PickTile(favourite=True)))
+    assert judgement.response == PickResponse(none_of_these=True)
+    assert evidence_log.favourites(rig.connection) == sorted([first, third])
+
+
+def test_only_the_starred_item_leaves_the_pool(rig: LineupRig) -> None:
+    """A **Favourite** decides its **Wallpaper**, which retires it (ADR 0016); the winner and the rest were
+    only compared, so they stay, undecided, and may be drawn again."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    starred, winner = ids(shown)[0], ids(shown)[1]
+    rig.star(shown.id, starred)
+
+    rig.pick(shown.id, winner)
+
+    assert pool.members(rig.connection) == [w for w in members if w.id != starred]
+    assert [w.id for w in pool.decided(rig.connection)] == [starred]
+    assert starred not in ids(rig.lineup())
+
+
+def test_the_stars_go_with_the_lineup_when_it_is_answered(rig: LineupRig) -> None:
+    """Held against that **Line-up** alone: the next one starts with none."""
+    shown = rig.lineup()
+    rig.star(shown.id, ids(shown)[0])
+
+    rig.pick(shown.id, None)
+
+    assert rig.starred_rows() == 0
+    assert rig.lineup().starred == frozenset()
+
+
+# -- Order: ranks held against the live Line-up, answered when all but the last are ranked or on submit
+
+
+def _ranks(shown: Lineup, *ranked: str, starred: tuple[str, ...] = ()) -> tuple[Shown, ...]:
+    """The **Shown set** an **Order** of `shown` holds: `ranked` best first, the rest unranked, `starred`
+    each a **Favourite**."""
+    return _shown(
+        shown,
+        {
+            w: OrderTile(rank=ranked.index(w) + 1 if w in ranked else None, favourite=w in starred)
+            for w in ids(shown)
+        },
+    )
+
+
+def test_a_rank_is_held_against_the_live_lineup_and_records_nothing(rig: LineupRig) -> None:
+    """Ranking is not answering until the last place is implied: nothing is recorded, nothing leaves the
+    **Pool** and no new **Line-up** is drawn. The live **Line-up** read back carries the rank."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    first = ids(shown)[2]
+
+    held = rig.rank(shown.id, first)
+    read_back = rig.lineup()
+
+    assert held == read_back
+    assert read_back.id == shown.id
+    assert read_back.ranked == (first,)
+    assert read_back.rank_of(first) == 1
+    assert read_back.rank_of(ids(shown)[0]) is None
+    assert rig.lineups_minted == ["lineup-1"]
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == members
+
+
+def test_each_tile_clicked_is_ranked_next_and_one_taken_back_closes_the_ranks_after_it_up(
+    rig: LineupRig,
+) -> None:
+    """On a **Line-up** of six: c, a, e ranked 1 to 3; taking a back makes e second, and a clicked again is
+    ranked next, fourth, behind the rest. The ranks are always 1 to k."""
+    rig.configure(lineup_size=6)
+    shown = rig.lineup()
+    a, _, c, _, e, _ = ids(shown)
+    for w in (c, a, e):
+        rig.rank(shown.id, w)
+
+    taken_back = rig.rank(shown.id, a, ranked=False)
+    assert isinstance(taken_back, Lineup)
+    assert taken_back.ranked == (c, e)
+    assert [taken_back.rank_of(w) for w in (c, e, a)] == [1, 2, None]
+
+    again = rig.rank(shown.id, a)
+
+    assert isinstance(again, Lineup)
+    assert again.ranked == (c, e, a)
+    assert rig.lineup().ranked == (c, e, a)
+    stored = rig.connection.execute("SELECT rank FROM lineup_ranks ORDER BY rank").fetchall()
+    assert [row[0] for row in stored] == [1, 2, 3]
+    assert rig.logged() == []
+
+
+def test_a_rank_is_set_rather_than_toggled_and_taken_back_the_same_way(rig: LineupRig) -> None:
+    """A replayed click lands on the same state, as a star does: ranking a ranked tile keeps its place, and
+    taking back an unranked one changes nothing."""
+    shown = rig.lineup()
+    a, b, _, _ = ids(shown)
+
+    rig.rank(shown.id, a)
+    twice = rig.rank(shown.id, a)
+    unranked = rig.rank(shown.id, b, ranked=False)
+
+    assert isinstance(twice, Lineup)
+    assert isinstance(unranked, Lineup)
+    assert twice.ranked == unranked.ranked == (a,)
+    assert rig.ranked_rows() == 1
+
+
+def test_ranking_all_but_the_last_answers_the_order_at_once_the_last_place_implied(rig: LineupRig) -> None:
+    """**Order** version 1 on the compare **Screen**: every tile in on-screen order with its rank, the last
+    one ranked last, why each was there, the stamp it was drawn under, first shown when it was minted,
+    recorded at the clock's time with its local offset and the page's theme. The next is a new one."""
+    rig.clock.offset = dt.timedelta(hours=1)
+    shown = rig.lineup()
+    a, b, c, d = ids(shown)
+    rig.rank(shown.id, c)
+    rig.rank(shown.id, a)
+    rig.clock.advance(5)
+
+    ordered = rig.rank(shown.id, d, theme=Theme.LIGHT)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(c, a, d, b))
+    assert rig.logged() == [
+        Judgement(
+            instrument=ORDER_V1,
+            screen="compare",
+            shown=_ranks(shown, c, a, d, b),
+            recorded_at=FIXED_NOW + dt.timedelta(seconds=5),
+            app="wallpapi",
+            app_version=evidence_log.APP_VERSION,
+            response=None,
+            utc_offset=dt.timedelta(hours=1),
+            first_shown_at=FIXED_NOW,
+            ranking=RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0),
+            context={"theme": "light"},
+        )
+    ]
+    assert rig.ranked_rows() == 0
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_on_a_lineup_of_two_ranking_one_answers_at_once(rig: LineupRig) -> None:
+    """All but the last of two is one: the same claim as a **Pick**, recorded as an **Order**."""
+    rig.configure(lineup_size=2)
+    shown = rig.lineup()
+    first, second = ids(shown)
+
+    ordered = rig.rank(shown.id, second)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(second, first))
+    (judgement,) = rig.logged()
+    assert judgement.shown == _ranks(shown, second, first)
+
+
+def test_submitting_records_a_partial_order_as_it_stands_and_the_next_is_a_new_one(rig: LineupRig) -> None:
+    """Enter: the ranks held so far and every other tile unranked, which says nothing among them."""
+    shown = rig.lineup()
+    a, b, _, _ = ids(shown)
+    rig.rank(shown.id, b)
+    rig.rank(shown.id, a)
+
+    ordered = rig.order(shown.id, theme=Theme.DARK)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(b, a))
+    (judgement,) = rig.logged()
+    assert (judgement.instrument, judgement.screen, judgement.response) == (ORDER_V1, "compare", None)
+    assert judgement.shown == _ranks(shown, b, a)
+    assert judgement.context == {"theme": "dark"}
+    assert rig.ranked_rows() == 0
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_submitting_with_nothing_ranked_records_a_blank_order(rig: LineupRig) -> None:
+    shown = rig.lineup()
+
+    ordered = rig.order(shown.id)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=())
+    (judgement,) = rig.logged()
+    assert judgement.instrument == ORDER_V1
+    assert judgement.shown == _ranks(shown)
+    assert judgement.context == {}, "no theme sent, none stored"
+
+
+def test_an_order_takes_nothing_out_of_the_pool_and_decides_nothing(rig: LineupRig) -> None:
+    """Being ordered is not being decided (ADR 0027): complete, partial or blank, every tile stays in the
+    **Pool**, may be drawn again, and has no standing in **History**; each counts as compared."""
+    members = pool.members(rig.connection)
+    first = rig.lineup()
+    for w in ids(first)[:3]:
+        rig.rank(first.id, w)
+    second = rig.lineup()
+    rig.rank(second.id, ids(second)[1])
+    rig.order(second.id)
+    third = rig.lineup()
+    rig.order(third.id)
+
+    assert pool.members(rig.connection) == members
+    assert pool.decided(rig.connection) == []
+    assert evidence_log.history(rig.connection).total == 0
+    assert [j.instrument for j in rig.logged()] == [ORDER_V1] * 3
+
+
+def test_star_then_order_records_the_favourite_on_its_tile_and_only_it_leaves_the_pool(
+    rig: LineupRig,
+) -> None:
+    """The star is held and recorded as on a **Pick**: one **Judgement** with the **Favourite** on its tile,
+    ranked or not, and the starred **Wallpaper** a **Favourite**, retired from the **Pool** alone."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    a, b, c, d = ids(shown)
+    rig.star(shown.id, d)
+    rig.star(shown.id, b)
+    rig.rank(shown.id, b)
+
+    ordered = rig.order(shown.id)
+
+    assert ordered == Ordered(lineup_id=shown.id, ranked=(b,), starred=(b, d)), "starred in on-screen order"
+    (judgement,) = rig.logged()
+    assert judgement.shown == _ranks(shown, b, starred=(b, d))
+    assert evidence_log.favourites(rig.connection) == sorted([b, d])
+    assert pool.members(rig.connection) == [w for w in members if w.id not in {b, d}]
+    assert {a, c} <= {w.id for w in pool.members(rig.connection)}
+
+
+def test_a_rank_or_an_order_on_a_lineup_gone_or_a_tile_it_does_not_show_is_refused_and_writes_nothing(
+    rig: LineupRig,
+) -> None:
+    """Two tabs, a key pressed twice, or a visit since: refused before anything is written, and the
+    **Line-up** live now is untouched."""
+    batch = rig.next()
+    stale = rig.fresh_lineup()
+    shown = rig.fresh_lineup()
+    rig.rank(shown.id, ids(shown)[0])
+
+    not_shown = rig.rank(shown.id, ids(batch)[0])
+    stale_rank = rig.rank(stale.id, ids(stale)[0])
+    stale_order = rig.order(stale.id)
+    never = rig.order("never-minted")
+
+    unknown = LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert not_shown == LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    assert (stale_rank, stale_order, never) == (unknown, unknown, unknown)
+    assert rig.logged() == []
+    assert rig.lineup().ranked == (ids(shown)[0],)
+
+
+def test_an_order_answered_once_is_refused_the_second_time(rig: LineupRig) -> None:
+    shown = rig.lineup()
+    rig.order(shown.id)
+
+    assert rig.order(shown.id) == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert rig.rank(shown.id, ids(shown)[0]) == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert len(rig.logged()) == 1
+
+
+def test_a_visit_or_a_discard_drops_the_ranks_of_the_lineup_and_records_none(rig: LineupRig) -> None:
+    """An **Order** in progress lives only while its **Line-up** does (ADR 0029), as a star does."""
+    first = rig.fresh_lineup()
+    rig.rank(first.id, ids(first)[0])
+
+    second = rig.fresh_lineup()
+    assert second.ranked == ()
+    assert rig.ranked_rows() == 0
+
+    rig.rank(second.id, ids(second)[1])
+    assert rig.discard_lineup() == 1
+    assert rig.ranked_rows() == 0
+    assert rig.logged() == []
+
+
+def test_a_pick_on_a_lineup_with_ranks_held_records_the_pick_alone(rig: LineupRig) -> None:
+    """A stale tab on another **Instrument**: the ranks are not part of a **Pick**'s format, and go with the
+    **Line-up**."""
+    shown = rig.lineup()
+    rig.rank(shown.id, ids(shown)[0])
+
+    rig.pick(shown.id, ids(shown)[1])
+
+    (judgement,) = rig.logged()
+    assert judgement.shown == _shown(shown, {ids(shown)[1]: PickTile(picked=True)})
+    assert rig.ranked_rows() == 0
+
+
+# -- Gauntlet: the winner keeps its place, the rest are drawn anew, and a crown counts its streak
+
+
+def _contested(shown: Lineup, winner: str | None, *, starred: tuple[str, ...] = ()) -> tuple[Shown, ...]:
+    """The **Shown set** a **Gauntlet** of `shown` holds: `winner` picked, `starred` each a **Favourite**, and
+    the champion's **Provenance** saying it was kept rather than drawn."""
+    return tuple(
+        Shown(
+            f"wallhaven:{w}",
+            GauntletTile(picked=w == winner, favourite=w in starred),
+            {"zone": shown.zones[w].value, "slot_zone": shown.slots[w].value, "mix": EXPLORE_MIX.name}
+            | ({"kept": "champion"} if w == shown.champion else {}),
+        )
+        for w in ids(shown)
+    )
+
+
+def _defend(rig: LineupRig, shown: Lineup, winner: str) -> Lineup:
+    """Answer `shown` as a **Gauntlet** with `winner`, and draw the next **Line-up** keeping it, as the
+    compare tab does."""
+    answered = rig.gauntlet(shown.id, winner)
+    assert isinstance(answered, Gauntleted), answered
+    return rig.lineup(keeping=answered.champion)
+
+
+def test_a_gauntlet_records_one_judgement_with_the_streak_its_screen_carried_and_hands_on_the_winner(
+    rig: LineupRig,
+) -> None:
+    """**Gauntlet** version 1 on the compare **Screen**, recorded as a **Pick** is. A first screen has no
+    champion, so it carried a streak of 0; its winner is handed on as the champion, where it won, at 1.
+    Nothing is drawn until the next is asked for."""
+    rig.clock.offset = dt.timedelta(hours=1)
+    shown = rig.lineup()
+    winner = ids(shown)[2]
+    rig.clock.advance(5)
+
+    answered = rig.gauntlet(shown.id, winner, theme=Theme.DARK)
+
+    assert answered == Gauntleted(
+        lineup_id=shown.id,
+        winner=winner,
+        champion=Champion(
+            wallpaper_id=winner, position=2, streak=1, zone=shown.zones[winner], slot=shown.slots[winner]
+        ),
+    )
+    assert rig.logged() == [
+        Judgement(
+            instrument=GAUNTLET_V1,
+            screen="compare",
+            shown=_contested(shown, winner),
+            recorded_at=FIXED_NOW + dt.timedelta(seconds=5),
+            app="wallpapi",
+            app_version=evidence_log.APP_VERSION,
+            response=GauntletResponse(streak=0),
+            utc_offset=dt.timedelta(hours=1),
+            first_shown_at=FIXED_NOW,
+            ranking=RankingStamp(read=None, space=FALLBACK_SPACE, radius=0.1, decay=4.0),
+            context={"theme": "dark"},
+        )
+    ]
+    assert lineup.live(rig.connection) is None
+
+
+def test_the_winner_keeps_its_tile_and_place_the_rest_are_drawn_anew_and_the_streak_counts_up(
+    rig: LineupRig,
+) -> None:
+    """Three wins in a row: the champion holds its position on every screen, each screen's challengers are
+    new (wear puts the unseen first), and the crown counts 1, 2, 3. Each **Judgement** records the streak
+    its screen carried and marks the champion as kept, with the **Zone** and **Slot** it was first drawn
+    with. The live **Line-up** read back holds the champion and its streak."""
+    first = rig.lineup()
+    champion = ids(first)[1]
+
+    second = _defend(rig, first, champion)
+    third = _defend(rig, second, champion)
+    fourth = _defend(rig, third, champion)
+
+    screens = (first, second, third, fourth)
+    assert [(s.champion, s.streak) for s in screens] == [
+        (None, 0),
+        (champion, 1),
+        (champion, 2),
+        (champion, 3),
+    ]
+    assert [ids(s).index(champion) for s in screens] == [1, 1, 1, 1]
+    assert [(s.zones[champion], s.slots[champion]) for s in screens] == [
+        (first.zones[champion], first.slots[champion])
+    ] * 4
+    challengers = [w for s in (first, second, third) for w in ids(s) if w != champion]
+    assert len(set(challengers)) == 9, "no challenger met the champion twice while unseen ones waited"
+    assert [j.response for j in rig.logged()] == [GauntletResponse(streak=s) for s in (0, 1, 2)]
+    assert [j.shown for j in rig.logged()] == [_contested(s, champion) for s in (first, second, third)]
+    assert rig.lineup() == fourth
+
+
+def test_a_challenger_that_beats_the_champion_takes_the_crown_at_one_in_its_own_place(rig: LineupRig) -> None:
+    """The beaten champion is replaced with the other challengers; the screen it lost on recorded the streak
+    it carried."""
+    first = rig.lineup()
+    second = _defend(rig, first, ids(first)[0])
+    challenger = ids(second)[3]
+
+    third = _defend(rig, second, challenger)
+
+    assert (third.champion, third.streak) == (challenger, 1)
+    assert ids(third)[3] == challenger
+    assert ids(second)[0] not in ids(third)
+    _, lost = rig.logged()
+    assert lost.response == GauntletResponse(streak=1)
+    assert lost.shown == _contested(second, challenger)
+
+
+def test_none_of_these_replaces_every_tile_and_ends_the_streak(rig: LineupRig) -> None:
+    """Nothing is handed on, so the next **Line-up** is drawn whole, with no crown on it; the screen it
+    dismissed recorded the streak it ended."""
+    first = rig.lineup()
+    second = _defend(rig, first, ids(first)[0])
+
+    answered = rig.gauntlet(second.id, None)
+    assert answered == Gauntleted(lineup_id=second.id, winner=None)
+    third = rig.lineup(keeping=None)
+
+    assert (third.champion, third.streak) == (None, 0)
+    assert not set(ids(third)) & set(ids(second))
+    _, dismissed = rig.logged()
+    assert dismissed.response == GauntletResponse(streak=1, none_of_these=True)
+    assert dismissed.shown == _contested(second, None)
+
+
+def test_a_visit_or_a_pool_reset_ends_the_streak_and_records_nothing(rig: LineupRig) -> None:
+    """The champion and its streak live on its tile of the live **Line-up**, so they go with it: a visit
+    draws a new one whole (ADR 0029), and so does the first ask after a discard."""
+    first = rig.lineup()
+    _defend(rig, first, ids(first)[0])
+
+    visited = rig.fresh_lineup()
+    assert (visited.champion, visited.streak) == (None, 0)
+
+    _defend(rig, visited, ids(visited)[0])
+    assert rig.discard_lineup() == 1
+    assert (rig.lineup().champion, rig.lineup().streak) == (None, 0)
+    assert len(rig.logged()) == 2
+
+
+def test_a_gauntlet_takes_nothing_out_of_the_pool_but_a_starred_tile(rig: LineupRig) -> None:
+    """Being compared is not being decided (ADR 0027), whether held, beaten, challenging or dismissed: only
+    a star decides, and only the starred tile leaves the **Pool**."""
+    members = pool.members(rig.connection)
+    first = rig.lineup()
+    second = _defend(rig, first, ids(first)[0])
+    rig.gauntlet(second.id, None)
+
+    assert pool.members(rig.connection) == members
+    assert pool.decided(rig.connection) == []
+    assert evidence_log.history(rig.connection).total == 0
+
+    third = rig.lineup()
+    starred = ids(third)[1]
+    rig.star(third.id, starred)
+    _defend(rig, third, ids(third)[0])
+
+    assert pool.members(rig.connection) == [w for w in members if w.id != starred]
+    assert [w.id for w in pool.decided(rig.connection)] == [starred]
+
+
+def test_a_winner_starred_on_the_screen_it_won_is_a_favourite_and_its_streak_ends_there(
+    rig: LineupRig,
+) -> None:
+    """The star retires it from the **Pool** as it is answered, so the next **Line-up** cannot keep it and is
+    drawn whole: you have found your champion, and it is in the **Library**."""
+    first = rig.lineup()
+    second = _defend(rig, first, ids(first)[1])
+    champion = ids(second)[1]
+    rig.star(second.id, champion)
+
+    answered = rig.gauntlet(second.id, champion)
+    assert isinstance(answered, Gauntleted)
+    third = rig.lineup(keeping=answered.champion)
+
+    assert answered.starred == (champion,)
+    assert (third.champion, third.streak) == (None, 0)
+    assert champion not in ids(third)
+    assert evidence_log.favourites(rig.connection) == [champion]
+    _, won = rig.logged()
+    assert won.shown == _contested(second, champion, starred=(champion,))
+
+
+@pytest.mark.parametrize("submitted", [False, True], ids=["on the live batch", "decided by the batch"])
+def test_a_champion_a_batch_has_taken_meanwhile_is_not_kept_and_the_lineup_is_drawn_whole(
+    rig: LineupRig, submitted: bool
+) -> None:
+    """Two tabs: a **Batch** drawn after the **Line-up** may show its champion. While the **Batch** is live
+    the champion is not drawn here, and once it is submitted the champion is decided and out of the **Pool**:
+    either way it cannot be kept, and the next **Line-up** is drawn whole from what can be."""
+    restock = catalogue_of(16)[12:]
+    first = rig.lineup()
+    second = _defend(rig, first, ids(first)[0])
+    champion = ids(second)[0]
+    rig.configure(batch_size=len(STOCK))
+    batch = rig.next()
+    assert champion in ids(batch)
+    if submitted:
+        assert isinstance(rig.submit(batch.id), Submitted)
+    rig.stock(restock)
+
+    answered = rig.gauntlet(second.id, champion)
+    assert isinstance(answered, Gauntleted)
+    third = rig.lineup(keeping=answered.champion)
+
+    assert (third.champion, third.streak) == (None, 0)
+    assert sorted(ids(third)) == [w.id for w in restock]
+
+
+@pytest.mark.parametrize(("size", "place"), [(2, 1), (6, 3)], ids=["shrunk past it", "grown"])
+def test_a_new_size_mid_gauntlet_keeps_the_champion_in_its_place_or_last_once_it_no_longer_fits(
+    rig: LineupRig, size: int, place: int
+) -> None:
+    """The size applies to the next **Line-up**, as ever; the champion keeps its streak whatever the size."""
+    first = rig.lineup()
+    champion = ids(first)[3]
+    rig.configure(lineup_size=size)
+
+    second = _defend(rig, first, champion)
+
+    assert len(ids(second)) == size
+    assert ids(second).index(champion) == place
+    assert (second.champion, second.streak) == (champion, 1)
+
+
+def test_with_too_few_for_every_challenger_the_champion_meets_as_many_as_there_are(rig: LineupRig) -> None:
+    """One challenger is enough to compare, and the champion goes last when it won beyond the tiles there
+    are; with none, there is nothing to compare and the streak ends."""
+    first = rig.lineup()
+    a, b, champion, d = ids(first)
+    rig.retire(*[w for w in IDS if w not in (champion, d)])
+    assert {a, b} & {w.id for w in pool.members(rig.connection)} == set()
+
+    second = _defend(rig, first, champion)
+
+    assert ids(second) == [d, champion]
+    assert (second.champion, second.streak) == (champion, 1)
+
+    rig.retire(d)
+    answered = rig.gauntlet(second.id, champion)
+    assert isinstance(answered, Gauntleted)
+    assert rig.lineups.next(rig.connection, keeping=answered.champion) == LineupUnavailable(
+        reason=LineupUnavailable.Reason.TOO_FEW
+    )
+
+
+def test_a_gauntlet_on_a_lineup_gone_or_a_winner_it_does_not_show_is_refused_and_records_nothing(
+    rig: LineupRig,
+) -> None:
+    """As for a **Pick**: a second answer, a replaced **Line-up**, or a tile no control posts."""
+    shown = rig.lineup()
+    refused = rig.gauntlet(shown.id, "never-shown")
+    _defend(rig, shown, ids(shown)[0])
+
+    again = rig.gauntlet(shown.id, ids(shown)[0])
+
+    assert refused == LineupRefused(reason=LineupRefused.Reason.NOT_IN_LINEUP)
+    assert again == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert len(rig.logged()) == 1
+
+
+def test_a_pick_on_a_lineup_with_a_champion_records_where_it_came_from_and_ends_the_streak(
+    rig: LineupRig,
+) -> None:
+    """A stale tab on another **Instrument**: a **Pick** says nothing of streaks, but its **Provenance**
+    still says the champion was kept, and the next is drawn whole."""
+    first = rig.lineup()
+    second = _defend(rig, first, ids(first)[0])
+
+    rig.pick(second.id, ids(second)[0])
+
+    _, picked = rig.logged()
+    assert picked.instrument == PICK_V1
+    assert picked.shown[0].provenance["kept"] == "champion"
+    assert rig.lineup().champion is None
+
+
+# -- discarding, a Pool reset's half (ADR 0025)
+
+
+def test_discarding_drops_a_starred_lineup_and_its_stars_and_decides_nothing(rig: LineupRig) -> None:
+    """A star is not recorded until the **Line-up** is answered, so a discarded one records nothing and its
+    **Wallpaper** stays in the **Pool**."""
+    members = pool.members(rig.connection)
+    shown = rig.lineup()
+    rig.star(shown.id, ids(shown)[0])
+
+    assert rig.discard_lineup() == 1
+
+    assert rig.starred_rows() == 0
+    assert rig.logged() == []
+    assert pool.members(rig.connection) == members
+
+
+def test_discarding_drops_the_live_lineup_without_recording_it(rig: LineupRig) -> None:
+    """Housekeeping, not an answer: nothing recorded, and the next **Line-up** is a new one."""
+    shown = rig.lineup()
+
+    assert rig.discard_lineup() == 1
+
+    assert lineup.live(rig.connection) is None
+    assert rig.pick(shown.id, None) == LineupRefused(reason=LineupRefused.Reason.UNKNOWN_LINEUP)
+    assert rig.logged() == []
+    assert rig.lineup().id == "lineup-2"
+
+
+def test_discarding_with_no_live_lineup_discards_nothing(rig: LineupRig) -> None:
+    assert rig.discard_lineup() == 0

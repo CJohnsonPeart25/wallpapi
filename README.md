@@ -18,8 +18,15 @@ Environment variables:
 | Variable | Effect |
 | --- | --- |
 | `WALLPAPI_PORT` | Port to listen on (default `8000`) |
-| `WALLPAPI_HOME` | Data folder for the **Decision log**, **Thumbnail cache** and models (default `~/.wallpapi`) |
+| `WALLPAPI_HOME` | Data folder for the **Evidence log**, **Thumbnail cache** and models (default `~/.wallpapi`) |
 | `WALLPAPI_SEED` | Pin the random source for a reproducible session |
+
+Two commands run instead of serving, and are safe beside a running server:
+
+```
+uv run python -m wallpapi reset-pool                         # empty the Pool, discard the live screens
+uv run python -m wallpapi evaluate [--radius R] [--decay D]  # replay the Evidence log, read-only
+```
 
 To run under uvicorn directly, use the factory. Never pass `--workers`: more than one process means several
 refill threads and several writers against one SQLite file.
