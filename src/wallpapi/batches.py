@@ -17,13 +17,17 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from uuid import uuid4
 
+import numpy as np
+from numpy.typing import NDArray
+
 from wallpapi import decisions, pool, settings, storage
 from wallpapi.allocation import PERCENT, ScoredWallpaper, draw
 from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
-from wallpapi.scoring import classify
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock, iso_utc
+from wallpapi.taste.evidence import AbsoluteEvidence
+from wallpapi.taste.ranking import rank
 from wallpapi.taste.rng import SeededRandom
 
 
@@ -198,9 +202,10 @@ class Batches:
         """Every **Pool** **Wallpaper** that is neither **Banned** nor a near-duplicate of a **Ban**, with its
         **Score** and **Zone**, in one call.
 
-        The decided columns are every **Wallpaper** with a non-zero resolved value, in the **Pool** or not; a
-        **Ban** is a column like any other, but never a row. Nor is its repost (ADR 0021), which stays in the
-        **Pool**: a **History** edit away from **Ban** brings it back at the next call.
+        Ranking (`taste/`) gives the **Scores**, from absolute Evidence built out of each judged
+        **Wallpaper**'s resolved value; its decided columns are every one with a non-zero value, in the
+        **Pool** or not. A **Ban** is a column like any other, but never a row. Nor is its repost (ADR 0021),
+        which stays in the **Pool**: a **History** edit away from **Ban** brings it back at the next call.
         """
         members = pool.members(connection)
         if not members:
@@ -213,22 +218,35 @@ class Batches:
         if candidates and banned:
             reposts = self._embeddings.near_duplicates(candidates, banned).any(axis=1)
             candidates = [w for w, repost in zip(candidates, reposts, strict=True) if not repost]
-        decided = [w for w in judged if resolved[w.id].value != 0]
         if not candidates:
             return ()
 
+        deciding = decisions.deciding_entries(connection, [w.id for w in judged])
+        evidence = [
+            AbsoluteEvidence(
+                item=decisions.item_key(w.id),
+                strength=resolved[w.id].value,
+                judgement_id=f"decision-log:{deciding[w.id].seq}",
+                recorded_at=deciding[w.id].recorded_at,
+            )
+            for w in judged
+        ]
+        by_key = {decisions.item_key(w.id): w for w in [*candidates, *judged]}
+
+        def similarity(rows: Sequence[str], columns: Sequence[str]) -> NDArray[np.float32]:
+            return self._embeddings.similarities([by_key[k] for k in rows], [by_key[k] for k in columns])
+
         current = settings.get(connection)
-        classification = classify(
-            self._embeddings.similarities(candidates, decided),
-            [resolved[w.id].value for w in decided],
+        ranking = rank(
+            evidence,
+            [decisions.item_key(w.id) for w in candidates],
+            similarity,
             radius=current.similarity_radius,
             decay=current.similarity_decay,
         )
         return tuple(
-            ScoredWallpaper(wallpaper=wallpaper, score=float(score), zone=zone)
-            for wallpaper, score, zone in zip(
-                candidates, classification.scores, classification.zones, strict=True
-            )
+            ScoredWallpaper(wallpaper=wallpaper, score=score, zone=zone_of(score))
+            for wallpaper, score in zip(candidates, ranking.scores, strict=True)
         )
 
     def submit(self, write: sqlite3.Connection, batch_id: str) -> Submitted | SubmissionRefused:
@@ -261,6 +279,20 @@ class Batches:
                 error_at=status.last_error_at,
             )
         return BatchUnavailable(reason=BatchUnavailable.Reason.POOL_EMPTY)
+
+
+def zone_of(score: float) -> Zone:
+    """The **Zone** a **Score** falls in: nothing but the sign.
+
+    Beyond the radius a weight is exactly zero, so "no decided neighbour" is a **Score** of exactly 0.0 and
+    needs no branch. Exact zero, never a tolerance: a **Score** that merely rounds to zero still says which
+    way the evidence went.
+    """
+    if score > 0.0:
+        return Zone.BANGER
+    if score < 0.0:
+        return Zone.DUD
+    return Zone.UNKNOWN
 
 
 def _unknown_short(mix: Mix, classified: Sequence[ScoredWallpaper], size: int) -> UnknownShort | None:
