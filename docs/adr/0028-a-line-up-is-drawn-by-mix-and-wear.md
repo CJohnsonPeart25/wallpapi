@@ -18,8 +18,8 @@ stands: comparing decides nothing and retires nothing.
 next **Batch** gets the next best. A **Line-up** retires nothing (ADR 0027), and in the MVP a **Pick** moves
 no **Score**: **Relative evidence** reaches ranking only once the evaluation shows it helps. So the top
 **Banger** for each **Banger** **Slot** came back on every **Line-up**. On **Refine** at four that is the same
-three **Bangers** on every screen. **Gauntlet** (wallpapi-8pa.12) would get the same challenger on every
-screen.
+two or three **Bangers** on every screen. **Gauntlet** (wallpapi-8pa.12) would get the same challenger on
+every screen.
 
 Deciding and comparing are different jobs. A **Verdict** ends a **Wallpaper**'s turns: it leaves the **Pool**,
 as now. A comparison may show a **Wallpaper** again, but each showing should make it wait longer.
