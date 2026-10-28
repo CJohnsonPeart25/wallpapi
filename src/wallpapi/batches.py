@@ -273,12 +273,20 @@ class Batches:
         value, in the **Pool** or not. A **Ban** is a column like any other, but never a row. Nor is its
         repost (ADR 0021), which stays in the **Pool**: a **History** edit away from **Ban** brings it back at
         the next call.
+
+        What it reads, it reads in one snapshot, outside any transaction: a **Judgement** from another tab
+        lands before every read or after them all, never between two, where it would leave the **Pool**, the
+        resolved **Verdicts** and the log disagreeing about what is decided. The scoring runs after the
+        snapshot ends.
         """
-        members = pool.members(connection)
-        if not members:
-            return Ranked(scored=(), stamp=None)
-        judged = pool.decided(connection)
-        resolved = evidence_log.resolve(connection, [w.id for w in members] + [w.id for w in judged])
+        with storage.read(connection):
+            members = pool.members(connection)
+            if not members:
+                return Ranked(scored=(), stamp=None)
+            judged = pool.decided(connection)
+            resolved = evidence_log.resolve(connection, [w.id for w in members] + [w.id for w in judged])
+            log = evidence_log.judgements(connection)
+            current = settings.get(connection)
 
         candidates = [w for w in members if resolved[w.id].verdict is not Verdict.BAN]
         banned = [w for w in judged if resolved[w.id].verdict is Verdict.BAN]
@@ -288,7 +296,6 @@ class Batches:
         if not candidates:
             return Ranked(scored=(), stamp=None)
 
-        log = evidence_log.judgements(connection)
         found = evidence(log)
         by_key = {evidence_log.item_key(w.id): w for w in [*candidates, *judged]}
         spaces: list[str] = []
@@ -298,7 +305,6 @@ class Batches:
             spaces.append(measured.space)
             return measured.matrix
 
-        current = settings.get(connection)
         ranking = rank(
             found,
             [evidence_log.item_key(w.id) for w in candidates],

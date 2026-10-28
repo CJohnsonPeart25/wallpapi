@@ -260,7 +260,13 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
 
     Each is hashed again as it is built, and one whose rows no longer earn the id they are stored under
     raises `ValueError`: a stored id is never trusted.
+
+    The screens are read before their tiles. Outside a transaction the two reads see two snapshots, and
+    one appended between them, its tiles read without its screen, is left out whole; never the other way
+    about, a screen with no tiles. The log being append-only, every screen read finds all its tiles. To
+    agree with anything else read, call it inside `storage.read`.
     """
+    screens = connection.execute(_SELECT_JUDGEMENTS).fetchall()
     shown: defaultdict[str, list[Shown]] = defaultdict(list)
     for row in connection.execute(_SELECT_ITEMS):
         shown[str(row["judgement_id"])].append(
@@ -271,7 +277,7 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
             )
         )
     found: list[Judgement] = []
-    for row in connection.execute(_SELECT_JUDGEMENTS):
+    for row in screens:
         stored = str(row["id"])
         instrument = _instrument_of(row)
         judgement = Judgement(

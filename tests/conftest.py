@@ -18,7 +18,7 @@ import socket
 import sqlite3
 import subprocess
 import threading
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from itertools import count
@@ -598,6 +598,41 @@ def raw_connection(db_path: Path) -> Generator[sqlite3.Connection]:
         yield connection
     finally:
         connection.close()
+
+
+@contextmanager
+def committing_as(
+    reader: sqlite3.Connection, begins: str, commit: Callable[[], None], *, nth: int = 1
+) -> Generator[None]:
+    """Run `commit`, a write on another connection to the same file, as `reader` begins the `nth` statement
+    whose SQL holds `begins`: the moment a second tab's answer lands between two of its reads.
+
+    SQLite traces a statement as it starts, before it takes its snapshot, so the statement sees the commit
+    unless an open read transaction has already taken one. `sqlite3` swallows a trace hook's exceptions, so
+    they are kept and raised here, and a hook that never fired fails the test.
+    """
+    seen: list[str] = []
+    failed: list[BaseException] = []
+
+    def hook(statement: str) -> None:
+        if begins not in statement:
+            return
+        seen.append(statement)
+        if len(seen) != nth:
+            return
+        try:
+            commit()
+        except BaseException as error:
+            failed.append(error)
+
+    reader.set_trace_callback(hook)
+    try:
+        yield
+    finally:
+        reader.set_trace_callback(None)
+    if failed:
+        raise failed[0]
+    assert len(seen) >= nth, f"{len(seen)} statements holding {begins!r} began, not {nth}"
 
 
 def write_old_pool(db_path: Path, wallpapers: Sequence[Wallpaper]) -> None:
