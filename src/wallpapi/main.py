@@ -1,7 +1,7 @@
 """The entry point: `uv run python -m wallpapi`, wiring the real dependencies together. Bound to `127.0.0.1`
 and single-worker (`--workers N` is N writers and N refill threads). `uv run python -m wallpapi reset-pool`
 runs a **Pool reset** instead of serving (ADR 0025); `uv run python -m wallpapi evaluate` prints the
-evaluation, optionally against a candidate `--radius` and `--decay`.
+evaluation, optionally against a candidate `--radius` and `--decay`, reading and never writing.
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ import argparse
 import math
 import os
 import secrets
+import sqlite3
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,10 +46,12 @@ def wallpapi_home() -> Path:
     return Path(configured) if configured else Path.home() / ".wallpapi"
 
 
-def build_similarity(root: Path) -> Embeddings:
-    """The **Similarity provider** (ADR 0013): nothing opened, imported or fetched until its thread asks."""
+def build_similarity(root: Path, *, read_only: bool = False) -> Embeddings:
+    """The **Similarity provider** (ADR 0013): nothing opened, imported or fetched until its thread asks.
+    `read_only` for a command: its store only reads, and creates nothing."""
     model = root / "models" / MODEL_FILENAME
-    return Embeddings(EmbeddingCache(root / "embeddings.db"), OnnxClipEmbedder(model), DownloadedModel(model))
+    store = EmbeddingCache(root / "embeddings.db", read_only=read_only)
+    return Embeddings(store, OnnxClipEmbedder(model), DownloadedModel(model))
 
 
 def build_modules(home: Path | None = None) -> Modules:
@@ -71,6 +75,24 @@ def build_modules(home: Path | None = None) -> Modules:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Stored:
+    """What `evaluate` reads: a read-only connection to a database at the current schema, and the
+    **Similarity provider** over the stored **Embeddings**, which it asks only for those."""
+
+    connection: sqlite3.Connection
+    embeddings: Embeddings
+
+
+def open_stored(home: Path | None = None) -> Stored:
+    """The database and the stored **Embeddings** in the wallpapi home, opened only to read. Builds no
+    modules: nothing is created, migrated or fetched, not even the home. Raises `storage.NotCurrent` for a
+    missing database or one at another schema version.
+    """
+    root = wallpapi_home() if home is None else home
+    return Stored(storage.connect_current(root / "wallpapi.db"), build_similarity(root, read_only=True))
+
+
 def build_app() -> FastAPI:
     """The real app with its background loops. `refill=True` appears here and nowhere else, and nothing
     tests it: lose that line and nothing fills.
@@ -87,10 +109,13 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     build: Callable[[], Modules] = build_modules,
+    read: Callable[[], Stored] = open_stored,
     serve: Callable[[], None] = run_server,
 ) -> None:
-    """Serve, or run the command named. A command builds the modules without the background loops, so it is
-    safe beside a running server: every write takes `BEGIN IMMEDIATE`.
+    """Serve, or run the command named; each is safe beside a running server. `reset-pool` builds the modules
+    without the background loops, migrating as serving does, and every write takes `BEGIN IMMEDIATE`.
+    `evaluate` builds nothing and writes nothing: it reads what `read` opens, and a database it cannot read
+    as it is, missing or at another schema version, ends it with a message and exit status 1.
     """
     parser = argparse.ArgumentParser(prog="wallpapi", description="Serve wallpapi, or run one command.")
     commands = parser.add_subparsers(dest="command", metavar="command")
@@ -113,7 +138,13 @@ def main(
         serve()
         return
     if arguments.command == "evaluate":
-        _print_evaluation(_evaluate(build(), radius=arguments.radius, decay=arguments.decay))
+        try:
+            stored = read()
+        except storage.NotCurrent as refused:
+            parser.exit(1, _not_current(refused))
+        with closing(stored.connection):
+            evaluated = _evaluate(stored, radius=arguments.radius, decay=arguments.decay)
+        _print_evaluation(evaluated)
         return
     reset = workflows.reset_pool(build())
     print(f"Pool members removed: {reset.members}")
@@ -145,14 +176,33 @@ class _Evaluated:
     unembedded: int
 
 
-def _evaluate(modules: Modules, *, radius: float | None, decay: float | None) -> _Evaluated:
+def _not_current(refused: storage.NotCurrent) -> str:
+    """What `evaluate` says of a database it will not read, and what to do about it."""
+    if refused.version is None:
+        return (
+            f"No database at {refused.path}, so there is nothing to evaluate. evaluate creates nothing: "
+            "serving wallpapi makes the database.\n"
+        )
+    found = f"The database at {refused.path} is at schema version {refused.version}"
+    if refused.version < storage.SCHEMA_VERSION:
+        return (
+            f"{found}, and this wallpapi reads version {storage.SCHEMA_VERSION}. evaluate migrates nothing: "
+            "stop any older server and serve this wallpapi once to migrate it, then evaluate again.\n"
+        )
+    return (
+        f"{found}, newer than the version {storage.SCHEMA_VERSION} this wallpapi reads: evaluate with the "
+        "wallpapi that migrated it.\n"
+    )
+
+
+def _evaluate(stored: Stored, *, radius: float | None, decay: float | None) -> _Evaluated:
     """Replay the **Evidence log** under the current settings and, if either is given, under a candidate
     radius and decay, through one read-only snapshot. **Similarity** is the stored **Embeddings** alone, as
     once the model is open (ADR 0024): the model is never opened or fetched, nor the fallback asked."""
-    with storage.read_only(modules.connect()) as connection:
+    with storage.read_only(stored.connection) as connection:
         judgements = evidence_log.judgements(connection)
         current = settings.get(connection)
-    embeddings = modules.similarity
+    embeddings = stored.embeddings
 
     def similarity(rows: Sequence[str], columns: Sequence[str]) -> NDArray[np.float32]:
         return embeddings.stored_similarities(
