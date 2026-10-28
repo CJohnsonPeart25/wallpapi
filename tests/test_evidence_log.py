@@ -12,9 +12,11 @@ import datetime as dt
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
+from tests.conftest import committing_as
 from tests.fakes import FakeClock
 from wallpapi import evidence_log, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
@@ -56,12 +58,17 @@ def connection() -> Iterator[sqlite3.Connection]:
     """A migrated database holding the `wallpapers` rows the log's trigger wants, and nothing judged."""
     with closing(storage.connect(":memory:")) as connection:
         storage.migrate(connection)
-        with storage.write(connection) as write:
-            write.executemany(
-                "INSERT INTO wallpapers VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
-                [(w,) for w in (*WALLPAPERS, *CASE_WALLPAPERS)],
-            )
+        _know_every_wallpaper(connection)
         yield connection
+
+
+def _know_every_wallpaper(connection: sqlite3.Connection) -> None:
+    """The `wallpapers` rows the log's trigger wants."""
+    with storage.write(connection) as write:
+        write.executemany(
+            "INSERT INTO wallpapers VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
+            [(w,) for w in (*WALLPAPERS, *CASE_WALLPAPERS)],
+        )
 
 
 def key(wallpaper_id: str) -> str:
@@ -348,6 +355,25 @@ def test_the_same_judgement_appended_twice_is_held_once(connection: sqlite3.Conn
     append(connection, judgement, judgement)
 
     assert evidence_log.judgements(connection) == [judgement]
+
+
+def test_a_judgement_appended_between_the_logs_two_reads_waits_whole_for_the_next(db_path: Path) -> None:
+    """Read outside a transaction, the log's two reads see two snapshots, and another tab can append between
+    them. Screens first, so that one has tiles and no screen and is left out whole; tiles first, it would
+    have a screen and no tiles, which no **Judgement** can be. A caller wanting the log to agree with
+    anything else it reads still reads in one transaction."""
+    first = grid(("wp0000", LIKED))
+    meanwhile = grid(("wp0001", LIKED), at=LATER)
+    with closing(storage.connect(db_path)) as reader, closing(storage.connect(db_path)) as other_tab:
+        storage.migrate(reader)
+        _know_every_wallpaper(reader)
+        append(reader, first)
+
+        with committing_as(reader, "FROM judgement", lambda: append(other_tab, meanwhile), nth=2):
+            read = evidence_log.judgements(reader)
+
+        assert read == [first]
+        assert evidence_log.judgements(reader) == [first, meanwhile]
 
 
 def test_a_judgement_whose_rows_no_longer_earn_their_id_is_refused_on_reading(

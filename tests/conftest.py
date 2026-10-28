@@ -601,21 +601,25 @@ def raw_connection(db_path: Path) -> Generator[sqlite3.Connection]:
 
 
 @contextmanager
-def committing_as(reader: sqlite3.Connection, begins: str, commit: Callable[[], None]) -> Generator[None]:
-    """Run `commit`, a write on another connection to the same file, the first time `reader` begins a
-    statement whose SQL holds `begins`: the moment a second tab's answer lands between two of its reads.
+def committing_as(
+    reader: sqlite3.Connection, begins: str, commit: Callable[[], None], *, nth: int = 1
+) -> Generator[None]:
+    """Run `commit`, a write on another connection to the same file, as `reader` begins the `nth` statement
+    whose SQL holds `begins`: the moment a second tab's answer lands between two of its reads.
 
     SQLite traces a statement as it starts, before it takes its snapshot, so the statement sees the commit
     unless an open read transaction has already taken one. `sqlite3` swallows a trace hook's exceptions, so
     they are kept and raised here, and a hook that never fired fails the test.
     """
-    fired: list[str] = []
+    seen: list[str] = []
     failed: list[BaseException] = []
 
     def hook(statement: str) -> None:
-        if fired or begins not in statement:
+        if begins not in statement:
             return
-        fired.append(statement)
+        seen.append(statement)
+        if len(seen) != nth:
+            return
         try:
             commit()
         except BaseException as error:
@@ -628,7 +632,7 @@ def committing_as(reader: sqlite3.Connection, begins: str, commit: Callable[[], 
         reader.set_trace_callback(None)
     if failed:
         raise failed[0]
-    assert fired, f"no statement holding {begins!r} began"
+    assert len(seen) >= nth, f"{len(seen)} statements holding {begins!r} began, not {nth}"
 
 
 def write_old_pool(db_path: Path, wallpapers: Sequence[Wallpaper]) -> None:
