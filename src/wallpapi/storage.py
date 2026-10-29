@@ -21,19 +21,47 @@ SCHEMA_VERSION = 17
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
-def connect(path: Path | str) -> sqlite3.Connection:
+def connect(path: Path | str, *, read_only: bool = False) -> sqlite3.Connection:
     """A connection with every rule applied. Register no `sqlite3` adapters: timestamps are ISO 8601 UTC
-    strings the caller writes.
+    strings the caller writes. `read_only` opens a file that is already there and refuses every write on it:
+    it never creates one, and never migrates, checkpoints or writes the one it opens.
     """
     # Legacy transaction control emits a DEFERRED `BEGIN` on its own; `write` says when a transaction starts.
     # `timeout` is the busy timeout, left at its default 5 seconds.
     # `check_same_thread` left on: one connection per thread, held by `ThreadConnections`.
-    connection = sqlite3.connect(path, isolation_level=None)
+    # `mode=ro` in a URI, whose path `as_uri` percent-encodes. Reading a WAL file that nobody else has open,
+    # SQLite makes the empty `-wal` and the `-shm` index beside it, which a reader cannot remove.
+    target = f"{Path(path).resolve().as_uri()}?mode=ro" if read_only else path
+    connection = sqlite3.connect(target, isolation_level=None, uri=read_only)
     connection.row_factory = sqlite3.Row
     # Per-connection and not persisted: a second connection reads 0 until it turns them on.
     connection.execute("PRAGMA foreign_keys = ON")
     # `synchronous` stays at its default FULL, never NORMAL: in WAL, NORMAL loses recent commits on power
     # loss, and the Evidence log is irreplaceable.
+    return connection
+
+
+class NotCurrent(Exception):
+    """A database `connect_current` will not open: none at `path` (`version` is `None`), or one at a
+    `user_version` other than `SCHEMA_VERSION`."""
+
+    def __init__(self, path: Path, version: int | None) -> None:
+        super().__init__(path, version)
+        self.path = path
+        self.version = version
+
+
+def connect_current(path: Path) -> sqlite3.Connection:
+    """A `read_only` connection to a database already at `SCHEMA_VERSION`, for a command that only reads. It
+    creates nothing and migrates nothing, so it is safe beside a server of any version; any other database
+    raises `NotCurrent`."""
+    if not path.is_file():
+        raise NotCurrent(path, None)
+    connection = connect(path, read_only=True)
+    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version != SCHEMA_VERSION:
+        connection.close()
+        raise NotCurrent(path, version)
     return connection
 
 
@@ -86,13 +114,14 @@ def read_only(connection: sqlite3.Connection) -> Generator[sqlite3.Connection]:
 class ThreadConnections(threading.local):
     """One connection per thread to one file: the threadpool hands each request a different thread."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, read_only: bool = False) -> None:
         self._path = path
+        self._read_only = read_only
         self._connection: sqlite3.Connection | None = None
 
     def get(self) -> sqlite3.Connection:
         if self._connection is None:
-            self._connection = connect(self._path)
+            self._connection = connect(self._path, read_only=self._read_only)
         return self._connection
 
 

@@ -210,6 +210,59 @@ def test_a_read_block_that_raises_hands_the_connection_back_able_to_write(migrat
         assert connection.execute("SELECT value FROM settings WHERE key = 'after'").fetchone()[0] == "1"
 
 
+# -- a command that only reads -----------------------------------------------------------------------
+
+
+def test_a_missing_database_is_refused_by_connect_current_and_not_created(tmp_path: Path) -> None:
+    absent = tmp_path / "home" / "wallpapi.db"
+
+    with pytest.raises(storage.NotCurrent) as refused:
+        storage.connect_current(absent)
+
+    assert (refused.value.path, refused.value.version) == (absent, None)
+    assert not absent.parent.exists()
+
+
+@pytest.mark.parametrize("version", [16, storage.SCHEMA_VERSION + 1])
+def test_a_database_at_another_version_is_refused_by_connect_current_and_left_at_it(
+    db_path: Path, version: int
+) -> None:
+    with closing(storage.connect(db_path)) as connection:
+        storage.migrate(connection, to=min(version, storage.SCHEMA_VERSION))
+        connection.execute(f"PRAGMA user_version = {version}")
+        schema = _schema(connection)
+
+        with pytest.raises(storage.NotCurrent) as refused:
+            storage.connect_current(db_path)
+
+        assert (refused.value.path, refused.value.version) == (db_path, version)
+        assert (_version(connection), _schema(connection)) == (version, schema)
+
+
+def test_connect_current_hands_back_a_connection_that_cannot_write(migrated: Path) -> None:
+    with closing(storage.connect_current(migrated)) as connection:
+        assert _version(connection) == storage.SCHEMA_VERSION
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("INSERT INTO settings (key, value) VALUES ('sneaked', '1')")
+
+    with closing(storage.connect(migrated)) as connection:
+        assert connection.execute("SELECT * FROM settings WHERE key = 'sneaked'").fetchall() == []
+
+
+def test_a_read_only_connection_leaves_a_database_nobody_has_open_byte_for_byte(migrated: Path) -> None:
+    """With no other connection open, SQLite makes the write-ahead log and its index to read a WAL database,
+    and a connection that cannot write cannot remove them: the log is left empty, and the next writer to
+    close removes both. The database file itself is untouched."""
+    before = migrated.read_bytes()
+    log = migrated.with_name(migrated.name + "-wal")
+
+    with closing(storage.connect(migrated, read_only=True)) as connection:
+        connection.execute("SELECT COUNT(*) FROM settings").fetchone()
+
+    assert migrated.read_bytes() == before
+    assert not log.exists() or log.stat().st_size == 0
+
+
 def _sqlite_calls(path: Path, *names: str) -> list[int]:
     """Lines calling `sqlite3.<name>`, or passing `detect_types`, which is how adapters get switched on.
     Parsed, not grepped: a docstring may say it."""
