@@ -70,9 +70,13 @@ reduces it (follow-up 6).
 SQLite 3.51.2, numpy 2.5.3. Database files on tmpfs, so the page cache was warm. Windows on NTFS has not
 been measured.
 
-**Method.** The throwaway script `bench.py` lived in the session scratchpad and is not in the repo. It builds
-`wallpapi.db` with `storage.connect` and `storage.migrate` and appends real `Judgement`s through
-`evidence_log.append`. The mix:
+**Method.** A draft of `scripts/bench_draw.py` took these figures, and the script rebuilds the same logs: its
+default seed draws them call for call (`uv run python scripts/bench_draw.py --sizes 1000 10000 50000`). It
+builds `wallpapi.db` with `storage.connect` and `storage.migrate`, admits every **Wallpaper** through
+`pool.admit` and appends real `Judgement`s through `evidence_log.append`. The script times public calls only,
+so the prototype, the index trials and the three equivalence checks below were the draft's alone. The script
+times pre-marking as the write lock a real `Batches.fresh` holds, rather than the draft's copy of the block.
+The mix:
 
 - 68% submitted verdict-grid **Batches** of 8 new **Wallpapers**: 82% left unmarked (**Ignore**), 10%
   **Like**, 3% **Favourite**, 3% **Ban**, previews opened on 10%.
