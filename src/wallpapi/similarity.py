@@ -459,18 +459,24 @@ CREATE TABLE IF NOT EXISTS embeddings (
 class EmbeddingCache:
     """One vector per **Wallpaper** in a SQLite file of its own beside `wallpapi.db`, regenerable, so its
     schema is applied on first use with no migration; `dim` is stored so another model's width is caught.
+
+    `read_only` is for a command beside a running server: the file is opened only to read and never created,
+    a missing one holds nothing, and `store` is refused.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self._path = path
-        self._connections = storage.ThreadConnections(path)
+        self._read_only = read_only
+        self._connections = storage.ThreadConnections(path, read_only=read_only)
         self._created = False
         self._creation_lock = threading.Lock()
 
     def vectors_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, NDArray[np.float32]]:
         requested = list(dict.fromkeys(wallpaper_ids))
         found: dict[str, NDArray[np.float32]] = {}
-        connection = self._connect()
+        connection = self._reader()
+        if connection is None:
+            return found
         for chunk in _chunked(requested, 10_000):
             placeholders = ",".join("?" * len(chunk))
             rows = connection.execute(
@@ -493,11 +499,22 @@ class EmbeddingCache:
             )
 
     def embedded_ids(self) -> set[str]:
-        rows = self._connect().execute("SELECT wallpaper_id FROM embeddings").fetchall()
+        connection = self._reader()
+        if connection is None:
+            return set()
+        rows = connection.execute("SELECT wallpaper_id FROM embeddings").fetchall()
         return {str(row["wallpaper_id"]) for row in rows}
+
+    def _reader(self) -> sqlite3.Connection | None:
+        """This thread's connection to read through: read-only, `None` while there is no file to read."""
+        if self._read_only:
+            return self._connections.get() if self._path.is_file() else None
+        return self._connect()
 
     def _connect(self) -> sqlite3.Connection:
         """This thread's connection, the file, WAL and the schema made once per process, under a lock."""
+        if self._read_only:
+            raise RuntimeError(f"the embedding cache at {self._path} was opened read-only")
         if not self._created:
             with self._creation_lock:
                 if not self._created:

@@ -643,3 +643,29 @@ def test_the_store_hands_back_a_unit_vector_it_can_dot(tmp_path: Path) -> None:
     cache.store("a", np.array([3.0, 4.0], dtype=np.float32))
 
     assert cache.vectors_for(["a"])["a"] == pytest.approx(np.array([0.6, 0.8], dtype=np.float32))
+
+
+def test_a_read_only_store_reads_what_was_stored_and_writes_nothing(tmp_path: Path) -> None:
+    """For `wallpapi evaluate` beside a running server: the file is opened only to read, so its bytes are as
+    they were, and a store through it is refused."""
+    path = tmp_path / "embeddings.db"
+    server = EmbeddingCache(path)
+    server.store("a", EAST)
+    before = path.read_bytes()
+
+    reader = EmbeddingCache(path, read_only=True)
+
+    assert reader.vectors_for(["a", "nobody"])["a"] == pytest.approx(EAST)
+    assert reader.embedded_ids() == {"a"}
+    with pytest.raises(RuntimeError, match="read-only"):
+        reader.store("b", NORTH)
+    assert path.read_bytes() == before
+    assert server.embedded_ids() == {"a"}
+
+
+def test_a_read_only_store_with_no_file_holds_nothing_and_makes_none(tmp_path: Path) -> None:
+    reader = EmbeddingCache(tmp_path / "home" / "embeddings.db", read_only=True)
+
+    assert reader.vectors_for(["a"]) == {}
+    assert reader.embedded_ids() == set()
+    assert not (tmp_path / "home").exists()
