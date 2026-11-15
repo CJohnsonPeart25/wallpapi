@@ -4,6 +4,18 @@ Issues and specs for this repo live in beads (`bd`), synced through `refs/dolt/d
 `beads` skill and `bd prime` (a SessionStart hook runs it in Claude Code) carry the commands; this file holds what
 they cannot know about this repo. Pull requests stay on GitHub.
 
+## Delivery
+
+- **Type**: beads. The `beads` skill holds the commands.
+- **Pull requests**: GitHub `CJohnsonPeart25/wallpapi`.
+- **Prefix every `gh` call with**: `GH_TOKEN=$(gh auth token --user CJohnsonPeart25)` (see "GitHub account"
+  below).
+- **Commit identity**: pinned in the local git config; a fresh clone sets it before the first commit (see
+  "Commit identity" below).
+- **Land check command**: `uv run lefthook run ci`.
+- **Branch protection**: none on GitHub yet. The local push guard (`agent-setup/harness/push-guard`)
+  installs per clone and is not committed here.
+
 ## Ids
 
 - `wallpapi-<N>` is GitHub issue `#<N>`: all 45 GitHub issues, open and closed, were imported on 2026-10-05 with
