@@ -23,4 +23,8 @@ reports it.
 - The smoke test is `tests/test_web_routes.py::test_every_page_boots_on_the_shell_and_tiles_come_from_the_cache`
   and runs with the rest of pytest. A real boot (`uv run python -m wallpapi`) calls Wallhaven and downloads
   an 85 MB model, so run one only when the brief asks, with its own `WALLPAPI_HOME` and `WALLPAPI_PORT`.
+- A change to the draw's cost is timed, before and after, with `scripts/bench_draw.py`: on the base commit
+  `uv run python scripts/bench_draw.py --json <scratch>/before.json`, then on the branch the same with
+  `--json <scratch>/after.json --baseline <scratch>/before.json`, whose table goes in the PR. Add
+  `--sizes 1000 10000 50000` for 50k, which needs about 7 GB free.
 - Do not upgrade a tool while other agents are running; if one changes, say so and restart the agents.
