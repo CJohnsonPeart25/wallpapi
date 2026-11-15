@@ -9,6 +9,7 @@ falling back to hand-defined similarities, and the fake clock. A **Draft Batch**
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -17,7 +18,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import FIXED_NOW, BatchesRig, batches_rig
+from tests.conftest import FIXED_NOW, BatchesRig, batches_rig, committing_as, decide, raw_connection
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import batches, evidence_log, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
@@ -624,6 +625,69 @@ def test_the_clip_space_is_the_pinned_model_file() -> None:
         "Xenova/clip-vit-base-patch32@d15189d7028b43f1d3e65039190477f6af591c2a"
         "/onnx/vision_model_quantized.onnx"
     )
+
+
+# -- one snapshot: a Judgement from another tab lands mid-ranking
+
+SECOND_TAB = "wp0000"
+"""The **Pool** member another tab decides while this one ranks."""
+
+
+@pytest.fixture
+def racing(db_path: Path) -> Iterator[tuple[BatchesRig, sqlite3.Connection]]:
+    """The `rig` **Pool** on a file, and a second connection to it: another tab answering, which an
+    in-memory database cannot have."""
+    with batches_rig(db_path) as made, raw_connection(db_path) as other:
+        made.configure(batch_size=8)
+        made.stock(catalogue_of(24))
+        yield made, other
+
+
+def test_a_judgement_landing_between_the_logs_two_reads_waits_for_the_next_ranking(
+    racing: tuple[BatchesRig, sqlite3.Connection],
+) -> None:
+    """A **Like** commits as a visit's ranking begins reading the log's screens, after it read their tiles.
+    Read apart, the **Judgement** is rebuilt with no tiles and the draw fails; read in one snapshot, the
+    ranking reads the log as it was before the **Like**, and the **Batch** is written after it."""
+    rig, other = racing
+
+    with committing_as(
+        rig.connection, _SELECT_JUDGEMENTS, lambda: decide(other, rig.clock, Verdict.LIKE, SECOND_TAB)
+    ):
+        batch = rig.fresh()
+
+    assert batch.ranking is not None
+    assert batch.ranking.read is None, "the ranking read the log before the Like"
+    assert len(rig.logged()) == 1
+    assert rig.next() == batch
+
+
+def test_a_ban_landing_between_reading_the_decided_and_resolving_them_waits_for_the_next_ranking(
+    racing: tuple[BatchesRig, sqlite3.Connection],
+) -> None:
+    """A **Ban** commits as the ranking begins resolving, after it read the decided **Wallpapers**. Read
+    apart, the **Ban** takes its **Wallpaper** out of the candidates, it was not among the decided, yet the
+    log makes it a decided column with nothing to measure: the draw fails. Read in one snapshot, it is still
+    a candidate this time, and the next ranking drops it."""
+    rig, other = racing
+
+    with committing_as(
+        rig.connection, _RESOLUTION, lambda: decide(other, rig.clock, Verdict.BAN, SECOND_TAB)
+    ):
+        ranked = rig.batches.ranked(rig.connection)
+
+    assert not rig.connection.in_transaction
+    assert ranked.stamp is not None
+    assert ranked.stamp.read is None, "the ranking read the log before the Ban"
+    assert SECOND_TAB in {scored.wallpaper.id for scored in ranked.scored}
+    assert SECOND_TAB not in {scored.wallpaper.id for scored in rig.batches.classify(rig.connection)}
+
+
+_SELECT_JUDGEMENTS = "SELECT * FROM judgements ORDER BY"
+"""How the log's screens are read, after their tiles."""
+
+_RESOLUTION = "WITH said AS"
+"""How **Verdict resolution** begins."""
 
 
 # -- the Draft Batch

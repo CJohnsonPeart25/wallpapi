@@ -55,17 +55,30 @@ def write(connection: sqlite3.Connection) -> Generator[sqlite3.Connection]:
 
 
 @contextmanager
+def read(connection: sqlite3.Connection) -> Generator[sqlite3.Connection]:
+    """One read transaction: every read inside sees one snapshot, so a write committed meanwhile on another
+    connection lands before all of them or after all of them, never between two. Ended however the block
+    ends, so the connection is handed back ready for `write`.
+
+    For reads that must agree with each other, outside any transaction: `BEGIN` refuses to nest. DEFERRED,
+    so it waits for no lock and takes its snapshot at the first read. Nothing is written inside: a reader
+    that turns writer is refused at once (see `write`).
+    """
+    connection.execute("BEGIN")
+    try:
+        yield connection
+    finally:
+        connection.execute("COMMIT")
+
+
+@contextmanager
 def read_only(connection: sqlite3.Connection) -> Generator[sqlite3.Connection]:
-    """One read transaction on a connection SQLite holds to reading: any write on it is refused, and every
-    read inside sees one snapshot, so a server writing meanwhile cannot land between two of them. Handed back
-    able to write. For a command that must be safe beside a running server."""
+    """`read` on a connection SQLite holds to reading: any write on it is refused. Handed back able to
+    write. For a command that must be safe beside a running server."""
     connection.execute("PRAGMA query_only = ON")
     try:
-        connection.execute("BEGIN")
-        try:
+        with read(connection):
             yield connection
-        finally:
-            connection.execute("COMMIT")
     finally:
         connection.execute("PRAGMA query_only = OFF")
 

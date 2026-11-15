@@ -182,6 +182,34 @@ def test_a_read_only_block_sees_one_snapshot_while_another_connection_writes(mig
         assert connection.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == before + 1
 
 
+def test_a_read_block_sees_one_snapshot_while_another_connection_writes(migrated: Path) -> None:
+    """What lets a request's ranking read the **Pool** and the **Evidence log** as one: another tab's
+    **Judgement** lands before or after all of its reads, never between two."""
+    with closing(storage.connect(migrated)) as connection, closing(storage.connect(migrated)) as other_tab:
+        with storage.read(connection) as reading:
+            before = reading.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+            with storage.write(other_tab) as handle:
+                handle.execute("INSERT INTO settings (key, value) VALUES ('meanwhile', '1')")
+            during = reading.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+
+        assert during == before
+        assert connection.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == before + 1
+
+
+def test_a_read_block_that_raises_hands_the_connection_back_able_to_write(migrated: Path) -> None:
+    """A request's connection lives as long as its thread: a read left open would refuse every later
+    `write` on it."""
+    with closing(storage.connect(migrated)) as connection:
+        with pytest.raises(RuntimeError), storage.read(connection) as reading:
+            reading.execute("SELECT COUNT(*) FROM settings").fetchone()
+            raise RuntimeError
+
+        assert not connection.in_transaction
+        with storage.write(connection) as handle:
+            handle.execute("INSERT INTO settings (key, value) VALUES ('after', '1')")
+        assert connection.execute("SELECT value FROM settings WHERE key = 'after'").fetchone()[0] == "1"
+
+
 def _sqlite_calls(path: Path, *names: str) -> list[int]:
     """Lines calling `sqlite3.<name>`, or passing `detect_types`, which is how adapters get switched on.
     Parsed, not grepped: a docstring may say it."""
