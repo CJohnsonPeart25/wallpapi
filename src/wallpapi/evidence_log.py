@@ -442,9 +442,29 @@ def times_compared(connection: sqlite3.Connection, wallpaper_ids: Sequence[str])
     return counted
 
 
-def explicitly_decided(connection: sqlite3.Connection) -> set[str]:
-    """Every **Wallpaper** with an **Explicit Verdict** standing. The only spelling of "explicit"."""
-    return {str(row["wallpaper_id"]) for row in connection.execute(_EXPLICITLY_DECIDED)}
+def explicitly_decided(
+    connection: sqlite3.Connection, wallpaper_ids: Sequence[str] | None = None
+) -> set[str]:
+    """Every **Wallpaper** with an **Explicit Verdict** standing, or only those of `wallpaper_ids` that have
+    one. The only spelling of "explicit".
+
+    Restricted, it resolves the asked-for **Items** alone, so pre-marking a **Batch** under the write lock
+    costs its tiles, not the whole log. The restriction keeps all of an **Item**'s rows, so it changes no
+    answer; ids go in chunks of the connection's parameter limit, as in `resolve`.
+    """
+    if wallpaper_ids is None:
+        rows = connection.execute(_resolution_query(_EXPLICITLY_DECIDED))
+        return {str(row["wallpaper_id"]) for row in rows}
+    requested = list(dict.fromkeys(wallpaper_ids))
+    decided: set[str] = set()
+    size = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    for start in range(0, len(requested), size):
+        chunk = requested[start : start + size]
+        placeholders = ",".join("?" * len(chunk))
+        query = _resolution_query(_EXPLICITLY_DECIDED, restriction=f"AND i.item IN ({placeholders})")
+        rows = connection.execute(query, [item_key(w) for w in chunk])
+        decided.update(str(row["wallpaper_id"]) for row in rows)
+    return decided
 
 
 _ABSENT = ResolvedVerdict(verdict=None, value=0.0)
@@ -793,7 +813,8 @@ def _history_count_query(*, filtered: bool) -> str:
 
 _HISTORY_ENTRY = _resolution_query(f"SELECT {_HISTORY_COLUMNS} FROM resolution", restriction="AND i.item = ?")
 
-_EXPLICITLY_DECIDED = _resolution_query(
+_EXPLICITLY_DECIDED = (
     f"SELECT wallpaper_id FROM resolution WHERE resolved IS NOT NULL AND resolved != '{Verdict.IGNORE.value}'"
 )
-"""Every **Wallpaper** with an **Explicit Verdict** standing: never evicted, and pre-marked when reshown."""
+"""Every **Wallpaper** with an **Explicit Verdict** standing: never evicted, and pre-marked when reshown. The
+select after `_resolution_query`'s CTE, so the whole log and a restriction share one spelling."""

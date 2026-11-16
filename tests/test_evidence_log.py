@@ -775,6 +775,44 @@ def test_only_a_standing_explicit_verdict_is_explicitly_decided(connection: sqli
     assert evidence_log.explicitly_decided(connection) == {"wp0000", "wp0001", "wp0002"}
 
 
+def test_explicitly_decided_for_some_ids_agrees_with_the_whole_log_on_them(
+    connection: sqlite3.Connection,
+) -> None:
+    """Restricted to some **Wallpapers**, it answers for those alone and changes no answer: what pre-marking
+    asks of the chosen tiles."""
+    append(
+        connection,
+        grid(("wp0000", STARRED), ("wp0001", LIKED), ("wp0002", BANNED), ("wp0003", BLANK)),
+        converted(("wp0004", LegacyEntry.LIKE)),
+        converted(("wp0004", LegacyEntry.CLEARED), at=LATER),
+        grid(("wp0005", STARRED)),
+        grid(("wp0005", TileResponse(verdict=GridVerdict.IGNORE)), at=LATER, screen="history"),
+        grid(("wp0006", BLANK)),
+        grid(("wp0006", LIKED), at=LATER, screen="history"),
+        pick(("wp0007", PickTile(favourite=True)), ("wp0008", PICKED)),
+        gauntlet(("wp0009", WON), ("wp0010", LOST), streak=1),
+    )
+    asked = ["wp0000", "wp0002", "wp0003", "wp0004", "wp0005", "wp0006", "wp0007", "wp0008", "never-seen"]
+
+    restricted = evidence_log.explicitly_decided(connection, asked)
+
+    assert restricted == evidence_log.explicitly_decided(connection) & set(asked)
+    assert restricted == {"wp0000", "wp0002", "wp0006", "wp0007"}, "wp0001 and wp0009 were not asked about"
+
+
+def test_explicitly_decided_for_more_ids_than_the_parameter_limit_answers_them_all(
+    connection: sqlite3.Connection,
+) -> None:
+    """Sent in chunks under the connection's own limit, as `resolve` is (wallpapi-jep.2)."""
+    marks = (STARRED, LIKED, BANNED, BLANK)
+    append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(WALLPAPERS[:20]))))
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 7)
+
+    restricted = evidence_log.explicitly_decided(connection, [*WALLPAPERS[:30], "never-seen"])
+
+    assert restricted == {w for n, w in enumerate(WALLPAPERS[:20]) if n % 4 != 3}
+
+
 def test_favourites_are_what_resolves_to_favourite_now(connection: sqlite3.Connection) -> None:
     """Not what was ever a **Favourite**: any later **Judgement**, a **Clearance** included, takes it away."""
     append(
