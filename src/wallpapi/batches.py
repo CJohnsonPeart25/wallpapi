@@ -232,9 +232,10 @@ class Batches:
                 ],
             )
             # Resolved under the write lock, so a **History** edit cannot land between reading a **Verdict**
-            # and pre-filling it.
-            resolved = evidence_log.resolve(write, [scored.wallpaper.id for scored in chosen])
-            explicit = evidence_log.explicitly_decided(write)
+            # and pre-filling it. Both ask about the chosen tiles alone, never the whole log.
+            chosen_ids = [scored.wallpaper.id for scored in chosen]
+            resolved = evidence_log.resolve(write, chosen_ids)
+            explicit = evidence_log.explicitly_decided(write, chosen_ids)
             drafts = {
                 wallpaper_id: standing.verdict
                 for wallpaper_id, standing in resolved.items()
