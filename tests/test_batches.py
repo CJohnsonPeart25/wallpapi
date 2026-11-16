@@ -334,6 +334,22 @@ def test_a_batch_is_drawn_under_the_active_mix_and_records_where_each_tile_came_
     assert batch.zones == {w.id: classified[w.id] for w in batch.wallpapers}
 
 
+def test_a_batch_is_drawn_when_more_is_decided_than_sqlite_binds_in_one_statement(rig: BatchesRig) -> None:
+    """The draw resolves the **Pool** and everything ever decided together. SQLite's limit is lowered below
+    the decided alone, as some 32,000 **Judgements** would pass the real one; the **Bans** still hold."""
+    rig.stock(catalogue_of(20, prefix="gone"))
+    rig.decide(Verdict.LIKE, *(f"gone{n:04d}" for n in range(20)))
+    rig.retire(*(f"gone{n:04d}" for n in range(20)))
+    banned = {f"wp{n:04d}" for n in range(4)}
+    rig.decide(Verdict.BAN, *banned)
+    rig.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 16)
+
+    drawn = rig.fresh()
+
+    assert len(drawn.wallpapers) == 8
+    assert not {w.id for w in drawn.wallpapers} & banned
+
+
 def _ban_near_everything(rig: BatchesRig) -> None:
     """A **Ban** outside the **Pool** that every member sits within the radius of: the whole **Pool** a
     **Dud**, as the maintainer's was at 0.15 (ADR 0023)."""

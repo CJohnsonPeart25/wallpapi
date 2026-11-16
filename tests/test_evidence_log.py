@@ -684,6 +684,35 @@ def test_every_id_asked_about_is_answered_and_one_with_nothing_standing_is_worth
     assert evidence_log.resolve(connection, []) == {}
 
 
+def test_more_ids_than_sqlite_binds_in_one_statement_are_all_answered_with_their_standing(
+    connection: sqlite3.Connection,
+) -> None:
+    """**Pool** and decided together pass SQLite's parameter limit once enough is decided. Lowered here once
+    the log is written, so a handful of ids span several statements; the later **Like** must still overturn
+    the **Ban** wherever the chunks fall."""
+    marks = (LIKED, BANNED, STARRED, BLANK)
+    marked = WALLPAPERS[:20]
+    append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(marked))))
+    append(connection, grid(("wp0001", LIKED), at=LATER))
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 7)
+    worth = {
+        LIKED: ResolvedVerdict(verdict=Verdict.LIKE, value=50),
+        BANNED: ResolvedVerdict(verdict=Verdict.BAN, value=-100),
+        STARRED: ResolvedVerdict(verdict=Verdict.FAVOURITE, value=100),
+        BLANK: ResolvedVerdict(verdict=Verdict.IGNORE, value=-10),
+    }
+    nothing = ResolvedVerdict(verdict=None, value=0)
+
+    resolved = evidence_log.resolve(connection, [*WALLPAPERS[:30], "never-seen"])
+
+    assert resolved == {
+        **{w: worth[marks[n % 4]] for n, w in enumerate(marked)},
+        "wp0001": worth[LIKED],
+        **dict.fromkeys(WALLPAPERS[20:30], nothing),
+        "never-seen": nothing,
+    }
+
+
 def test_each_mark_resolves_to_its_own_value(connection: sqlite3.Connection) -> None:
     """The spec's numbers as literals, so this disagrees with the implementation if it drifts."""
     append(connection, grid(("wp0000", STARRED), ("wp0001", LIKED), ("wp0002", BANNED), ("wp0003", BLANK)))

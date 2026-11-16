@@ -359,21 +359,26 @@ def edit(
 
 
 def resolve(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dict[str, ResolvedVerdict]:
-    """**Verdict resolution** for many **Wallpapers** at once, in one query, keyed by every id asked about.
+    """**Verdict resolution** for many **Wallpapers** at once, keyed by every id asked about.
 
     Nothing standing, a legacy **Clearance** last, and an unknown id all resolve to no **Verdict** worth zero.
+
+    One query per chunk of ids: a draw hands this the **Pool** and every **Wallpaper** ever decided, which
+    outgrows SQLite's parameter limit (32,766 by default) as the log grows. Chunking cannot change a
+    standing, because each **Item**'s rows all fall in its own chunk. Several statements, so a caller that
+    needs one snapshot reads inside a transaction, as `Batches.ranked` does.
     """
     requested = list(dict.fromkeys(wallpaper_ids))
     resolved = dict.fromkeys(requested, _ABSENT)
-    if not requested:
-        return resolved
-    # SQLite's parameter limit is 32,766 here, well above any **Pool** this is handed.
-    placeholders = ",".join("?" * len(requested))
-    query = _resolution_query(
-        "SELECT wallpaper_id, resolved FROM resolution", restriction=f"AND i.item IN ({placeholders})"
-    )
-    for row in connection.execute(query, [item_key(w) for w in requested]).fetchall():
-        resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
+    size = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    for start in range(0, len(requested), size):
+        chunk = requested[start : start + size]
+        placeholders = ",".join("?" * len(chunk))
+        query = _resolution_query(
+            "SELECT wallpaper_id, resolved FROM resolution", restriction=f"AND i.item IN ({placeholders})"
+        )
+        for row in connection.execute(query, [item_key(w) for w in chunk]).fetchall():
+            resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
     return resolved
 
 
