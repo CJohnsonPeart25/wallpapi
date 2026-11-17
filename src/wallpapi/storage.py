@@ -17,7 +17,7 @@ from wallpapi import evidence_log, settings
 from wallpapi.taste.judgement import Judgement, Shown, instant
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 """The last numbered step. Steps apply by number, in order, so the numbers stay contiguous."""
 
 
@@ -227,6 +227,8 @@ def _steps() -> tuple[tuple[_Step, ...], ...]:
         (*((statement, ()) for statement in _MIGRATION_16), *seed_settings),
         # 17: a **Gauntlet**'s champion and its streak, held on its tile of the live **Line-up**.
         (*((statement, ()) for statement in _MIGRATION_17), *seed_settings),
+        # 18: the **Evidence log** indexed by recorded time, so neither ordered read of it sorts.
+        (*((statement, ()) for statement in _MIGRATION_18), *seed_settings),
     )
 
 
@@ -628,6 +630,15 @@ of the live **Line-up** with a `streak`, how many screens in a row it has won; e
 At most one per **Line-up**, by the partial unique index. On the tile rather than on `lineups`, so it keeps
 its place by the tile's own `position` and goes with the tile: dropped when the **Line-up** is answered (the
 next being drawn around the winner), replaced by a visit (ADR 0029) or discarded by a **Pool reset**.
+"""
+
+
+_MIGRATION_18 = ("CREATE INDEX judgements_by_recorded_at ON judgements (recorded_at DESC, id)",)
+"""Migration 18's schema: `judgements` in recorded time, newest first, and on an exact tie the lower id first.
+The two reads that order the log by time want opposite orders, each the reverse of the other, so one index
+with mixed directions serves both whole: the newest position (newest first, on a tie the lower id) walks it
+forwards and stops at its first row; `judgements()` (oldest first, on a tie the lower id last) walks it
+backwards. An index on `(recorded_at, id)` would leave each a sort on `id` within equal times.
 """
 
 
