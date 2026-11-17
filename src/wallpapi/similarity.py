@@ -166,8 +166,9 @@ JOIN_TIMEOUT = DOWNLOAD_TIMEOUT + 5.0
 """Seconds shutdown waits for the thread: greater than the model download's read timeout (invariant 12)."""
 
 _ROW_BLOCK = 4096
-"""Rows `_rows` looks through for a non-zero number at a time: 8 MB of float32 at 512 wide, however many
-**Wallpapers** there are, where the whole matrix at once would hold a second copy of it."""
+"""Rows `_rows` looks through for a non-zero number at a time: 8 MiB of float32 at 512 wide, however many
+**Wallpapers** there are, where the whole matrix at once would hold a second copy of it. Raise it together
+with `ROWS_LOOKED_THROUGH_AT_ONCE` in `tests/test_similarity.py`, whose test spans more than two blocks."""
 
 _PENDING = (
     "Image similarity is still starting up — wallpapers are being compared by colour and category until "
@@ -222,7 +223,8 @@ class EmbeddingStore(Protocol):
     """Where embeddings are kept: `vectors_for` is plural, so there is one lookup per matrix (invariant 2)."""
 
     def vectors_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, NDArray[np.float32]]:
-        """The L2-normalised embedding of each **Wallpaper** that has one; the rest are absent."""
+        """The L2-normalised embedding of each **Wallpaper** that has one, a one-dimensional vector; the rest
+        are absent."""
         ...
 
     def store(self, wallpaper_id: str, vector: NDArray[np.float32]) -> None: ...
@@ -448,7 +450,8 @@ def _rows(
     matrix = np.empty((len(wallpaper_ids), width), dtype=np.float32)
     if vectors:
         np.concatenate(vectors, out=matrix.reshape(-1))
-    known = np.empty(len(wallpaper_ids), dtype=np.bool_)
+    # Zeros, so a block the loop never reached reads as unembedded rather than as whatever memory held.
+    known = np.zeros(len(wallpaper_ids), dtype=np.bool_)
     for start in range(0, len(wallpaper_ids), _ROW_BLOCK):
         block = matrix[start : start + _ROW_BLOCK]
         known[start : start + _ROW_BLOCK] = np.abs(block).sum(axis=1) > 0.0

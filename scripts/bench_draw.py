@@ -11,10 +11,12 @@ network. Each size is built in one fresh process and timed in another, so the pe
 
 Every figure is the median of `--reps` runs after one warm-up, in milliseconds. The parts are timed apart
 from `ranked`, through the same public calls it makes; a query timed alone is caught as its public call
-sends it, and run again. A figure marked `*` raised "too many SQL variables"
-as is, and was timed again with `evidence_log.resolve` patched to send its ids in chunks: the cost the
-draw would have if it ran. `--json` keeps a run; `--baseline` sets a kept run beside this one, so a change
-is timed on its base commit and on its branch with the same seed and sizes, on the same machine.
+sends it, and run again. The rows are the exception: `ranked` never calls `Embeddings.vectors`, which is
+timed here over a store already read, standing in for the two calls `measure` makes to build its rows. A
+figure marked `*` raised "too many SQL variables" as is, and was timed again with `evidence_log.resolve`
+patched to send its ids in chunks: the cost the draw would have if it ran. `--json` keeps a run;
+`--baseline` sets a kept run beside this one, so a change is timed on its base commit and on its branch
+with the same seed and sizes, on the same machine.
 """
 
 from __future__ import annotations
@@ -564,8 +566,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     )
     # `vectors` reaches the rows `measure` multiplies through a public call, with no matmul after it; over a
     # store already read, it times building them alone.
-    rows = Embeddings(_AlreadyRead(read), _no_embed, _NoModel())
-    t["rows"], _ = _median_ms(lambda: rows.vectors([*candidates, *columns]), reps)
+    already_read = Embeddings(_AlreadyRead(read), _no_embed, _NoModel())
+    t["rows"], _ = _median_ms(lambda: already_read.vectors([*candidates, *columns]), reps)
     current = settings.get(connection)
     keys = [item_key(w.id) for w in candidates]
     t["rank"], _ = _median_ms(
