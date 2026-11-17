@@ -43,10 +43,10 @@ at, the **Judgement** that decided it and when (`DecidedWallpaper`), and the pos
 
 **The join to `wallpapers` is an inner join.** The trigger `judgement_items_name_a_known_wallpaper`
 (`storage.py`, made with the **Evidence log**) refuses any `wallhaven:` **Item** that has no `wallpapers` row,
-and no statement in `src/` deletes a `wallpapers` row. So the inner join loses no decided **Item**, and the standing holds
-exactly the set `pool.decided` gave. The two paths would part only if a `wallpapers` row could go: the old
-path then raised `KeyError` building the similarity (`by_key` had no entry for a column), while the inner join
-would drop the column without a word. Whatever first deletes a `wallpapers` row reopens this choice.
+and no statement in `src/` deletes a `wallpapers` row. So the inner join loses no decided **Item**, and the
+standing holds exactly the set `pool.decided` gave. The two paths would part only if a `wallpapers` row could
+go: the old path then raised `KeyError` building the similarity (`by_key` had no entry for a column), while
+the inner join would drop the column without a word. Whatever first deletes a `wallpapers` row reopens this choice.
 
 **The draw no longer verifies Judgement ids, nor raises `UnknownInstrument`.** Both ran inside
 `judgements()` and `evidence()`, which the draw no longer calls. `evaluate` (`main.py`, `_evaluate`) still
@@ -70,7 +70,8 @@ where ADR 0008 put them. The options set aside are below.
 
 **What it bought.** `scripts/bench_draw.py`, seed 0, median of 5 after one warm-up, in ms, from `main`
 (`71d8843`) to this decision's code (`deaa59d`, whose `src` is `55587c6`'s), with wallpapi-jep.2 and jep.3
-inside it. One run per commit, on 2026-11-17, on an idle machine with the databases on disk:
+inside it. One run per commit, back to back on 2026-11-17, with the databases on disk and `free -g` showing
+11 GB available before each:
 
 | Judgements | 1,000 | 10,000 | 50,000 |
 |---|---:|---:|---:|
@@ -82,24 +83,23 @@ inside it. One run per commit, on 2026-11-17, on an idle machine with the databa
 
 \* `main` fails as is ("too many SQL variables", wallpapi-jep.2): timed with `resolve` chunked at 30,000.
 
-The ticket's own run read 7,246 ms at 50k, 30% off a "before" of 10,384 ms at `7c601bc`, and is set aside
-because it pairs runs a day apart: the "before" on 2026-11-16 and the "after" on 2026-11-17, with other agents
-working on the machine and the databases in `/tmp`. The runs above were back to back on an idle machine, and
-this decision rests on them. Between those sessions, runs of the same `ranked` code differ by 6 to 7% at 50k:
-10,384 ms at `7c601bc` against 11,146 ms at `main`, whose `ranked` differs only in how `resolve` chunks; and
-7,246 ms at `55587c6` against 6,835 ms at `deaa59d`, the same `src`. Paired the other way, the gain at 50k
-reads 34% or 35%. No cause is known for the difference between the sessions. The ticket's 1k and 10k gains,
-28% and 32%, are close to the idle run's.
+Runs of the same `ranked` code in different sessions differ by 6 to 7% at 50k, and no cause is known:
+10,384 ms at `7c601bc` (2026-11-16) against 11,146 ms at `main` above, whose `ranked` differs only in how
+`resolve` chunks; and 7,246 ms at `55587c6` (2026-11-17, an hour before, 10 GB available) against
+6,835 ms at `deaa59d` above, the same `src`. Both earlier runs had their databases in `/tmp`; free memory was
+not recorded at the first. So a gain is taken here only between runs of one session.
 
 The draw binds no ids, so SQLite's parameter limit no longer reaches ranking, and no **Judgement** is hashed
 on a request.
 
-**What it cost.** The gain is 30 to 39%, short of the research prototype's 40 to 42%: `ranked` takes 6,835 ms
-at 50k against the prototype's 6,031 ms, a gap of 0.8 s. A probe of `standing` at `55587c6` on the
-benchmark's databases (median of 5 after a warm-up, in ms) splits it into its SQL and its decoding. The probe
-ran on 2026-11-17, minutes after the ticket's "after", on the same busy machine, and has not been repeated, so
-its split is the only one there is; the idle run times `standing` whole at 435 and 2,562 ms at 10k and 50k,
-against the probe's 430 and 2,374.
+**What it cost.** The gain falls short of the research prototype's, each taken within its own session: 32%
+and 39% at 10k and 50k here, against 40% and 42% in the research's run (1,798 -> 1,077 and 10,383 -> 6,031
+ms, `docs/research/evidence-log-draw-cost.md`). At 50k the 3 points come to about 0.36 s of the 11,146 ms
+above. Side by side, 6,835 against 6,031 ms is 0.8 s, but that pairs runs from different sessions, and 6 to 7%
+of 6,031 ms is about 0.4 s. A probe of `standing` at `55587c6` on the benchmark's databases (median of 5 after
+a warm-up, in ms) splits it into its SQL and its decoding. The probe ran on 2026-11-17, minutes after the
+7,246 ms run, with the databases in `/tmp`, and has not been repeated, so its split is the only one there is;
+the run above times `standing` whole at 435 and 2,562 ms at 10k and 50k, against the probe's 430 and 2,374.
 
 | Part of `standing` | 10,000 (54,281 decided) | 50,000 (272,372 decided) |
 |---|---:|---:|
@@ -111,18 +111,18 @@ against the probe's 430 and 2,374.
 | decode: `decided_at` and the id | 12 | 83 |
 | `Standing.evidence()` | 24 | 132 |
 
-- **Common to the prototype, so no part of the gap.** The SQL costs what the research measured for the
+- **Common to the prototype, so no part of the shortfall.** The SQL costs what the research measured for the
   joined query (1,250 ms at 50k against 1,175 ms). Decoding the `Wallpaper`s, 493 ms here, the prototype paid
   too (443 ms for 272k, the research note), as the old path paid it inside `pool.decided`.
-- **What this reader adds over the prototype: about 0.6 to 0.75 s at 50k.** `_resolved_from` 215 ms, a new
-  `ResolvedVerdict` per row for a handful of distinct words (reusing them is wallpapi-j9a); the time and the
-  id 83 ms; and about 325 ms building the `DecidedWallpaper`s and their tuple, which is the whole less the SQL
-  and the measured decode parts.
-- **Left: 0.05 to 0.2 s, not told from noise.** That is the 0.8 s gap less the reader's 0.6 to 0.75 s. Each
-  commit was run once, and the prototype on another day. `rank(standing.evidence())` reads 1,189, 985 and
-  1,278 ms at 50k in the idle runs of `deaa59d`, `0c4a89f` and `121146e`, between which its code does not
-  change: it alone moves by 0.3 s. The "about 0.45 s not placed" of review round 1 was measured against the
-  1.2 s gap of the ticket's own run; in these runs no remainder stands above that noise.
+- **What this reader adds over the prototype: about 0.6 to 0.75 s at 50k, in the probe's session.**
+  `_resolved_from` 215 ms, a new `ResolvedVerdict` per row for a handful of distinct words (reusing them is
+  wallpapi-j9a); the time and the id 83 ms; and about 325 ms building the `DecidedWallpaper`s and their tuple,
+  which is the whole less the SQL and the measured decode parts.
+- **Not split.** The shortfall at 50k, about 0.4 s once runs are taken within a session, is smaller than the
+  reader's own 0.6 to 0.75 s, measured in a third session, and moving between sessions shifts a 50k figure by
+  about as much as the shortfall itself. Each commit was run once, and `rank(standing.evidence())` alone reads
+  1,189, 985 and 1,278 ms at 50k in the runs of `deaa59d`, `0c4a89f` and `121146e`, between which its code
+  does not change: it moves by 0.3 s. The runs place no remainder and size none.
 
 `_NEWEST` costs 7.5 ms at 50k without an index on `recorded_at` (wallpapi-jep.5).
 
