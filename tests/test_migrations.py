@@ -28,7 +28,13 @@ from wallpapi.taste.clock import iso_utc
 from wallpapi.taste.evidence import AbsoluteEvidence
 from wallpapi.taste.judgement import Judgement, Shown
 from wallpapi.taste.ranking import rank
-from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
+from wallpapi.taste.verdict_grid import (
+    VERDICT_GRID_V0,
+    VERDICT_GRID_V1,
+    GridResponse,
+    LegacyEntry,
+    LegacyTileResponse,
+)
 
 RETUNED = [
     # (setting, the default it replaced, a value a user chose, the version before the migration)
@@ -575,3 +581,70 @@ def test_a_lineup_live_across_migration_17_has_no_champion_and_a_lineup_holds_at
         ):
             with pytest.raises(sqlite3.IntegrityError), storage.write(connection) as write:
                 write.execute(f"UPDATE lineup_wallpapers SET {refused}")
+
+
+# -- migration 18: the Evidence log indexed by recorded time -------------------------------------------------
+
+
+def _ordered_reads(connection: sqlite3.Connection) -> list[str]:
+    """The statements `standing` and `judgements` send that read `judgements` by recorded time, caught as
+    they run: the newest position, then the ordered fetch."""
+    caught: list[str] = []
+    connection.set_trace_callback(caught.append)
+    try:
+        evidence_log.standing(connection, pool.wallpaper_from_row)
+        evidence_log.judgements(connection)
+    finally:
+        connection.set_trace_callback(None)
+    return [statement for statement in caught if "FROM judgements ORDER BY recorded_at" in statement]
+
+
+def test_migration_18_indexes_a_populated_log_so_both_ordered_reads_walk_it_with_no_sort(
+    db_path: Path,
+) -> None:
+    """The newest position and the ordered fetch read `judgements` in opposite orders, and one index on
+    `(recorded_at DESC, id)` serves each whole, walked one way or the other. What they read back is the same
+    before and after, an exact tie in recorded time included (the lower id is newest and fetched last)."""
+    ids = [f"wp{n:04d}" for n in range(4)]
+    # Appended out of recorded order, and two at one time to the microsecond.
+    times = [T, T + dt.timedelta(minutes=2), T + dt.timedelta(minutes=2), T - dt.timedelta(minutes=1)]
+    with raw_connection(db_path) as connection:
+        storage.migrate(connection, to=17)
+        with storage.write(connection) as write:
+            write.executemany(
+                "INSERT INTO wallpapers VALUES (?, 3840, 2160, '1.78', 'general', 'sfw', 1, '', '', '', '')",
+                [(wallpaper_id,) for wallpaper_id in ids],
+            )
+            for wallpaper_id, at in zip(ids, times, strict=True):
+                evidence_log.append(
+                    write,
+                    Judgement(
+                        instrument=VERDICT_GRID_V1,
+                        screen=evidence_log.SCREEN_HISTORY,
+                        shown=(
+                            Shown(
+                                evidence_log.item_key(wallpaper_id), evidence_log.tile_response(Verdict.LIKE)
+                            ),
+                        ),
+                        recorded_at=at,
+                        app=evidence_log.APP,
+                        app_version=evidence_log.APP_VERSION,
+                        response=GridResponse(submitted=True),
+                    ),
+                )
+        before = evidence_log.judgements(connection)
+        newest_before = evidence_log.standing(connection, pool.wallpaper_from_row).newest
+
+        storage.migrate(connection)
+
+        assert evidence_log.judgements(connection) == before
+        assert evidence_log.standing(connection, pool.wallpaper_from_row).newest == newest_before
+        tied = sorted(j.id for j in before if j.recorded_at == times[1])
+        assert newest_before is not None
+        assert (newest_before.judgement_id, before[-1].id) == (tied[0], tied[0])
+        reads = _ordered_reads(connection)
+        assert len(reads) == 2
+        for read in reads:
+            plan = [str(row[3]) for row in connection.execute(f"EXPLAIN QUERY PLAN {read}")]
+            assert any("judgements_by_recorded_at" in step for step in plan), (read, plan)
+            assert not any("TEMP B-TREE" in step for step in plan), (read, plan)

@@ -10,10 +10,13 @@ public upkeep with a model and embedder that refuse to run, so no model is loade
 network. Each size is built in one fresh process and timed in another, so the peak memory is the timing's.
 
 Every figure is the median of `--reps` runs after one warm-up, in milliseconds. The parts are timed apart
-from `ranked`, through the same public calls it makes. A figure marked `*` raised "too many SQL variables"
-as is, and was timed again with `evidence_log.resolve` patched to send its ids in chunks: the cost the
-draw would have if it ran. `--json` keeps a run; `--baseline` sets a kept run beside this one, so a change
-is timed on its base commit and on its branch with the same seed and sizes, on the same machine.
+from `ranked`, through the same public calls it makes; a query timed alone is caught as its public call
+sends it, and run again. The rows are the exception: `ranked` never calls `Embeddings.vectors`, which is
+timed here over a store already read, standing in for the two calls `measure` makes to build its rows. A
+figure marked `*` raised "too many SQL variables" as is, and was timed again with `evidence_log.resolve`
+patched to send its ids in chunks: the cost the draw would have if it ran. `--json` keeps a run;
+`--baseline` sets a kept run beside this one, so a change is timed on its base commit and on its branch
+with the same seed and sizes, on the same machine.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -59,13 +62,10 @@ from wallpapi.taste.judgement import (
     LogPosition,
     RankingStamp,
     Shown,
-    canonical,
 )
 from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.ranking import rank
-from wallpapi.taste.reductions import evidence
-from wallpapi.taste.resolution import resolve as taste_resolve
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 
@@ -92,30 +92,25 @@ MIX: Final = (
 TIMES: Final = (
     ("ranked", "`Batches.ranked`"),
     ("pool.members", "`pool.members`"),
-    ("pool.decided", "`pool.decided`"),
-    ("resolve", "`evidence_log.resolve(members + decided)`"),
-    ("judgements", "`evidence_log.judgements()` total"),
-    ("judgements.sql", "of which: its SQL, fetched"),
-    ("judgements.canonical", "of which: `canonical()` JSON"),
-    ("judgements.sha256", "of which: `sha256().hexdigest()`"),
-    ("judgements.rest", "of which: row decoding and dataclass building (the rest)"),
-    ("evidence", "`evidence()` (every Reduction)"),
-    ("taste.resolve", "`taste` resolve and decided sort"),
+    ("standing", "`evidence_log.standing` (the SQL standing and the newest)"),
+    ("newest", "of which: the newest-position query, caught from `standing`"),
     ("near_duplicates", "`Embeddings.near_duplicates` (Pool x Bans)"),
     ("measure", "`Embeddings.measure` (Pool x decided)"),
     ("vectors_for", "of which: `EmbeddingCache.vectors_for`"),
-    ("masked_exponential", "masked exponential (`rank` less resolve and sort)"),
+    ("rows", "of which: the rows, `Embeddings.vectors` (Pool and decided) over a store already read"),
+    ("rank", "`rank(standing.evidence())`, the matrix given"),
     ("fresh", "`Batches.fresh` (a visit's whole mint)"),
     ("write_lock", "of which: write lock held (pre-marking inside)"),
     ("explicitly_decided", "`evidence_log.explicitly_decided()`"),
     ("resolve_chosen", "`evidence_log.resolve(chosen tiles)` alone"),
+    ("judgements_sql", "off the draw: `judgements()`'s ordered fetch, caught from it"),
 )
-"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint."""
+"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint, then
+the ordered fetch `evaluate` makes through `judgements()`."""
 
 COUNTS: Final = (
     ("judgement_items", "judgement_items rows"),
     ("wallpapers", "wallpapers rows"),
-    ("resolve_ids", "ids handed to resolve"),
     ("decided_columns", "decided columns in the matrix"),
     ("explicit", "explicitly decided"),
     ("peak_rss_mb", "peak RSS of the timing process, MB"),
@@ -381,6 +376,23 @@ def _no_embed(images: Sequence[Path]) -> NDArray[np.float32]:
     return np.zeros((0, DIM), dtype=np.float32)
 
 
+class _AlreadyRead:
+    """A store that hands back, for any ids, the vectors one `EmbeddingCache.vectors_for` already read: what
+    `Embeddings` does with them is then timed without the read."""
+
+    def __init__(self, held: Mapping[str, NDArray[np.float32]]) -> None:
+        self._held = held
+
+    def vectors_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, NDArray[np.float32]]:
+        return self._held
+
+    def store(self, wallpaper_id: str, vector: NDArray[np.float32]) -> None:
+        raise RuntimeError("the benchmark stores nothing")
+
+    def embedded_ids(self) -> set[str]:
+        return set(self._held)
+
+
 def _median_ms[T](run: Callable[[], T], reps: int) -> tuple[float, T]:
     """The median of `reps` runs after one warm-up, in milliseconds, and the last run's answer."""
     answer = run()
@@ -444,6 +456,26 @@ def timed_writes(held: list[float]) -> Generator[None]:
 
     with patch.object(storage, "write", timed):
         yield
+
+
+ORDERED_READ: Final = "FROM judgements ORDER BY recorded_at"
+"""What the one statement of a call that reads `judgements` in recorded-time order says."""
+
+
+def _ordered_read(connection: sqlite3.Connection, run: Callable[[], object]) -> str:
+    """The one statement `run` sends that reads `judgements` by recorded time, caught as it runs, so the SQL
+    a public call makes is timed alone without naming a private one. Raises unless exactly one says
+    `ORDERED_READ`: a change to the SQL fails the benchmark rather than timing another statement."""
+    caught: list[str] = []
+    connection.set_trace_callback(caught.append)
+    try:
+        run()
+    finally:
+        connection.set_trace_callback(None)
+    matched = [statement for statement in caught if ORDERED_READ in statement]
+    if len(matched) != 1:
+        raise RuntimeError(f"expected one statement saying {ORDERED_READ!r}, caught {matched}")
+    return matched[0]
 
 
 def _digest(batches: Batches, connection: sqlite3.Connection) -> str:
@@ -514,50 +546,33 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     }
 
     t["pool.members"], members = _median_ms(lambda: pool.members(connection), reps)
-    t["pool.decided"], judged = _median_ms(lambda: pool.decided(connection), reps)
-    ids = [w.id for w in members] + [w.id for w in judged]
-    counts["resolve_ids"] = len(ids)
-    t["resolve"], resolved = _as_is_or_chunked(
-        lambda: evidence_log.resolve(connection, ids), reps, "resolve", chunked
+    t["standing"], standing = _median_ms(
+        lambda: evidence_log.standing(connection, pool.wallpaper_from_row), reps
     )
-
-    # `judgements()`, then its parts: the SQL it runs, caught as it runs and fetched again, the canonical
-    # JSON and the hash `Judgement` makes of each, and the decoding left over.
-    t["judgements"], log = _median_ms(lambda: evidence_log.judgements(connection), reps)
-    statements: list[str] = []
-    connection.set_trace_callback(statements.append)
-    evidence_log.judgements(connection)
-    connection.set_trace_callback(None)
-    t["judgements.sql"], _ = _median_ms(lambda: [connection.execute(s).fetchall() for s in statements], reps)
-    t["judgements.canonical"], texts = _median_ms(lambda: [canonical(j) for j in log], reps)
-    t["judgements.sha256"], _ = _median_ms(
-        lambda: [hashlib.sha256(text.encode("ascii")).hexdigest() for text in texts], reps
-    )
-    t["judgements.rest"] = (
-        t["judgements"] - t["judgements.sql"] - t["judgements.canonical"] - t["judgements.sha256"]
-    )
-    t["evidence"], found = _median_ms(lambda: evidence(log), reps)
-
-    def standing() -> list[str]:
-        return sorted(item for item, piece in taste_resolve(found).items() if piece.strength != 0)
-
-    t["taste.resolve"], decided = _median_ms(standing, reps)
+    newest = _ordered_read(connection, lambda: evidence_log.standing(connection, pool.wallpaper_from_row))
+    t["newest"], _ = _median_ms(lambda: connection.execute(newest).fetchone(), reps)
+    decided = sorted(piece.item for piece in standing.evidence())
     counts["decided_columns"] = len(decided)
 
-    candidates = [w for w in members if resolved[w.id].verdict is not Verdict.BAN]
-    banned = [w for w in judged if resolved[w.id].verdict is Verdict.BAN]
+    banned = [d.wallpaper for d in standing.decided if d.resolved.verdict is Verdict.BAN]
+    banned_ids = {w.id for w in banned}
+    candidates = [w for w in members if w.id not in banned_ids]
     t["near_duplicates"], _ = _median_ms(lambda: embeddings.near_duplicates(candidates, banned), reps)
-    by_key = {item_key(w.id): w for w in [*candidates, *judged]}
+    by_key = {item_key(w.id): w for w in [*candidates, *(d.wallpaper for d in standing.decided)]}
     columns = [by_key[key] for key in decided]
     t["measure"], measured = _median_ms(lambda: embeddings.measure(candidates, columns), reps)
-    t["vectors_for"], _ = _median_ms(
+    t["vectors_for"], read = _median_ms(
         lambda: cache.vectors_for([w.id for w in candidates] + [w.id for w in columns]), reps
     )
+    # `vectors` reaches the rows `measure` multiplies through a public call, with no matmul after it; over a
+    # store already read, it times building them alone.
+    already_read = Embeddings(_AlreadyRead(read), _no_embed, _NoModel())
+    t["rows"], _ = _median_ms(lambda: already_read.vectors([*candidates, *columns]), reps)
     current = settings.get(connection)
     keys = [item_key(w.id) for w in candidates]
-    t["masked_exponential"], _ = _median_ms(
+    t["rank"], _ = _median_ms(
         lambda: rank(
-            found,
+            standing.evidence(),
             keys,
             lambda rows, cols: measured.matrix,
             radius=current.similarity_radius,
@@ -565,7 +580,6 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
         ),
         reps,
     )
-    t["masked_exponential"] -= t["taste.resolve"]
 
     # The whole draw after its parts, where the research timed it: timed first, in a process that has not
     # yet held the parts' results, it measured 5 to 10% faster at 10k.
@@ -583,6 +597,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     counts["explicit"] = len(explicit)
     chosen = [w.id for w in members[:BATCH]]
     t["resolve_chosen"], _ = _median_ms(lambda: evidence_log.resolve(connection, chosen), reps)
+    fetch = _ordered_read(connection, lambda: evidence_log.judgements(connection))
+    t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch).fetchall(), reps)
 
     with chunked_resolve():
         counts["digest"] = _digest(batches, connection)

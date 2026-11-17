@@ -31,9 +31,8 @@ from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, wallpaper_from_row
 from wallpapi.similarity import Embeddings
 from wallpapi.taste.clock import Clock, iso_utc
-from wallpapi.taste.judgement import Judgement, LogPosition, Provenance, RankingStamp, Shown
+from wallpapi.taste.judgement import Judgement, Provenance, RankingStamp, Shown
 from wallpapi.taste.ranking import rank
-from wallpapi.taste.reductions import evidence
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 
@@ -232,9 +231,10 @@ class Batches:
                 ],
             )
             # Resolved under the write lock, so a **History** edit cannot land between reading a **Verdict**
-            # and pre-filling it.
-            resolved = evidence_log.resolve(write, [scored.wallpaper.id for scored in chosen])
-            explicit = evidence_log.explicitly_decided(write)
+            # and pre-filling it. Both ask about the chosen tiles alone, never the whole log.
+            chosen_ids = [scored.wallpaper.id for scored in chosen]
+            resolved = evidence_log.resolve(write, chosen_ids)
+            explicit = evidence_log.explicitly_decided(write, chosen_ids)
             drafts = {
                 wallpaper_id: standing.verdict
                 for wallpaper_id, standing in resolved.items()
@@ -268,36 +268,36 @@ class Batches:
         """The classified **Pool**, and the **Ranking stamp** that says what ranked it: the newest
         **Judgement** ranking read, the **Space** the similarity call answered in, and the radius and decay.
 
-        Ranking (`taste/`) gives the **Scores**, from the Evidence `taste/`'s **Reductions** make of every
-        **Judgement** in the **Evidence log**; its decided columns are every **Item** standing at a non-zero
-        value, in the **Pool** or not. A **Ban** is a column like any other, but never a row. Nor is its
-        repost (ADR 0021), which stays in the **Pool**: a **History** edit away from **Ban** brings it back at
-        the next call.
+        Ranking (`taste/`) gives the **Scores**, from the **Evidence log**'s standing as SQL resolves it, with
+        no **Judgement** rebuilt (`evidence_log.standing`, ADR 0030); its decided columns are every **Item**
+        standing at a non-zero value, in the **Pool** or not. A **Ban** is a column like any other, but never
+        a row. Nor is its repost (ADR 0021), which stays in the **Pool**: a **History** edit away from **Ban**
+        brings it back at the next call.
 
         What it reads, it reads in one snapshot, outside any transaction: a **Judgement** from another tab
         lands before every read or after them all, never between two, where it would leave the **Pool**, the
-        resolved **Verdicts** and the log disagreeing about what is decided. The scoring runs after the
+        standing and the newest **Judgement** disagreeing about what is decided. The scoring runs after the
         snapshot ends.
         """
         with storage.read(connection):
             members = pool.members(connection)
             if not members:
                 return Ranked(scored=(), stamp=None)
-            judged = pool.decided(connection)
-            resolved = evidence_log.resolve(connection, [w.id for w in members] + [w.id for w in judged])
-            log = evidence_log.judgements(connection)
+            standing = evidence_log.standing(connection, wallpaper_from_row)
             current = settings.get(connection)
 
-        candidates = [w for w in members if resolved[w.id].verdict is not Verdict.BAN]
-        banned = [w for w in judged if resolved[w.id].verdict is Verdict.BAN]
+        banned = [d.wallpaper for d in standing.decided if d.resolved.verdict is Verdict.BAN]
+        banned_ids = {w.id for w in banned}
+        candidates = [w for w in members if w.id not in banned_ids]
         if candidates and banned:
             reposts = self._embeddings.near_duplicates(candidates, banned).any(axis=1)
             candidates = [w for w, repost in zip(candidates, reposts, strict=True) if not repost]
         if not candidates:
             return Ranked(scored=(), stamp=None)
 
-        found = evidence(log)
-        by_key = {evidence_log.item_key(w.id): w for w in [*candidates, *judged]}
+        by_key = {
+            evidence_log.item_key(w.id): w for w in [*candidates, *(d.wallpaper for d in standing.decided)]
+        }
         spaces: list[str] = []
 
         def similarity(rows: Sequence[str], columns: Sequence[str]) -> NDArray[np.float32]:
@@ -306,7 +306,7 @@ class Batches:
             return measured.matrix
 
         ranking = rank(
-            found,
+            standing.evidence(),
             [evidence_log.item_key(w.id) for w in candidates],
             similarity,
             radius=current.similarity_radius,
@@ -314,9 +314,8 @@ class Batches:
         )
         # `rank` calls the similarity function exactly once, even with nothing decided (Invariant 2).
         (space,) = spaces
-        newest = log[-1] if log else None
         stamp = RankingStamp(
-            read=None if newest is None else LogPosition(newest.recorded_at, newest.id),
+            read=standing.newest,
             space=space,
             radius=current.similarity_radius,
             decay=current.similarity_decay,

@@ -408,6 +408,68 @@ def test_the_vectors_are_its_rows_in_pool_order_with_zeros_for_no_embedding() ->
     assert nothing.shape == (2, 0)
 
 
+def test_a_row_is_its_vector_to_the_bit_unless_missing_of_another_width_or_without_a_nonzero_number() -> None:
+    """Missing, and the two ways a stored vector is no **Embedding**, each leave a +0.0 row: a vector of
+    another width, and one with no non-zero number in it. A vector of -0.0s or one holding NaN has no
+    non-zero number in it, while the smallest float32 above zero is one. The first vector read sets the
+    width."""
+    stored = {
+        "north": NORTH,
+        "three_dimensional": vector(1.0, 0.0, 0.0),
+        "zeros": np.zeros(2, dtype=np.float32),
+        "negative_zeros": np.array([-0.0, -0.0], dtype=np.float32),
+        "nan": np.array([np.nan, 1.0], dtype=np.float32),
+        "tiny": np.array([0.0, np.finfo(np.float32).smallest_subnormal], dtype=np.float32),
+        "east": EAST,
+    }
+    ids = ["north", "missing", "three_dimensional", "zeros", "negative_zeros", "nan", "tiny", "east", "north"]
+    source = embeddings(stored)
+
+    rows = source.vectors([wallpaper(w) for w in ids])
+
+    nothing = np.zeros(2, dtype=np.float32)
+    expected = np.stack([NORTH, nothing, nothing, nothing, nothing, nothing, stored["tiny"], EAST, NORTH])
+    assert (rows.dtype, rows.shape) == (np.float32, (len(ids), 2))
+    assert rows.tobytes() == expected.tobytes()
+    assert source.unembedded(ids) == {"missing", "three_dimensional", "zeros", "negative_zeros", "nan"}
+
+
+ROWS_LOOKED_THROUGH_AT_ONCE = 4096
+"""`similarity._ROW_BLOCK`, written out so the test names no private symbol; whoever raises it raises this."""
+
+
+def test_every_block_of_rows_is_looked_through_to_its_last_partial_one() -> None:
+    """More than two blocks of the rows `_rows` looks through at a time, the last one partial, with a
+    rejected row and a missing id inside the second block and inside the last, compared to the bit. Sized
+    from `ROWS_LOOKED_THROUGH_AT_ONCE`, which must stay `_ROW_BLOCK` or this stops spanning blocks."""
+    block = ROWS_LOOKED_THROUGH_AT_ONCE
+    count = 2 * block + 100
+    ids = [f"w{i}" for i in range(count)]
+    # Each row's own values, so a block written to the wrong place or not at all shows in the bytes.
+    stored = {w: np.array([i + 1.0, -(i + 1.0)], dtype=np.float32) for i, w in enumerate(ids)}
+    rejected = {
+        ids[block + 7]: np.array([-0.0, -0.0], dtype=np.float32),
+        ids[2 * block + 50]: np.array([np.nan, 1.0], dtype=np.float32),
+        ids[-1]: np.zeros(2, dtype=np.float32),
+    }
+    missing = {ids[block + 8], ids[2 * block + 51]}
+    stored.update(rejected)
+    for w in missing:
+        del stored[w]
+    source = embeddings(stored)
+
+    rows = source.vectors([wallpaper(w) for w in ids])
+
+    unknown = missing | set(rejected)
+    expected = np.zeros((count, 2), dtype=np.float32)
+    for i, w in enumerate(ids):
+        if w not in unknown:
+            expected[i] = stored[w]
+    assert (rows.dtype, rows.shape) == (np.float32, (count, 2))
+    assert rows.tobytes() == expected.tobytes()
+    assert source.unembedded(ids) == unknown
+
+
 # -- near-duplicates ---------------------------------------------------------------------------------
 
 

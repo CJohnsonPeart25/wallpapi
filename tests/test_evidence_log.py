@@ -1,4 +1,5 @@
-"""The **Evidence log**, through `evidence_log` alone: a real in-memory database, no `compose`.
+"""The **Evidence log**, through `evidence_log` alone: a real in-memory database, no `compose`. `standing`
+is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and checked against `pool.decided`.
 
 **Judgements** are appended as the grid and **History** append them, and built by hand where a test needs a
 shape nothing writes yet: a **Skip**, a converted (version 0) **Judgement**, a **Ranking stamp**. The
@@ -18,7 +19,7 @@ import pytest
 
 from tests.conftest import committing_as
 from tests.fakes import FakeClock
-from wallpapi import evidence_log, storage
+from wallpapi import evidence_log, pool, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict, Zone
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
@@ -569,17 +570,10 @@ def _standing_in_taste(judgements: list[Judgement]) -> dict[str, tuple[str, floa
     }
 
 
-def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
-    connection: sqlite3.Connection,
-) -> None:
-    """The second spelling of the version 1 **Reduction**: an unmarked tile on a submitted **Batch** is an
-    **Ignore**, a starred one a **Favourite**, a **Skip** says nothing whatever its tiles hold, and a
-    **History** edit overturns the **Batch**. Converted **Judgements** among them, a **Clearance** too.
-
-    And of **Pick**'s, **Order**'s and **Gauntlet**'s: a **Pick**, an **Order**, partial, complete or blank,
-    a **Gauntlet** screen whatever its streak, or a "none of these" on either, says nothing absolute about
-    any tile, so a later one neither overturns a **Verdict** nor gives a tile seen only there a line; a tile
-    starred on one is a **Favourite** like any other, ranked, picked or not."""
+def _every_instrument() -> dict[str, Judgement]:
+    """A log of every **Instrument**, by name, in the order it is appended: a **Batch**, a **Skip**, two
+    **History** edits, converted **Judgements** with a **Clearance** last, and **Picks**, **Orders** and
+    **Gauntlet** screens, starred and not."""
     batch = grid(
         ("wp0000", BLANK), ("wp0001", STARRED), ("wp0002", LIKED), ("wp0003", BANNED), ("wp0004", BLANK)
     )
@@ -620,44 +614,120 @@ def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
         at=latest + dt.timedelta(seconds=2),
         streak=1,
     )
-    logged = [
-        batch,
-        skip,
-        overturned,
-        starred_from_history,
-        old,
-        cleared,
-        picked_over,
-        passed_over,
-        starred_on_a_pick,
-        ordered_over,
-        blank_order,
-        starred_on_an_order,
-        defended,
-        dismissed,
-        starred_on_a_gauntlet,
-    ]
+    return {
+        "batch": batch,
+        "skip": skip,
+        "overturned": overturned,
+        "starred_from_history": starred_from_history,
+        "old": old,
+        "cleared": cleared,
+        "picked_over": picked_over,
+        "passed_over": passed_over,
+        "starred_on_a_pick": starred_on_a_pick,
+        "ordered_over": ordered_over,
+        "blank_order": blank_order,
+        "starred_on_an_order": starred_on_an_order,
+        "defended": defended,
+        "dismissed": dismissed,
+        "starred_on_a_gauntlet": starred_on_a_gauntlet,
+    }
 
-    append(connection, *logged)
 
-    assert _standing_in_sql(connection) == _standing_in_taste(logged)
+def test_the_sql_standing_of_every_item_is_tastes_reduction_then_resolution(
+    connection: sqlite3.Connection,
+) -> None:
+    """The second spelling of the version 1 **Reduction**: an unmarked tile on a submitted **Batch** is an
+    **Ignore**, a starred one a **Favourite**, a **Skip** says nothing whatever its tiles hold, and a
+    **History** edit overturns the **Batch**. Converted **Judgements** among them, a **Clearance** too.
+
+    And of **Pick**'s, **Order**'s and **Gauntlet**'s: a **Pick**, an **Order**, partial, complete or blank,
+    a **Gauntlet** screen whatever its streak, or a "none of these" on either, says nothing absolute about
+    any tile, so a later one neither overturns a **Verdict** nor gives a tile seen only there a line; a tile
+    starred on one is a **Favourite** like any other, ranked, picked or not."""
+    logged = _every_instrument()
+
+    append(connection, *logged.values())
+
+    assert _standing_in_sql(connection) == _standing_in_taste(list(logged.values()))
     assert _standing_in_sql(connection) == {
-        key("wp0000"): (starred_on_an_order.id, 100.0),
-        key("wp0001"): (starred_on_a_gauntlet.id, 100.0),
-        key("wp0002"): (overturned.id, -10.0),
-        key("wp0003"): (starred_from_history.id, 100.0),
-        key("wp0004"): (batch.id, -10.0),
-        key("wp0006"): (starred_on_a_pick.id, 100.0),
-        key("wp0007"): (old.id, 100.0),
-        key("wp0008"): (cleared.id, 0.0),
-        key("wp0012"): (starred_on_a_pick.id, 100.0),
-        key("wp0015"): (starred_on_an_order.id, 100.0),
-        key("wp0019"): (starred_on_a_gauntlet.id, 100.0),
+        key("wp0000"): (logged["starred_on_an_order"].id, 100.0),
+        key("wp0001"): (logged["starred_on_a_gauntlet"].id, 100.0),
+        key("wp0002"): (logged["overturned"].id, -10.0),
+        key("wp0003"): (logged["starred_from_history"].id, 100.0),
+        key("wp0004"): (logged["batch"].id, -10.0),
+        key("wp0006"): (logged["starred_on_a_pick"].id, 100.0),
+        key("wp0007"): (logged["old"].id, 100.0),
+        key("wp0008"): (logged["cleared"].id, 0.0),
+        key("wp0012"): (logged["starred_on_a_pick"].id, 100.0),
+        key("wp0015"): (logged["starred_on_an_order"].id, 100.0),
+        key("wp0019"): (logged["starred_on_a_gauntlet"].id, 100.0),
     }, (
         "worked by hand: no line for wp0005, seen only on the Skip and ranked on an Order, nor wp0009 to "
         "wp0011, only on Picks, nor wp0013 and wp0014, only on Orders, nor wp0016 to wp0018, only on "
         "unstarred Gauntlet tiles; wp0002 and wp0004 keep their Ignores through the Gauntlet"
     )
+
+
+def _standing(connection: sqlite3.Connection) -> evidence_log.Standing:
+    """What ranking reads, decoded with the one decoder it is ever handed."""
+    return evidence_log.standing(connection, pool.wallpaper_from_row)
+
+
+def test_ranking_reads_each_decided_wallpaper_at_the_standing_tastes_resolution_gives_it(
+    connection: sqlite3.Connection,
+) -> None:
+    """The SQL spelling again, as ranking reads it: every decided **Wallpaper** whole and in id order, with
+    the **Judgement** that decides it, when, and what it stands at, across every **Instrument**. A
+    **Clearance** last is decided and worth nothing, as `pool.decided` and `resolve` have it."""
+    logged = list(_every_instrument().values())
+    append(connection, *logged)
+
+    decided = _standing(connection).decided
+
+    assert {key(d.wallpaper.id): (d.judgement_id, d.decided_at, d.resolved.value) for d in decided} == {
+        item: (piece.judgement_id, piece.recorded_at, piece.strength)
+        for item, piece in resolve(evidence(logged)).items()
+    }
+    assert [d.wallpaper for d in decided] == pool.decided(connection)
+    assert {d.wallpaper.id: d.resolved for d in decided} == evidence_log.resolve(
+        connection, [d.wallpaper.id for d in decided]
+    )
+
+
+def test_the_evidence_ranking_reads_is_tastes_standing_less_what_stands_at_zero(
+    connection: sqlite3.Connection,
+) -> None:
+    """What `rank` is fed: one absolute piece per **Item** standing at a non-zero value, which is every
+    column `rank` makes of taste's own reading of the log, in key order. A **Clearance** last stands at 0
+    and is no column; relative Evidence is not read, because `rank` ignores it."""
+    logged = list(_every_instrument().values())
+    append(connection, *logged)
+    standing = resolve(evidence(logged))
+    assert standing[key("wp0008")].strength == 0, "the log has a Clearance last"
+
+    fed = _standing(connection).evidence()
+
+    assert fed == [standing[item] for item in sorted(standing) if standing[item].strength != 0]
+
+
+def test_the_newest_judgement_ranking_read_is_the_one_the_log_reads_back_last(
+    connection: sqlite3.Connection,
+) -> None:
+    """The **Ranking stamp**'s position, read without rebuilding the log: none over an empty log, the lower
+    id on an exact tie in recorded time, as `judgements` puts it last, and a **Skip**, though it says
+    nothing absolute."""
+    assert _standing(connection).newest is None
+
+    first, second = (grid((w, LIKED), at=AT) for w in ("wp0000", "wp0001"))
+    append(connection, first, second)
+    last = evidence_log.judgements(connection)[-1]
+    assert _standing(connection).newest == LogPosition(last.recorded_at, last.id)
+    assert last.id == min(first.id, second.id)
+
+    skip = grid(("wp0002", LIKED), at=LATER, submitted=False)
+    append(connection, skip)
+    assert _standing(connection).newest == LogPosition(LATER, skip.id)
+    assert evidence_log.judgements(connection)[-1] == skip
 
 
 def test_a_skip_after_a_verdict_leaves_the_verdict_standing(connection: sqlite3.Connection) -> None:
@@ -682,6 +752,35 @@ def test_every_id_asked_about_is_answered_and_one_with_nothing_standing_is_worth
         "never-seen": ResolvedVerdict(verdict=None, value=0),
     }
     assert evidence_log.resolve(connection, []) == {}
+
+
+def test_more_ids_than_sqlite_binds_in_one_statement_are_all_answered_with_their_standing(
+    connection: sqlite3.Connection,
+) -> None:
+    """**Pool** and decided together pass SQLite's parameter limit once enough is decided. Lowered here once
+    the log is written, so a handful of ids span several statements; the later **Like** must still overturn
+    the **Ban** wherever the chunks fall."""
+    marks = (LIKED, BANNED, STARRED, BLANK)
+    marked = WALLPAPERS[:20]
+    append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(marked))))
+    append(connection, grid(("wp0001", LIKED), at=LATER))
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 7)
+    worth = {
+        LIKED: ResolvedVerdict(verdict=Verdict.LIKE, value=50),
+        BANNED: ResolvedVerdict(verdict=Verdict.BAN, value=-100),
+        STARRED: ResolvedVerdict(verdict=Verdict.FAVOURITE, value=100),
+        BLANK: ResolvedVerdict(verdict=Verdict.IGNORE, value=-10),
+    }
+    nothing = ResolvedVerdict(verdict=None, value=0)
+
+    resolved = evidence_log.resolve(connection, [*WALLPAPERS[:30], "never-seen"])
+
+    assert resolved == {
+        **{w: worth[marks[n % 4]] for n, w in enumerate(marked)},
+        "wp0001": worth[LIKED],
+        **dict.fromkeys(WALLPAPERS[20:30], nothing),
+        "never-seen": nothing,
+    }
 
 
 def test_each_mark_resolves_to_its_own_value(connection: sqlite3.Connection) -> None:
@@ -744,6 +843,44 @@ def test_only_a_standing_explicit_verdict_is_explicitly_decided(connection: sqli
     )
 
     assert evidence_log.explicitly_decided(connection) == {"wp0000", "wp0001", "wp0002"}
+
+
+def test_explicitly_decided_for_some_ids_agrees_with_the_whole_log_on_them(
+    connection: sqlite3.Connection,
+) -> None:
+    """Restricted to some **Wallpapers**, it answers for those alone and changes no answer: what pre-marking
+    asks of the chosen tiles."""
+    append(
+        connection,
+        grid(("wp0000", STARRED), ("wp0001", LIKED), ("wp0002", BANNED), ("wp0003", BLANK)),
+        converted(("wp0004", LegacyEntry.LIKE)),
+        converted(("wp0004", LegacyEntry.CLEARED), at=LATER),
+        grid(("wp0005", STARRED)),
+        grid(("wp0005", TileResponse(verdict=GridVerdict.IGNORE)), at=LATER, screen="history"),
+        grid(("wp0006", BLANK)),
+        grid(("wp0006", LIKED), at=LATER, screen="history"),
+        pick(("wp0007", PickTile(favourite=True)), ("wp0008", PICKED)),
+        gauntlet(("wp0009", WON), ("wp0010", LOST), streak=1),
+    )
+    asked = ["wp0000", "wp0002", "wp0003", "wp0004", "wp0005", "wp0006", "wp0007", "wp0008", "never-seen"]
+
+    restricted = evidence_log.explicitly_decided(connection, asked)
+
+    assert restricted == evidence_log.explicitly_decided(connection) & set(asked)
+    assert restricted == {"wp0000", "wp0002", "wp0006", "wp0007"}, "wp0001 and wp0009 were not asked about"
+
+
+def test_explicitly_decided_for_more_ids_than_the_parameter_limit_answers_them_all(
+    connection: sqlite3.Connection,
+) -> None:
+    """Sent in chunks under the connection's own limit, as `resolve` is (wallpapi-jep.2)."""
+    marks = (STARRED, LIKED, BANNED, BLANK)
+    append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(WALLPAPERS[:20]))))
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 7)
+
+    restricted = evidence_log.explicitly_decided(connection, [*WALLPAPERS[:30], "never-seen"])
+
+    assert restricted == {w for n, w in enumerate(WALLPAPERS[:20]) if n % 4 != 3}
 
 
 def test_favourites_are_what_resolves_to_favourite_now(connection: sqlite3.Connection) -> None:

@@ -60,8 +60,8 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 - **4. The Evidence log is append-only and the latest recorded time decides.** A screen answered is one
   **Judgement**, nothing in it is updated or deleted, and an exact tie in time falls to the lower id. The rule
   and its example cases live in `taste/`; the Evidence log module's one SQL fragment, which **History** pages
-  with, is tested against those cases. Build on them. A submitted **Batch** is never retracted. ADR 0015,
-  ADR 0027.
+  with and ranking reads, is tested against those cases. Build on them. A submitted **Batch** is never
+  retracted. ADR 0015, ADR 0027.
 - **9. The Library is confined.** Every write and deletion goes through `library.confined_to_library` and
   uses the path it returns. Deletion targets only a recorded path, tolerates it being gone, and unlinks
   regular files only; a recorded path that fails the guard is dropped from the record and left on disk.
