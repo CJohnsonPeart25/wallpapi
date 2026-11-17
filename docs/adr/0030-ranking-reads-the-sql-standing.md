@@ -46,7 +46,8 @@ at, the **Judgement** that decided it and when (`DecidedWallpaper`), and the pos
 and no statement in `src/` deletes a `wallpapers` row. So the inner join loses no decided **Item**, and the
 standing holds exactly the set `pool.decided` gave. The two paths would part only if a `wallpapers` row could
 go: the old path then raised `KeyError` building the similarity (`by_key` had no entry for a column), while
-the inner join would drop the column without a word. Whatever first deletes a `wallpapers` row reopens this choice.
+the inner join would drop the column without a word. Whatever first deletes a `wallpapers` row reopens this
+choice.
 
 **The draw no longer verifies Judgement ids, nor raises `UnknownInstrument`.** Both ran inside
 `judgements()` and `evidence()`, which the draw no longer calls. `evaluate` (`main.py`, `_evaluate`) still
