@@ -404,10 +404,11 @@ def resolve(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dic
 
     Nothing standing, a legacy **Clearance** last, and an unknown id all resolve to no **Verdict** worth zero.
 
-    One query per chunk of ids: a draw hands this the **Pool** and every **Wallpaper** ever decided, which
-    outgrows SQLite's parameter limit (32,766 by default) as the log grows. Chunking cannot change a
-    standing, because each **Item**'s rows all fall in its own chunk. Several statements, so a caller that
-    needs one snapshot reads inside a transaction, as `Batches.ranked` does.
+    One query per chunk of ids, so no caller can pass SQLite's parameter limit (32,766 by default): the draw
+    asks only about a **Batch**'s tiles, to pre-mark them, and ranking reads `standing` instead, but a
+    caller that hands this many ids still gets an answer. Chunking cannot change a standing, because each
+    **Item**'s rows all fall in its own chunk. Several statements, so a caller that needs one snapshot reads
+    inside a transaction.
     """
     requested = list(dict.fromkeys(wallpaper_ids))
     resolved = dict.fromkeys(requested, _ABSENT)

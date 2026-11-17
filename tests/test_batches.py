@@ -18,20 +18,34 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.conftest import FIXED_NOW, BatchesRig, batches_rig, committing_as, decide, raw_connection
+from tests.conftest import (
+    FIXED_NOW,
+    BatchesRig,
+    batches_rig,
+    committing_as,
+    decide,
+    lineup_rig,
+    raw_connection,
+    record_legacy_clearance,
+)
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import batches, evidence_log, pool, settings, storage
 from wallpapi.allocation import ZONE_ORDER, ScoredWallpaper, allocate, draw
 from wallpapi.batches import Batch, BatchUnavailable, SubmissionRefused, Submitted, UnknownShort
 from wallpapi.evidence_log import HistoryEntry, ResolvedVerdict, Theme
-from wallpapi.model import Mix, Verdict, Zone
+from wallpapi.model import Mix, Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.settings import EXPLORE_MIX, MIX_TOTAL, REFINE_MIX
 from wallpapi.similarity import BLENDED_SPACE, CLIP_SPACE, FALLBACK_SPACE
 from wallpapi.taste.clip import NEAR_DUPLICATE_SIMILARITY
+from wallpapi.taste.gauntlet import GAUNTLET_V1
 from wallpapi.taste.judgement import ItemResponse, Judgement, LogPosition, RankingStamp, Shown
+from wallpapi.taste.order import ORDER_V1
+from wallpapi.taste.pick import PICK_V1
+from wallpapi.taste.ranking import rank
+from wallpapi.taste.reductions import evidence
 from wallpapi.taste.rng import SeededRandom
-from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, VERDICT_GRID_V1, GridResponse, TileResponse
 from wallpapi.taste.verdict_grid import Verdict as GridVerdict
 
 SCORE = 50.0
@@ -350,6 +364,77 @@ def test_a_batch_is_drawn_when_more_is_decided_than_sqlite_binds_in_one_statemen
     assert not {w.id for w in drawn.wallpapers} & banned
 
 
+def test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_log() -> None:
+    """A log of every **Instrument**: a submitted **Batch** with a **Favourite**, a **Like** and a **Ban**,
+    a **Skip**, a **History** overturn, a **Pick**, an **Order** and a **Gauntlet**, each with a star, and a
+    converted **Clearance** last. Ranking reads the SQL standing, yet its **Scores** are the very floats
+    `taste/` gives over every **Judgement** rebuilt (Invariant 4), and its stamp names the newest."""
+    stock = catalogue_of(24)
+    with lineup_rig() as rig:
+        rig.configure(batch_size=8, lineup_size=4, similarity_radius=0.3, similarity_decay=2.5)
+        rig.stock(stock)
+        rig.similarity.similarity_by_pair.update(
+            {
+                (p.id, d.id): 0.75 + ((7 * i + 3 * j) % 10) / 50
+                for i, p in enumerate(stock)
+                for j, d in enumerate(stock)
+                if i != j
+            }
+        )
+        submitted = rig.next()
+        loved, liked, banned = (w.id for w in submitted.wallpapers[:3])
+        rig.set_draft(submitted.id, loved, Verdict.FAVOURITE)
+        rig.set_draft(submitted.id, liked, Verdict.LIKE)
+        rig.set_draft(submitted.id, banned, Verdict.BAN)
+        rig.submit(submitted.id)
+        rig.skip(rig.next().id)
+        rig.edit(submitted.wallpapers[3].id, Verdict.LIKE)
+        rig.edit(liked, Verdict.IGNORE)
+        for answer in ("pick", "order", "gauntlet"):
+            shown = rig.lineup()
+            first, second = (w.id for w in shown.wallpapers[:2])
+            rig.star(shown.id, first)
+            if answer == "pick":
+                rig.pick(shown.id, second)
+            elif answer == "order":
+                rig.rank(shown.id, second)
+                rig.order(shown.id)
+            else:
+                rig.gauntlet(shown.id, second)
+        banned_in_pool = pool.members(rig.connection)[0].id
+        rig.edit(banned_in_pool, Verdict.BAN)
+        with storage.write(rig.connection) as write:
+            record_legacy_clearance(write, loved, rig.clock.now())
+
+        ranked = rig.batches.ranked(rig.connection)
+
+        log = evidence_log.judgements(rig.connection)
+        by_id = {w.id: w for w in [*pool.members(rig.connection), *pool.decided(rig.connection)]}
+
+        def similarity(rows: Sequence[str], columns: Sequence[str]) -> NDArray[np.float32]:
+            def wallpapers(keys: Sequence[str]) -> list[Wallpaper]:
+                return [by_id[k.removeprefix(f"{evidence_log.ITEM_SOURCE}:")] for k in keys]
+
+            return rig.embeddings.measure(wallpapers(rows), wallpapers(columns)).matrix
+
+        candidates = [scored.wallpaper.id for scored in ranked.scored]
+        expected = rank(
+            evidence(log),
+            [evidence_log.item_key(w) for w in candidates],
+            similarity,
+            radius=0.3,
+            decay=2.5,
+        )
+
+    assert {j.instrument for j in log} == {VERDICT_GRID_V0, VERDICT_GRID_V1, PICK_V1, ORDER_V1, GAUNTLET_V1}
+    assert banned_in_pool in by_id
+    assert banned_in_pool not in candidates
+    assert [scored.score for scored in ranked.scored] == list(expected.scores)
+    assert any(scored.score != 0 for scored in ranked.scored)
+    assert ranked.stamp is not None
+    assert ranked.stamp.read == LogPosition(recorded_at=log[-1].recorded_at, judgement_id=log[-1].id)
+
+
 def _ban_near_everything(rig: BatchesRig) -> None:
     """A **Ban** outside the **Pool** that every member sits within the radius of: the whole **Pool** a
     **Dud**, as the maintainer's was at 0.15 (ADR 0023)."""
@@ -659,16 +744,17 @@ def racing(db_path: Path) -> Iterator[tuple[BatchesRig, sqlite3.Connection]]:
         yield made, other
 
 
-def test_a_judgement_landing_between_the_logs_two_reads_waits_for_the_next_ranking(
+def test_a_judgement_landing_between_the_standing_and_the_newest_waits_for_the_next_ranking(
     racing: tuple[BatchesRig, sqlite3.Connection],
 ) -> None:
-    """A **Like** commits as a visit's ranking begins reading the log's screens, after it read their tiles.
-    Read apart, the **Judgement** is rebuilt with no tiles and the draw fails; read in one snapshot, the
-    ranking reads the log as it was before the **Like**, and the **Batch** is written after it."""
+    """A **Like** commits as a visit's ranking begins reading the newest **Judgement**, after it read the
+    standing. Read apart, the stamp would name a **Judgement** the **Scores** never saw; read in one
+    snapshot, the ranking reads the log as it was before the **Like**, and the **Batch** is written after
+    it."""
     rig, other = racing
 
     with committing_as(
-        rig.connection, _SELECT_JUDGEMENTS, lambda: decide(other, rig.clock, Verdict.LIKE, SECOND_TAB)
+        rig.connection, _NEWEST_JUDGEMENT, lambda: decide(other, rig.clock, Verdict.LIKE, SECOND_TAB)
     ):
         batch = rig.fresh()
 
@@ -678,13 +764,13 @@ def test_a_judgement_landing_between_the_logs_two_reads_waits_for_the_next_ranki
     assert rig.next() == batch
 
 
-def test_a_ban_landing_between_reading_the_decided_and_resolving_them_waits_for_the_next_ranking(
+def test_a_ban_landing_between_reading_the_pool_and_its_standing_waits_for_the_next_ranking(
     racing: tuple[BatchesRig, sqlite3.Connection],
 ) -> None:
-    """A **Ban** commits as the ranking begins resolving, after it read the decided **Wallpapers**. Read
-    apart, the **Ban** takes its **Wallpaper** out of the candidates, it was not among the decided, yet the
-    log makes it a decided column with nothing to measure: the draw fails. Read in one snapshot, it is still
-    a candidate this time, and the next ranking drops it."""
+    """A **Ban** commits as the ranking begins reading the standing, after it read the **Pool**. Read apart,
+    the **Pool** is the one before the **Ban** and the standing the one after, so a submission's retired
+    tiles would be ranked beside their own **Verdicts**. Read in one snapshot, the ranking reads the log as
+    it was before the **Ban**: it is still a candidate this time, and the next ranking drops it."""
     rig, other = racing
 
     with committing_as(
@@ -699,11 +785,11 @@ def test_a_ban_landing_between_reading_the_decided_and_resolving_them_waits_for_
     assert SECOND_TAB not in {scored.wallpaper.id for scored in rig.batches.classify(rig.connection)}
 
 
-_SELECT_JUDGEMENTS = "SELECT * FROM judgements ORDER BY"
-"""How the log's screens are read, after their tiles."""
+_NEWEST_JUDGEMENT = "FROM judgements ORDER BY recorded_at DESC"
+"""How the newest **Judgement** is read, after the standing."""
 
 _RESOLUTION = "WITH said AS"
-"""How **Verdict resolution** begins."""
+"""How **Verdict resolution**, and so the standing, begins."""
 
 
 # -- the Draft Batch
