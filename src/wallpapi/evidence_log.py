@@ -1,6 +1,7 @@
 """The **Evidence log**: appending **Judgements**, reading them back, and resolving what each **Item** stands
 at. The one piece of data wallpapi cannot rebuild, and nothing else reads or writes `judgements` or
-`judgement_items` (ADR 0027).
+`judgement_items` (ADR 0027). The one table it reads and does not own is `wallpapers`, `pool`'s: ranking's
+`standing` joins it, to hand each decided **Item** on whole (ADR 0030).
 
 `taste/` defines the **Judgement** and stores nothing; this module keeps one row per **Judgement** and one per
 shown **Item**, made by `storage`'s migrations 12 and 14. Items are keyed by source, `wallhaven:<id>`, and
@@ -9,12 +10,12 @@ id. A **Response** field SQL reads has a column; the others are kept as JSON in 
 a **Judgement** back opens it.
 
 **Verdict resolution** is spelled twice. `taste.resolution.resolve` over `taste.reductions.evidence` is the
-rule; `_RESOLUTION_CTE` is the SQL **History** pages and filters with, and with it a second spelling of the
-absolute part of the **Reductions**: a version 0 grid tile says its converted entry, and a version 1 tile on
-a submitted screen says its **Favourite** or its **Verdict**, an unmarked one an **Ignore**, while a screen
-not submitted (a **Skip**) says nothing; a **Pick**, an **Order** or a **Gauntlet** says **Favourite** of a
-starred tile and nothing absolute of any other. The tests hold the SQL to both `EXAMPLE_CASES` and to
-`evidence()`.
+rule; `_RESOLUTION_CTE` is the SQL **History** pages and filters with and ranking reads, and with it a
+second spelling of the absolute part of the **Reductions**: a version 0 grid tile says its converted entry,
+and a version 1 tile on a submitted screen says its **Favourite** or its **Verdict**, an unmarked one an
+**Ignore**, while a screen not submitted (a **Skip**) says nothing; a **Pick**, an **Order** or a
+**Gauntlet** says **Favourite** of a starred tile and nothing absolute of any other. The tests hold the SQL
+to both `EXAMPLE_CASES` and to `evidence()`.
 """
 
 from __future__ import annotations
@@ -24,13 +25,14 @@ import importlib.metadata
 import json
 import sqlite3
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from wallpapi.model import Verdict, Zone
+from wallpapi.model import Verdict, Wallpaper, Zone
 from wallpapi.taste.clock import Clock
+from wallpapi.taste.evidence import AbsoluteEvidence
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Context,
@@ -128,6 +130,45 @@ class HistoryEntry:
     resolved: ResolvedVerdict
     decided_at: dt.datetime
     judgement_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecidedWallpaper:
+    """One decided **Wallpaper**, whole, as resolution leaves it: what it stands at, and which **Judgement**
+    decided that and when. A **Clearance** last is decided and stands at no **Verdict**, worth 0."""
+
+    wallpaper: Wallpaper
+    resolved: ResolvedVerdict
+    judgement_id: str
+    decided_at: dt.datetime
+
+
+@dataclass(frozen=True, slots=True)
+class Standing:
+    """What ranking reads of the **Evidence log** (ADR 0030): every decided **Wallpaper** at its standing,
+    in id order, and the position of the newest **Judgement**, which the **Ranking stamp** names.
+
+    An object rather than two values, so the compare-screen **Judgements** can join it as a field when
+    relative Evidence starts to count, and `evidence` hand them on, with no change to ranking.
+    """
+
+    decided: tuple[DecidedWallpaper, ...]
+    newest: LogPosition | None
+
+    def evidence(self) -> list[AbsoluteEvidence]:
+        """One absolute piece per **Wallpaper** standing at a non-zero value, in **Item** key order: what
+        `taste.ranking.rank` makes its columns of. Already resolved, so `rank` resolving it again keeps
+        every piece."""
+        return [
+            AbsoluteEvidence(
+                item=item_key(each.wallpaper.id),
+                strength=each.resolved.value,
+                judgement_id=each.judgement_id,
+                recorded_at=each.decided_at,
+            )
+            for each in self.decided
+            if each.resolved.value != 0
+        ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,6 +421,38 @@ def resolve(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dic
         for row in connection.execute(query, [item_key(w) for w in chunk]).fetchall():
             resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
     return resolved
+
+
+def standing(
+    connection: sqlite3.Connection, wallpaper_from_row: Callable[[sqlite3.Row], Wallpaper]
+) -> Standing:
+    """Every decided **Wallpaper** at its standing, and the newest **Judgement**'s position: all ranking
+    reads of the log, resolved once, in SQL, with no **Judgement** rebuilt (ADR 0030).
+
+    `wallpaper_from_row` decodes a `wallpapers` row, and is only ever `pool.wallpaper_from_row`: it is
+    handed in because `pool` imports this module. The join to `wallpapers` is an inner one and loses no
+    decided **Item**: the log's trigger refuses an **Item** with no `wallpapers` row, and nothing deletes
+    one.
+
+    Two statements, so a caller that needs them to agree with each other and with anything else reads
+    inside `storage.read`, as `Batches.ranked` does.
+    """
+    rows = connection.execute(_STANDING).fetchall()
+    newest = connection.execute(_NEWEST).fetchone()
+    return Standing(
+        decided=tuple(
+            DecidedWallpaper(
+                wallpaper=wallpaper_from_row(row),
+                resolved=_resolved_from(row["resolved"]),
+                judgement_id=str(row["judgement_id"]),
+                decided_at=_moment(row["decided_at"]),
+            )
+            for row in rows
+        ),
+        newest=None
+        if newest is None
+        else LogPosition(recorded_at=_moment(newest["recorded_at"]), judgement_id=str(newest["id"])),
+    )
 
 
 def history(connection: sqlite3.Connection, verdict: Verdict | None = None, page: int = 1) -> History:
@@ -818,3 +891,16 @@ _EXPLICITLY_DECIDED = (
 )
 """Every **Wallpaper** with an **Explicit Verdict** standing: never evicted, and pre-marked when reshown. The
 select after `_resolution_query`'s CTE, so the whole log and a restriction share one spelling."""
+
+_STANDING = _resolution_query(
+    "SELECT w.*, r.resolved, r.judgement_id, r.decided_at\n"
+    "FROM resolution AS r\n"
+    "INNER JOIN wallpapers AS w ON w.id = r.wallpaper_id\n"
+    "ORDER BY w.id"
+)
+"""Every decided **Wallpaper**'s row beside its standing: the one read of `wallpapers`, a table `pool` owns.
+In id order, so the columns ranking makes of it, and every **Score**, are reproducible."""
+
+_NEWEST = "SELECT recorded_at, id FROM judgements ORDER BY recorded_at DESC, id LIMIT 1"
+"""The newest **Judgement**, whatever it says, and on an exact tie in recorded time the lower id: the one
+`judgements` reads back last."""
