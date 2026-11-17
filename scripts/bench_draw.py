@@ -34,7 +34,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -95,6 +95,7 @@ TIMES: Final = (
     ("near_duplicates", "`Embeddings.near_duplicates` (Pool x Bans)"),
     ("measure", "`Embeddings.measure` (Pool x decided)"),
     ("vectors_for", "of which: `EmbeddingCache.vectors_for`"),
+    ("rows", "of which: the rows, `Embeddings.vectors` (Pool and decided) over a store already read"),
     ("rank", "`rank(standing.evidence())`, the matrix given"),
     ("fresh", "`Batches.fresh` (a visit's whole mint)"),
     ("write_lock", "of which: write lock held (pre-marking inside)"),
@@ -373,6 +374,23 @@ def _no_embed(images: Sequence[Path]) -> NDArray[np.float32]:
     return np.zeros((0, DIM), dtype=np.float32)
 
 
+class _AlreadyRead:
+    """A store that hands back, for any ids, the vectors one `EmbeddingCache.vectors_for` already read: what
+    `Embeddings` does with them is then timed without the read."""
+
+    def __init__(self, held: Mapping[str, NDArray[np.float32]]) -> None:
+        self._held = held
+
+    def vectors_for(self, wallpaper_ids: Sequence[str]) -> Mapping[str, NDArray[np.float32]]:
+        return self._held
+
+    def store(self, wallpaper_id: str, vector: NDArray[np.float32]) -> None:
+        raise RuntimeError("the benchmark stores nothing")
+
+    def embedded_ids(self) -> set[str]:
+        return set(self._held)
+
+
 def _median_ms[T](run: Callable[[], T], reps: int) -> tuple[float, T]:
     """The median of `reps` runs after one warm-up, in milliseconds, and the last run's answer."""
     answer = run()
@@ -541,9 +559,13 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     by_key = {item_key(w.id): w for w in [*candidates, *(d.wallpaper for d in standing.decided)]}
     columns = [by_key[key] for key in decided]
     t["measure"], measured = _median_ms(lambda: embeddings.measure(candidates, columns), reps)
-    t["vectors_for"], _ = _median_ms(
+    t["vectors_for"], read = _median_ms(
         lambda: cache.vectors_for([w.id for w in candidates] + [w.id for w in columns]), reps
     )
+    # `vectors` reaches the rows `measure` multiplies through a public call, with no matmul after it; over a
+    # store already read, it times building them alone.
+    rows = Embeddings(_AlreadyRead(read), _no_embed, _NoModel())
+    t["rows"], _ = _median_ms(lambda: rows.vectors([*candidates, *columns]), reps)
     current = settings.get(connection)
     keys = [item_key(w.id) for w in candidates]
     t["rank"], _ = _median_ms(
