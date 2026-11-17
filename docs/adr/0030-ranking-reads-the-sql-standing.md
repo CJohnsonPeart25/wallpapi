@@ -82,8 +82,9 @@ where ADR 0008 put them. The options set aside are below.
 The draw binds no ids, so SQLite's parameter limit no longer reaches ranking, and no **Judgement** is hashed
 on a request.
 
-**What it cost.** The gain is 28 to 32%, short of the research prototype's 40 to 42%. A probe of `standing`
-at `55587c6` on the benchmark's databases (median of 5 after a warm-up, in ms) places the shortfall:
+**What it cost.** The gain is 28 to 32%, short of the research prototype's 40 to 42%: `ranked` takes 7,246 ms
+at 50k against the prototype's 6,031 ms, a gap of about 1.2 s. A probe of `standing` at `55587c6` on the
+benchmark's databases (median of 5 after a warm-up, in ms) places part of it:
 
 | Part of `standing` | 10,000 (54,281 decided) | 50,000 (272,372 decided) |
 |---|---:|---:|
@@ -95,10 +96,18 @@ at `55587c6` on the benchmark's databases (median of 5 after a warm-up, in ms) p
 | decode: `decided_at` and the id | 12 | 83 |
 | `Standing.evidence()` | 24 | 132 |
 
-The SQL costs what the research measured for the joined query (1,250 ms at 50k against 1,175 ms). The rest,
-about 1.1 s at 50k, is Python building a `DecidedWallpaper`, a `Wallpaper` and a `ResolvedVerdict` for every
-decided row. `_resolved_from` builds a new `ResolvedVerdict` per row from a handful of distinct words; reusing
-them is wallpapi-j9a. `_NEWEST` costs 7.5 ms at 50k without an index on `recorded_at` (wallpapi-jep.5).
+- **Common to the prototype, so no part of the gap.** The SQL costs what the research measured for the
+  joined query (1,250 ms at 50k against 1,175 ms). Decoding the `Wallpaper`s, 493 ms here, the prototype paid
+  too (443 ms for 272k, the research note), as the old path paid it inside `pool.decided`.
+- **What this reader adds over the prototype: about 0.6 to 0.75 s at 50k.** `_resolved_from` 215 ms, a new
+  `ResolvedVerdict` per row for a handful of distinct words (reusing them is wallpapi-j9a); the time and the
+  id 83 ms; and about 325 ms building the `DecidedWallpaper`s and their tuple, which is the whole less the SQL
+  and the measured decode parts.
+- **Not placed: about 0.45 s.** It is not `measure`: a rerun of the benchmark shows `measure` unchanged. The
+  `rank` row, 973 ms at 50k with `standing.evidence()` inside it, against the research's 0.66 s for the masked
+  exponential, is a candidate, not shown to be the cause.
+
+`_NEWEST` costs 7.5 ms at 50k without an index on `recorded_at` (wallpapi-jep.5).
 
 **Invariant 4 now carries the Scores on the SQL spelling.** A change to `_RESOLUTION_CTE` changes every
 **Score**, not only **History**. The tests that hold it to `taste`'s rule are unchanged, and

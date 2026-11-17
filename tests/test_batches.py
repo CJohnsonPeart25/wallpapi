@@ -367,8 +367,10 @@ def test_a_batch_is_drawn_when_more_is_decided_than_sqlite_binds_in_one_statemen
 def test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_log() -> None:
     """A log of every **Instrument**: a submitted **Batch** with a **Favourite**, a **Like** and a **Ban**,
     a **Skip**, a **History** overturn, a **Pick**, an **Order** and a **Gauntlet**, each with a star, and a
-    converted **Clearance** last. Ranking reads the SQL standing, yet its **Scores** are the very floats
-    `taste/` gives over every **Judgement** rebuilt (Invariant 4), and its stamp names the newest."""
+    converted **Clearance** last. Ranking reads the SQL standing, yet it ranks the **Pool** less what stands
+    **Banned**, and its **Scores** are the very floats `taste/` gives over every **Judgement** rebuilt
+    (Invariant 4), and its stamp names the newest. No **Wallpaper** here has an **Embedding**, so none is a
+    repost."""
     stock = catalogue_of(24)
     with lineup_rig() as rig:
         rig.configure(batch_size=8, lineup_size=4, similarity_radius=0.3, similarity_decay=2.5)
@@ -409,7 +411,10 @@ def test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_l
         ranked = rig.batches.ranked(rig.connection)
 
         log = evidence_log.judgements(rig.connection)
-        by_id = {w.id: w for w in [*pool.members(rig.connection), *pool.decided(rig.connection)]}
+        members = pool.members(rig.connection)
+        by_id = {w.id: w for w in [*members, *pool.decided(rig.connection)]}
+        standing = evidence_log.resolve(rig.connection, [w.id for w in members])
+        candidates = [w.id for w in members if standing[w.id].verdict is not Verdict.BAN]
 
         def similarity(rows: Sequence[str], columns: Sequence[str]) -> NDArray[np.float32]:
             def wallpapers(keys: Sequence[str]) -> list[Wallpaper]:
@@ -417,7 +422,6 @@ def test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_l
 
             return rig.embeddings.measure(wallpapers(rows), wallpapers(columns)).matrix
 
-        candidates = [scored.wallpaper.id for scored in ranked.scored]
         expected = rank(
             evidence(log),
             [evidence_log.item_key(w) for w in candidates],
@@ -429,6 +433,7 @@ def test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_l
     assert {j.instrument for j in log} == {VERDICT_GRID_V0, VERDICT_GRID_V1, PICK_V1, ORDER_V1, GAUNTLET_V1}
     assert banned_in_pool in by_id
     assert banned_in_pool not in candidates
+    assert [scored.wallpaper.id for scored in ranked.scored] == candidates
     assert [scored.score for scored in ranked.scored] == list(expected.scores)
     assert any(scored.score != 0 for scored in ranked.scored)
     assert ranked.stamp is not None
@@ -767,10 +772,9 @@ def test_a_judgement_landing_between_the_standing_and_the_newest_waits_for_the_n
 def test_a_ban_landing_between_reading_the_pool_and_its_standing_waits_for_the_next_ranking(
     racing: tuple[BatchesRig, sqlite3.Connection],
 ) -> None:
-    """A **Ban** commits as the ranking begins reading the standing, after it read the **Pool**. Read apart,
-    the **Pool** is the one before the **Ban** and the standing the one after, so a submission's retired
-    tiles would be ranked beside their own **Verdicts**. Read in one snapshot, the ranking reads the log as
-    it was before the **Ban**: it is still a candidate this time, and the next ranking drops it."""
+    """A **Ban** commits as the ranking begins reading the standing, after it read the **Pool**. Read in one
+    snapshot, the ranking reads the log as it was before the **Ban**: its stamp names no **Judgement**, the
+    **Wallpaper** it **Bans** is still a candidate this time, and the next ranking drops it."""
     rig, other = racing
 
     with committing_as(
