@@ -59,13 +59,10 @@ from wallpapi.taste.judgement import (
     LogPosition,
     RankingStamp,
     Shown,
-    canonical,
 )
 from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.ranking import rank
-from wallpapi.taste.reductions import evidence
-from wallpapi.taste.resolution import resolve as taste_resolve
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
 
@@ -92,19 +89,11 @@ MIX: Final = (
 TIMES: Final = (
     ("ranked", "`Batches.ranked`"),
     ("pool.members", "`pool.members`"),
-    ("pool.decided", "`pool.decided`"),
-    ("resolve", "`evidence_log.resolve(members + decided)`"),
-    ("judgements", "`evidence_log.judgements()` total"),
-    ("judgements.sql", "of which: its SQL, fetched"),
-    ("judgements.canonical", "of which: `canonical()` JSON"),
-    ("judgements.sha256", "of which: `sha256().hexdigest()`"),
-    ("judgements.rest", "of which: row decoding and dataclass building (the rest)"),
-    ("evidence", "`evidence()` (every Reduction)"),
-    ("taste.resolve", "`taste` resolve and decided sort"),
+    ("standing", "`evidence_log.standing` (the SQL standing and the newest)"),
     ("near_duplicates", "`Embeddings.near_duplicates` (Pool x Bans)"),
     ("measure", "`Embeddings.measure` (Pool x decided)"),
     ("vectors_for", "of which: `EmbeddingCache.vectors_for`"),
-    ("masked_exponential", "masked exponential (`rank` less resolve and sort)"),
+    ("rank", "`rank(standing.evidence())`, the matrix given"),
     ("fresh", "`Batches.fresh` (a visit's whole mint)"),
     ("write_lock", "of which: write lock held (pre-marking inside)"),
     ("explicitly_decided", "`evidence_log.explicitly_decided()`"),
@@ -115,7 +104,6 @@ TIMES: Final = (
 COUNTS: Final = (
     ("judgement_items", "judgement_items rows"),
     ("wallpapers", "wallpapers rows"),
-    ("resolve_ids", "ids handed to resolve"),
     ("decided_columns", "decided columns in the matrix"),
     ("explicit", "explicitly decided"),
     ("peak_rss_mb", "peak RSS of the timing process, MB"),
@@ -514,40 +502,17 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     }
 
     t["pool.members"], members = _median_ms(lambda: pool.members(connection), reps)
-    t["pool.decided"], judged = _median_ms(lambda: pool.decided(connection), reps)
-    ids = [w.id for w in members] + [w.id for w in judged]
-    counts["resolve_ids"] = len(ids)
-    t["resolve"], resolved = _as_is_or_chunked(
-        lambda: evidence_log.resolve(connection, ids), reps, "resolve", chunked
+    t["standing"], standing = _median_ms(
+        lambda: evidence_log.standing(connection, pool.wallpaper_from_row), reps
     )
-
-    # `judgements()`, then its parts: the SQL it runs, caught as it runs and fetched again, the canonical
-    # JSON and the hash `Judgement` makes of each, and the decoding left over.
-    t["judgements"], log = _median_ms(lambda: evidence_log.judgements(connection), reps)
-    statements: list[str] = []
-    connection.set_trace_callback(statements.append)
-    evidence_log.judgements(connection)
-    connection.set_trace_callback(None)
-    t["judgements.sql"], _ = _median_ms(lambda: [connection.execute(s).fetchall() for s in statements], reps)
-    t["judgements.canonical"], texts = _median_ms(lambda: [canonical(j) for j in log], reps)
-    t["judgements.sha256"], _ = _median_ms(
-        lambda: [hashlib.sha256(text.encode("ascii")).hexdigest() for text in texts], reps
-    )
-    t["judgements.rest"] = (
-        t["judgements"] - t["judgements.sql"] - t["judgements.canonical"] - t["judgements.sha256"]
-    )
-    t["evidence"], found = _median_ms(lambda: evidence(log), reps)
-
-    def standing() -> list[str]:
-        return sorted(item for item, piece in taste_resolve(found).items() if piece.strength != 0)
-
-    t["taste.resolve"], decided = _median_ms(standing, reps)
+    decided = sorted(piece.item for piece in standing.evidence())
     counts["decided_columns"] = len(decided)
 
-    candidates = [w for w in members if resolved[w.id].verdict is not Verdict.BAN]
-    banned = [w for w in judged if resolved[w.id].verdict is Verdict.BAN]
+    banned = [d.wallpaper for d in standing.decided if d.resolved.verdict is Verdict.BAN]
+    banned_ids = {w.id for w in banned}
+    candidates = [w for w in members if w.id not in banned_ids]
     t["near_duplicates"], _ = _median_ms(lambda: embeddings.near_duplicates(candidates, banned), reps)
-    by_key = {item_key(w.id): w for w in [*candidates, *judged]}
+    by_key = {item_key(w.id): w for w in [*candidates, *(d.wallpaper for d in standing.decided)]}
     columns = [by_key[key] for key in decided]
     t["measure"], measured = _median_ms(lambda: embeddings.measure(candidates, columns), reps)
     t["vectors_for"], _ = _median_ms(
@@ -555,9 +520,9 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     )
     current = settings.get(connection)
     keys = [item_key(w.id) for w in candidates]
-    t["masked_exponential"], _ = _median_ms(
+    t["rank"], _ = _median_ms(
         lambda: rank(
-            found,
+            standing.evidence(),
             keys,
             lambda rows, cols: measured.matrix,
             radius=current.similarity_radius,
@@ -565,7 +530,6 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
         ),
         reps,
     )
-    t["masked_exponential"] -= t["taste.resolve"]
 
     # The whole draw after its parts, where the research timed it: timed first, in a process that has not
     # yet held the parts' results, it measured 5 to 10% faster at 10k.
