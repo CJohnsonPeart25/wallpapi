@@ -10,7 +10,8 @@ public upkeep with a model and embedder that refuse to run, so no model is loade
 network. Each size is built in one fresh process and timed in another, so the peak memory is the timing's.
 
 Every figure is the median of `--reps` runs after one warm-up, in milliseconds. The parts are timed apart
-from `ranked`, through the same public calls it makes. A figure marked `*` raised "too many SQL variables"
+from `ranked`, through the same public calls it makes; a query timed alone is caught as its public call
+sends it, and run again. A figure marked `*` raised "too many SQL variables"
 as is, and was timed again with `evidence_log.resolve` patched to send its ids in chunks: the cost the
 draw would have if it ran. `--json` keeps a run; `--baseline` sets a kept run beside this one, so a change
 is timed on its base commit and on its branch with the same seed and sizes, on the same machine.
@@ -90,6 +91,7 @@ TIMES: Final = (
     ("ranked", "`Batches.ranked`"),
     ("pool.members", "`pool.members`"),
     ("standing", "`evidence_log.standing` (the SQL standing and the newest)"),
+    ("newest", "of which: the newest-position query, caught from `standing`"),
     ("near_duplicates", "`Embeddings.near_duplicates` (Pool x Bans)"),
     ("measure", "`Embeddings.measure` (Pool x decided)"),
     ("vectors_for", "of which: `EmbeddingCache.vectors_for`"),
@@ -98,8 +100,10 @@ TIMES: Final = (
     ("write_lock", "of which: write lock held (pre-marking inside)"),
     ("explicitly_decided", "`evidence_log.explicitly_decided()`"),
     ("resolve_chosen", "`evidence_log.resolve(chosen tiles)` alone"),
+    ("judgements_sql", "off the draw: `judgements()`'s ordered fetch, caught from it"),
 )
-"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint."""
+"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint, then
+the ordered fetch `evaluate` makes through `judgements()`."""
 
 COUNTS: Final = (
     ("judgement_items", "judgement_items rows"),
@@ -434,6 +438,26 @@ def timed_writes(held: list[float]) -> Generator[None]:
         yield
 
 
+ORDERED_READ: Final = "FROM judgements ORDER BY recorded_at"
+"""What the one statement of a call that reads `judgements` in recorded-time order says."""
+
+
+def _ordered_read(connection: sqlite3.Connection, run: Callable[[], object]) -> str:
+    """The one statement `run` sends that reads `judgements` by recorded time, caught as it runs, so the SQL
+    a public call makes is timed alone without naming a private one. Raises unless exactly one says
+    `ORDERED_READ`: a change to the SQL fails the benchmark rather than timing another statement."""
+    caught: list[str] = []
+    connection.set_trace_callback(caught.append)
+    try:
+        run()
+    finally:
+        connection.set_trace_callback(None)
+    matched = [statement for statement in caught if ORDERED_READ in statement]
+    if len(matched) != 1:
+        raise RuntimeError(f"expected one statement saying {ORDERED_READ!r}, caught {matched}")
+    return matched[0]
+
+
 def _digest(batches: Batches, connection: sqlite3.Connection) -> str:
     """The candidates, each **Score** to the bit and the **Ranking stamp** of one `ranked` call, hashed: two
     runs on one seed that draw alike give the same."""
@@ -505,6 +529,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     t["standing"], standing = _median_ms(
         lambda: evidence_log.standing(connection, pool.wallpaper_from_row), reps
     )
+    newest = _ordered_read(connection, lambda: evidence_log.standing(connection, pool.wallpaper_from_row))
+    t["newest"], _ = _median_ms(lambda: connection.execute(newest).fetchone(), reps)
     decided = sorted(piece.item for piece in standing.evidence())
     counts["decided_columns"] = len(decided)
 
@@ -547,6 +573,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     counts["explicit"] = len(explicit)
     chosen = [w.id for w in members[:BATCH]]
     t["resolve_chosen"], _ = _median_ms(lambda: evidence_log.resolve(connection, chosen), reps)
+    fetch = _ordered_read(connection, lambda: evidence_log.judgements(connection))
+    t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch).fetchall(), reps)
 
     with chunked_resolve():
         counts["digest"] = _digest(batches, connection)
