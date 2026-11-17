@@ -165,6 +165,10 @@ THREAD_NAME = "wallpapi-similarity"
 JOIN_TIMEOUT = DOWNLOAD_TIMEOUT + 5.0
 """Seconds shutdown waits for the thread: greater than the model download's read timeout (invariant 12)."""
 
+_ROW_BLOCK = 4096
+"""Rows `_rows` looks through for a non-zero number at a time: 8 MB of float32 at 512 wide, however many
+**Wallpapers** there are, where the whole matrix at once would hold a second copy of it."""
+
 _PENDING = (
     "Image similarity is still starting up — wallpapers are being compared by colour and category until "
     "its model is ready."
@@ -433,15 +437,23 @@ def _rows(
     wallpaper_ids: Sequence[str], held: Mapping[str, NDArray[np.float32]], width: int
 ) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
     """The embedding matrix for these **Wallpapers** and a mask of which had one; the mask decides the
-    fallback.
+    fallback. A vector missing, of another width, or with no non-zero number in it is none: a +0.0 row.
     """
-    matrix = np.zeros((len(wallpaper_ids), width), dtype=np.float32)
-    known = np.zeros(len(wallpaper_ids), dtype=np.bool_)
-    for index, wallpaper_id in enumerate(wallpaper_ids):
-        vector = held.get(wallpaper_id)
-        if vector is not None and vector.size == width and float(np.abs(vector).sum()) > 0.0:
-            matrix[index] = vector
-            known[index] = True
+    nothing = np.zeros(width, dtype=np.float32)
+    vectors = [
+        vector if vector is not None and vector.size == width else nothing
+        for vector in map(held.get, wallpaper_ids)
+    ]
+    # Copied once, straight into the matrix: no second copy of the rows is ever held.
+    matrix = np.empty((len(wallpaper_ids), width), dtype=np.float32)
+    if vectors:
+        np.concatenate(vectors, out=matrix.reshape(-1))
+    known = np.empty(len(wallpaper_ids), dtype=np.bool_)
+    for start in range(0, len(wallpaper_ids), _ROW_BLOCK):
+        block = matrix[start : start + _ROW_BLOCK]
+        known[start : start + _ROW_BLOCK] = np.abs(block).sum(axis=1) > 0.0
+    # A row of -0.0s or holding NaN is none, and reads as +0.0 like the others.
+    matrix[~known] = 0.0
     return matrix, known
 
 
