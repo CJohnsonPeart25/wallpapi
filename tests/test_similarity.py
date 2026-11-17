@@ -408,6 +408,31 @@ def test_the_vectors_are_its_rows_in_pool_order_with_zeros_for_no_embedding() ->
     assert nothing.shape == (2, 0)
 
 
+def test_a_row_is_its_vector_to_the_bit_unless_missing_of_another_width_or_without_a_nonzero_number() -> None:
+    """The three ways a stored vector is no **Embedding** each leave a +0.0 row: a vector of -0.0s or one
+    holding NaN has no non-zero number in it, while the smallest float32 above zero is one. The first
+    vector read sets the width."""
+    stored = {
+        "north": NORTH,
+        "three_dimensional": vector(1.0, 0.0, 0.0),
+        "zeros": np.zeros(2, dtype=np.float32),
+        "negative_zeros": np.array([-0.0, -0.0], dtype=np.float32),
+        "nan": np.array([np.nan, 1.0], dtype=np.float32),
+        "tiny": np.array([0.0, np.finfo(np.float32).smallest_subnormal], dtype=np.float32),
+        "east": EAST,
+    }
+    ids = ["north", "missing", "three_dimensional", "zeros", "negative_zeros", "nan", "tiny", "east", "north"]
+    source = embeddings(stored)
+
+    rows = source.vectors([wallpaper(w) for w in ids])
+
+    nothing = np.zeros(2, dtype=np.float32)
+    expected = np.stack([NORTH, nothing, nothing, nothing, nothing, nothing, stored["tiny"], EAST, NORTH])
+    assert (rows.dtype, rows.shape) == (np.float32, (len(ids), 2))
+    assert rows.tobytes() == expected.tobytes()
+    assert source.unembedded(ids) == {"missing", "three_dimensional", "zeros", "negative_zeros", "nan"}
+
+
 # -- near-duplicates ---------------------------------------------------------------------------------
 
 
