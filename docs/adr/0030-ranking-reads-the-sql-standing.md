@@ -68,23 +68,33 @@ where ADR 0008 put them. The options set aside are below.
 
 ## Consequences
 
-**What it bought.** `scripts/bench_draw.py`, seed 0, median of 5, in ms, before (`7c601bc`) and after
-(`55587c6`):
+**What it bought.** `scripts/bench_draw.py`, seed 0, median of 5 after one warm-up, in ms, from `main`
+(`71d8843`) to this decision's code (`deaa59d`, whose `src` is `55587c6`'s), with wallpapi-jep.2 and jep.3
+inside it. One run per commit, on 2026-11-17, on a quiet machine with the databases on disk:
 
 | Judgements | 1,000 | 10,000 | 50,000 |
 |---|---:|---:|---:|
-| `Batches.ranked` | 171 -> 123 | 1,806 -> 1,228 | 10,384 -> 7,246 |
-| gain on `ranked` | 28% | 32% | 30% |
-| `Batches.fresh` | 197 -> 144 | 1,744 -> 1,254 | 10,651 -> 7,424 |
-| peak RSS, MB | 237 -> 203 | 1,447 -> 1,270 | 6,643 -> 6,105 |
+| `Batches.ranked` | 178 -> 126 | 1,822\* -> 1,237 | 11,146\* -> 6,835 |
+| gain on `ranked` | 30% | 32% | 39% |
+| `Batches.fresh` | 214 -> 149 | 1,984\* -> 1,221 | 11,635\* -> 6,754 |
+| peak RSS, MB | 237 -> 214 | 1,447 -> 1,280 | 6,642 -> 6,088 |
 | ranking digest | identical | identical | identical |
+
+\* `main` fails as is ("too many SQL variables", wallpapi-jep.2): timed with `resolve` chunked at 30,000.
+
+The ticket's own run read 7,246 ms at 50k, 30% off a "before" of 10,384 ms at `7c601bc`, and is set aside:
+while it ran, `/tmp`, a tmpfs and so RAM, was filling with the benchmark's databases, and available memory
+fell to 7 GB and then 5 GB. Its 1k and 10k gains, 28% and 32%, are close to the quiet run's.
 
 The draw binds no ids, so SQLite's parameter limit no longer reaches ranking, and no **Judgement** is hashed
 on a request.
 
-**What it cost.** The gain is 28 to 32%, short of the research prototype's 40 to 42%: `ranked` takes 7,246 ms
-at 50k against the prototype's 6,031 ms, a gap of about 1.2 s. A probe of `standing` at `55587c6` on the
-benchmark's databases (median of 5 after a warm-up, in ms) places part of it:
+**What it cost.** The gain is 30 to 39%, short of the research prototype's 40 to 42%: `ranked` takes 6,835 ms
+at 50k against the prototype's 6,031 ms, a gap of 0.8 s. A probe of `standing` at `55587c6` on the
+benchmark's databases (median of 5 after a warm-up, in ms) splits it into its SQL and its decoding. The probe
+ran under the same memory pressure as the ticket's own run and has not been repeated, so its split is the only
+one there is; the quiet run times `standing` whole at 435 and 2,562 ms at 10k and 50k, against the probe's 430
+and 2,374.
 
 | Part of `standing` | 10,000 (54,281 decided) | 50,000 (272,372 decided) |
 |---|---:|---:|
@@ -103,9 +113,11 @@ benchmark's databases (median of 5 after a warm-up, in ms) places part of it:
   `ResolvedVerdict` per row for a handful of distinct words (reusing them is wallpapi-j9a); the time and the
   id 83 ms; and about 325 ms building the `DecidedWallpaper`s and their tuple, which is the whole less the SQL
   and the measured decode parts.
-- **Not placed: about 0.45 s.** It is not `measure`: a rerun of the benchmark shows `measure` unchanged. The
-  `rank` row, 973 ms at 50k with `standing.evidence()` inside it, against the research's 0.66 s for the masked
-  exponential, is a candidate, not shown to be the cause.
+- **Left: 0.05 to 0.2 s, not told from noise.** That is the 0.8 s gap less the reader's 0.6 to 0.75 s. Each
+  commit was run once, and the prototype on another day. `rank(standing.evidence())` reads 1,189, 985 and
+  1,278 ms at 50k in the quiet runs of `deaa59d`, `0c4a89f` and `121146e`, between which its code does not
+  change: it alone moves by 0.3 s. The "about 0.45 s not placed" of review round 1 belonged to the 1.2 s gap
+  of the ticket's own run, and these runs show none of it above that noise.
 
 `_NEWEST` costs 7.5 ms at 50k without an index on `recorded_at` (wallpapi-jep.5).
 
