@@ -16,7 +16,7 @@
 
 Locked. The original spec issue lists it under "Technology"; if the two disagree, the spec wins.
 
-- **Python 3.14+** with `uv`. `python` is not on PATH here (a Store alias intercepts it): `uv run`.
+- **Python 3.14+** with `uv`; every command runs through `uv run`.
 - **FastAPI** on `127.0.0.1` only; Jinja, `{% include %}` partials and one `{% extends "base.html" %}` shell.
   A fragment htmx swaps in extends nothing. htmx vendored locally, no JavaScript build step.
 - **Pico CSS 2.1.1** (`pico.indigo.min.css`, the default class-based build) and **Alpine.js 3.17.4**
@@ -44,9 +44,15 @@ Run **single-worker**: `--workers N` is N refill threads and N writers on one SQ
 `reset-pool` and `evaluate` build without the background loops, so they run beside a server; `evaluate`
 replays the **Evidence log** read-only to test a candidate `--radius` or `--decay`.
 
-**Done** means `uv run lefthook run ci` exits 0: `ruff check`, `ruff format`, `pyright` strict and `pytest`,
-the smoke test that serves every page among them. The lefthook hooks and CI run them, so nobody re-runs them
-by hand. No test touches the network.
+## Done
+
+`uv run lefthook run ci` exits 0: `ruff check`, `ruff format`, `pyright` strict and `pytest`, the smoke test
+that serves every page among them. The lefthook hooks and CI run them, so nobody re-runs them by hand. No test
+touches the network. Beyond them:
+
+- A change to the draw's cost puts the `scripts/bench_draw.py` before-and-after table in its PR.
+- A real boot runs when the brief asks for one.
+- What no check can measure, such as how a page looks, is named in the review note for the human.
 
 ## Invariants
 
@@ -56,7 +62,8 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 
 - **2. Scores are never stored.** Always derived from the **Evidence log** in one array operation over the
   whole **Pool**: `similarities(pool, decided)` is a **Pool** x decided matrix, never pairwise and never
-  **Pool** x **Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. ADR 0007.
+  **Pool** x **Pool**. A pairwise call means a Python loop per **Batch**, which tempts caching. Covers:
+  `taste/clip.py`, `similarity.py`. ADR 0007.
 - **4. The Evidence log is append-only and the latest recorded time decides.** A screen answered is one
   **Judgement**, nothing in it is updated or deleted, and an exact tie in time falls to the lower id. The rule
   and its example cases live in `taste/`; the Evidence log module's one SQL fragment, which **History** pages
@@ -69,7 +76,9 @@ Design intent no test can hold. Numbers are stable and never reused, because ADR
 - **10. Library writes are atomic**: `files.write_atomically`, a temp file beside the confined destination,
   then `os.replace`.
 - **12. Every wait is cancellable**: `stop_event.wait(n)`, never `time.sleep(n)`, and the HTTP timeout below
-  the shutdown join timeout, or shutdown hangs on a thread stuck mid-request.
+  the shutdown join timeout, or shutdown hangs on a thread stuck mid-request. Covers: `background.py`, the
+  loops in `pool.py`, `similarity.py` and `thumbnails.py`, the HTTP timeouts in `wallhaven.py`, `library.py`
+  and `similarity.py`, and the join timeouts `compose.py` passes.
 - **14. Modules have their own seams.** Every module exposes a small interface taking a connection and its
   collaborators; `taste/` takes data, not a connection, and is tested with plain data. Tests build one
   module with a real in-memory database and fake only the external collaborator it talks to: the Wallhaven
