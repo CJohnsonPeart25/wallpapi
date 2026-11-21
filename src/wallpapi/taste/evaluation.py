@@ -12,6 +12,8 @@ The replay is prequential: the **Judgements** in recorded order, each predicted 
 of every **Judgement** before it and none after, then added. The first `WARM_UP` are never tested. A test
 **Judgement** is held out whole, and each candidate's own column is left out of its **Score**, so an
 **Item** is never scored against its own Evidence; the other shown **Items**' earlier Evidence still counts.
+A candidate may narrow that earlier Evidence to a `DecidedSet` before `rank` reads it: the explicit
+**Verdicts** only, or the most recent n **Judgements**. The server ranks over every decided **Item**.
 
 **Pairwise accuracy** is the share of a **Judgement**'s pairs its **Scores** order your way, a tie half, and
 then the mean over test **Judgements**, each weighing once whatever its size, per **Instrument**. Its 95%
@@ -31,13 +33,15 @@ from typing import Final
 import numpy as np
 
 from wallpapi.taste.evidence import Evidence, RelativeEvidence
-from wallpapi.taste.judgement import Instrument, Judgement
+from wallpapi.taste.judgement import Instrument, Judgement, LogPosition
 from wallpapi.taste.ranking import Similarity, rank
 from wallpapi.taste.reductions import evidence
+from wallpapi.taste.resolution import resolve
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import (
     VERDICT_GRID_V0,
     VERDICT_GRID_V1,
+    VERDICT_STRENGTHS,
     GridResponse,
     LegacyEntry,
     LegacyTileResponse,
@@ -213,6 +217,70 @@ class Comparison:
     outcome: Outcome
 
 
+_IGNORE_STRENGTH: Final = VERDICT_STRENGTHS[Verdict.IGNORE]
+"""The only strength any **Reduction** gives an **Ignore**, marked or left unmarked."""
+
+
+@dataclass(frozen=True, slots=True)
+class AllDecided:
+    """Every decided **Item** a **Score** is summed over, as the server ranks today."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExplicitOnly:
+    """Only the **Items** standing at an explicit **Verdict** or a **Favourite**: an **Ignore** standing,
+    marked or left unmarked, leaves the set (`explicit_only`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class MostRecent:
+    """Only the **Items** the most recent `judgements` **Judgements** decided, counted in **Judgements** of
+    any kind, a **Skip** or a **History** edit among them, as `WARM_UP` counts (`since`)."""
+
+    judgements: int
+
+    def __post_init__(self) -> None:
+        if self.judgements < 1:
+            raise ValueError(f"the most recent Judgements are at least one Judgement, not {self.judgements}")
+
+
+type DecidedSet = AllDecided | ExplicitOnly | MostRecent
+"""Which decided **Items** a replayed **Score** is summed over: the columns of `rank`'s matrix, and so the
+draw's cost. A candidate of the evaluation's alone; the server ranks over `AllDecided`."""
+
+ALL_DECIDED: Final[DecidedSet] = AllDecided()
+"""Today's decided set, the replay's default."""
+
+
+def explicit_only(evidence: Iterable[Evidence]) -> list[Evidence]:
+    """The absolute Evidence that stands for each **Item** (`resolution.resolve`), less every standing at an
+    **Ignore**'s strength or at 0, then the relative Evidence as given, which `rank` ignores.
+
+    Resolved before it drops, so latest-wins still holds: an **Ignore** after a Like takes the **Item** out
+    of the set rather than leaving its Like standing. An **Ignore** is told by its strength, the only one any
+    **Reduction** gives it; the **Evidence log**'s `explicitly_decided` is the other spelling, held to this
+    one by a test.
+    """
+    pieces = list(evidence)
+    standing = [piece for piece in resolve(pieces).values() if piece.strength not in (_IGNORE_STRENGTH, 0.0)]
+    return [*standing, *(piece for piece in pieces if isinstance(piece, RelativeEvidence))]
+
+
+def since(evidence: Iterable[Evidence], start: LogPosition) -> list[Evidence]:
+    """The Evidence of the **Judgement** at `start` and of every one after it in log order: by recorded
+    time, and on an exact tie the lower id later, as `in_log_order` has it.
+
+    By latest-wins these are the **Items** whose standing was decided at or after `start`, so the same cut
+    serves raw Evidence, as the replay has it, and a resolved standing alike.
+    """
+    return [
+        piece
+        for piece in evidence
+        if piece.recorded_at > start.recorded_at
+        or (piece.recorded_at == start.recorded_at and piece.judgement_id <= start.judgement_id)
+    ]
+
+
 def in_log_order(judgements: Iterable[Judgement]) -> list[Judgement]:
     """By recorded time, and on an exact tie the lower id last, as `resolution` decides between them."""
     ordered = sorted(judgements, key=lambda judgement: judgement.id, reverse=True)
@@ -227,19 +295,39 @@ def replay(
     radius: float,
     decay: float,
     warm_up: int = WARM_UP,
+    decided: DecidedSet = ALL_DECIDED,
 ) -> tuple[Marked, ...]:
     """Every test **Judgement**, in log order, marked against the **Scores** `rank` gives its **Items** from
-    the Evidence of the **Judgements** before it: one `rank` call, so one similarity call, per test
-    **Judgement**. Every **Judgement**, tested or not, is Evidence for those after it, as its **Reduction**
-    says."""
+    the Evidence of the **Judgements** before it, narrowed to the `decided` set: one `rank` call, so one
+    similarity call, per test **Judgement**. Every **Judgement**, tested or not, is Evidence for those after
+    it, as its **Reduction** says."""
+    ordered = in_log_order(judgements)
     earlier: list[Evidence] = []
     tested: list[Marked] = []
-    for index, judgement in enumerate(in_log_order(judgements)):
+    for index, judgement in enumerate(ordered):
         pairs = reading(judgement) if index >= warm_up else ()
         if pairs:
-            tested.append(_tested(judgement, pairs, earlier, similarity, radius, decay))
+            narrowed = _narrowed(earlier, decided, ordered, index)
+            tested.append(_tested(judgement, pairs, narrowed, similarity, radius, decay))
         earlier.extend(evidence([judgement]))
     return tuple(tested)
+
+
+def _narrowed(
+    earlier: list[Evidence], decided: DecidedSet, ordered: Sequence[Judgement], index: int
+) -> list[Evidence]:
+    """`earlier`, the Evidence of the **Judgements** before `ordered[index]`, narrowed to the `decided` set.
+    The most recent n start at the n-th **Judgement** back, and narrow nothing until there are more."""
+    match decided:
+        case AllDecided():
+            return earlier
+        case ExplicitOnly():
+            return explicit_only(earlier)
+        case MostRecent(judgements=n):
+            if index <= n:
+                return earlier
+            first = ordered[index - n]
+            return since(earlier, LogPosition(first.recorded_at, first.id))
 
 
 def pairwise_accuracy(
