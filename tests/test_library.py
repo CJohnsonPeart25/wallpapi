@@ -10,6 +10,7 @@ on `make_harness`, because what it checks is a workflow's post-commit tail.
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -235,6 +236,32 @@ def test_a_download_that_fails_is_reported_and_retried_by_the_next_run(
 
     assert second.failed == ()
     assert sorted(second.written) == [ONE, TWO]
+
+
+def test_more_favourites_than_sqlite_binds_in_one_statement_are_all_reconciled_in_id_order(
+    tmp_path: Path, writer: FakeLibraryWriter
+) -> None:
+    """Every **Favourite** is bound by id, so their count is not bounded by anything the **Library** holds.
+    SQLite's limit is lowered below them, so they span several statements. Each kind of row is here: a
+    **Favourite** with its file recorded, one without, and a file whose **Wallpaper** is a **Favourite** no
+    longer. The ones without a recorded file sort before the ones with, so the rows come back in id order
+    only if the two reads are merged by id, as the one statement they replace ordered them."""
+    with library_rig(tmp_path, writer, catalogue_of(10)) as rig:
+        rig.decide(Verdict.FAVOURITE, "wp0003", "wp0004", "wp0005", "wp0006", "wp0007", "wp0008")
+        rig.reconcile()
+        rig.decide(Verdict.LIKE, "wp0004", "wp0007")
+        # Seven now, where the first reconciliation bound six: SQLite checks the limit when it prepares a
+        # statement, and the connection's cache would hand back the six-placeholder one already prepared.
+        rig.decide(Verdict.FAVOURITE, "wp0000", "wp0002", "wp0009")
+        rig.connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 2)
+
+        pulled = rig.download_favourites()
+        reconciled = rig.reconcile()
+
+    assert pulled.written == ("wp0000", "wp0002", "wp0003", "wp0005", "wp0006", "wp0008", "wp0009")
+    assert (pulled.skipped, pulled.failed) == ((), ())
+    assert reconciled.removed == ("wp0004", "wp0007")
+    assert (reconciled.written, reconciled.failed) == ((), ())
 
 
 # -- the workflows call it after the Decision log commits ----------------------------------------------
