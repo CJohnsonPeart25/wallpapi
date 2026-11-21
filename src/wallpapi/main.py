@@ -1,7 +1,7 @@
 """The entry point: `uv run python -m wallpapi`, wiring the real dependencies together. Bound to `127.0.0.1`
 and single-worker (`--workers N` is N writers and N refill threads). `uv run python -m wallpapi reset-pool`
 runs a **Pool reset** instead of serving (ADR 0025); `uv run python -m wallpapi evaluate` prints the
-evaluation, optionally against a candidate `--radius` and `--decay`, and
+evaluation, optionally against a candidate `--radius`, `--decay` and `--decided` set, and
 `uv run python -m wallpapi verify-log` names each **Judgement** that no longer earns its id, both reading
 and never writing.
 """
@@ -29,7 +29,14 @@ from wallpapi.library import DownloadingLibraryWriter
 from wallpapi.similarity import DownloadedModel, EmbeddingCache, Embeddings, OnnxClipEmbedder
 from wallpapi.taste import evaluation
 from wallpapi.taste.clock import SystemClock
-from wallpapi.taste.evaluation import Accuracy, Comparison
+from wallpapi.taste.evaluation import (
+    Accuracy,
+    AllDecided,
+    Comparison,
+    DecidedSet,
+    ExplicitOnly,
+    MostRecent,
+)
 from wallpapi.taste.judgement import Instrument
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.wallhaven import WallhavenClient
@@ -136,6 +143,12 @@ def main(
     evaluate.add_argument(
         "--decay", type=_decay, help=f"A candidate Similarity decay, 0 to {settings.MAX_SIMILARITY_DECAY:g}."
     )
+    evaluate.add_argument(
+        "--decided",
+        type=decided_set,
+        help="A candidate decided set to score over: all, explicit (no Ignores) or recent:N (the Wallpapers "
+        "the most recent N Judgements decided).",
+    )
     commands.add_parser(
         "verify-log",
         help="Check that every Judgement in the Evidence log still earns its id, rehashing each from its "
@@ -157,7 +170,9 @@ def main(
                 raise SystemExit(1)
             return
         with closing(stored.connection):
-            evaluated = _evaluate(stored, radius=arguments.radius, decay=arguments.decay)
+            evaluated = _evaluate(
+                stored, radius=arguments.radius, decay=arguments.decay, decided=arguments.decided
+            )
         _print_evaluation(evaluated)
         return
     reset = workflows.reset_pool(build())
@@ -169,10 +184,12 @@ def main(
 
 @dataclass(frozen=True, slots=True)
 class _Candidate:
-    """A candidate radius and decay, its accuracy and its paired comparison with the current settings."""
+    """A candidate radius, decay and decided set, its accuracy and its paired comparison with the current
+    settings, which score over every decided **Wallpaper**."""
 
     radius: float
     decay: float
+    decided: DecidedSet
     accuracy: tuple[Accuracy, ...]
     comparisons: tuple[Comparison, ...]
 
@@ -209,10 +226,13 @@ def _not_current(refused: storage.NotCurrent, command: str) -> str:
     )
 
 
-def _evaluate(stored: Stored, *, radius: float | None, decay: float | None) -> _Evaluated:
-    """Replay the **Evidence log** under the current settings and, if either is given, under a candidate
-    radius and decay, through one read-only snapshot. **Similarity** is the stored **Embeddings** alone, as
-    once the model is open (ADR 0024): the model is never opened or fetched, nor the fallback asked."""
+def _evaluate(
+    stored: Stored, *, radius: float | None, decay: float | None, decided: DecidedSet | None
+) -> _Evaluated:
+    """Replay the **Evidence log** under the current settings and, if any is given, under a candidate
+    radius, decay and decided set, each not given the current one, through one read-only snapshot.
+    **Similarity** is the stored **Embeddings** alone, as once the model is open (ADR 0024): the model is
+    never opened or fetched, nor the fallback asked."""
     with storage.read_only(stored.connection) as connection:
         judgements = evidence_log.judgements(connection)
         current = settings.get(connection)
@@ -228,13 +248,15 @@ def _evaluate(stored: Stored, *, radius: float | None, decay: float | None) -> _
         judgements, similarity, radius=current.similarity_radius, decay=current.similarity_decay
     )
     candidate = None
-    if radius is not None or decay is not None:
+    if radius is not None or decay is not None or decided is not None:
         radius = current.similarity_radius if radius is None else radius
         decay = current.similarity_decay if decay is None else decay
-        replayed = evaluation.replay(judgements, similarity, radius=radius, decay=decay)
+        decided = evaluation.ALL_DECIDED if decided is None else decided
+        replayed = evaluation.replay(judgements, similarity, radius=radius, decay=decay, decided=decided)
         candidate = _Candidate(
             radius,
             decay,
+            decided,
             accuracy=evaluation.pairwise_accuracy(replayed),
             comparisons=evaluation.compare(baseline, replayed),
         )
@@ -266,7 +288,10 @@ def _print_evaluation(evaluated: _Evaluated) -> None:
     candidate = evaluated.candidate
     if candidate is not None:
         print()
-        print(f"Candidate: radius {candidate.radius:g}, decay {candidate.decay:g}")
+        print(
+            f"Candidate: radius {candidate.radius:g}, decay {candidate.decay:g}"
+            f"{_decided_words(candidate.decided)}"
+        )
         _print_accuracy(candidate.accuracy)
         print()
         print("Candidate minus current")
@@ -295,6 +320,18 @@ def _print_comparisons(comparisons: Sequence[Comparison]) -> None:
             f"{_instrument(each.instrument):<{width}}  {each.judgements:>5}  {each.difference:>+10.3f}  "
             f"{span:<{span_width}}  {each.outcome.value}"
         )
+
+
+def _decided_words(decided: DecidedSet) -> str:
+    """How the candidate line names a decided set, and nothing for every decided **Wallpaper**, as the
+    current settings have it."""
+    match decided:
+        case AllDecided():
+            return ""
+        case ExplicitOnly():
+            return ", decided set Explicit Verdicts only"
+        case MostRecent(judgements=n):
+            return f", decided set the most recent {n} Judgement{'' if n == 1 else 's'}"
 
 
 def _instrument(instrument: Instrument) -> str:
@@ -330,6 +367,23 @@ def _radius(text: str) -> float:
 def _decay(text: str) -> float:
     maximum = settings.MAX_SIMILARITY_DECAY
     return _bounded(text, maximum, f"a candidate decay is a number from 0 to {maximum:g}")
+
+
+def decided_set(text: str) -> DecidedSet:
+    """A decided set as `evaluate --decided` and `scripts/bench_draw.py --decided` spell it: `all`,
+    `explicit`, or `recent:N` with N a whole number of **Judgements** from 1; else argparse's error."""
+    refusal = "a decided set is all, explicit, or recent:N with N a whole number of Judgements from 1"
+    if text == "all":
+        return AllDecided()
+    if text == "explicit":
+        return ExplicitOnly()
+    prefix, separator, count = text.partition(":")
+    if prefix != "recent" or not separator or not count.isdecimal():
+        raise argparse.ArgumentTypeError(refusal)
+    try:
+        return MostRecent(int(count))
+    except ValueError:
+        raise argparse.ArgumentTypeError(refusal) from None
 
 
 def _bounded(text: str, maximum: float, refusal: str) -> float:

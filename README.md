@@ -24,10 +24,14 @@ Environment variables:
 Three commands run instead of serving, and are safe beside a running server:
 
 ```
-uv run python -m wallpapi reset-pool                         # empty the Pool, discard the live screens
-uv run python -m wallpapi evaluate [--radius R] [--decay D]  # replay the Evidence log, read-only
-uv run python -m wallpapi verify-log                         # re-hash the Evidence log, read-only
+uv run python -m wallpapi reset-pool  # empty the Pool, discard the live screens
+uv run python -m wallpapi evaluate    # replay the Evidence log, read-only
+uv run python -m wallpapi verify-log  # re-hash the Evidence log, read-only
 ```
+
+`evaluate` compares the current settings with a candidate when given any of `--radius R`, `--decay D` or
+`--decided all|explicit|recent:N` (score over every decided **Wallpaper**, the **Explicit Verdicts** only, or
+those the most recent N **Judgements** decided).
 
 To run under uvicorn directly, use the factory. Never pass `--workers`: more than one process means several
 refill threads and several writers against one SQLite file.

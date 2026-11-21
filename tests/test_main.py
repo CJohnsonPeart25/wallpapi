@@ -269,16 +269,83 @@ def test_a_candidate_names_its_radius_or_its_decay_and_takes_the_other_from_the_
     assert "Candidate: radius 0.1, decay 2.5\n" in capsys.readouterr().out
 
 
+def test_a_decided_set_alone_is_a_candidate_at_the_current_radius_and_decay(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Embedded as in the candidate test. The most recent **Judgement** alone: the first test **Batch** sees
+    the last warm-up one, whose **Like** and **Ignore** its tiles sit 0.05 from, so right, 1.0. The second
+    sees only the first test **Batch**, whose **Like** is 0.19 from its own and beyond the radius, its other
+    tile unembedded: a tie, 0.5. Differences 0 and -0.5: the range is -0.5 to 0 and holds zero."""
+    harness, log = judged
+    vectors = harness.store.vector_by_id
+    vectors.update({w: LIKED for w in log.liked[:10]})
+    vectors.update({w: PASSED_OVER for w in log.passed_over[:10]})
+    vectors[log.liked[10]], vectors[log.liked[11]] = NEAR_LIKED, NEAR_LIKED_THE_OTHER_WAY
+    vectors[log.passed_over[10]] = NEAR_PASSED_OVER
+
+    main(["evaluate", "--decided", "recent:1"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert capsys.readouterr().out == (
+        "Evaluation reading 1: 10 warm-up Judgements, 95% ranges from 2000 resamples (seed 20261027).\n"
+        "\n"
+        "Current settings: radius 0.1, decay 4\n"
+        "Instrument       Tests  Accuracy  95% range\n"
+        "verdict grid v1      2     1.000  1.000 to 1.000\n"
+        "\n"
+        "Candidate: radius 0.1, decay 4, decided set the most recent 1 Judgement\n"
+        "Instrument       Tests  Accuracy  95% range\n"
+        "verdict grid v1      2     0.750  0.500 to 1.000\n"
+        "\n"
+        "Candidate minus current\n"
+        "Instrument       Tests  Difference  95% range         Verdict\n"
+        "verdict grid v1      2      -0.250  -0.500 to +0.000  no difference shown\n"
+        "\n"
+        "Tested Wallpapers with no Embedding: 1 of 4\n"
+    )
+
+
 @pytest.mark.parametrize(
-    "arguments", [["--radius", "1.5"], ["--radius", "-0.1"], ["--decay", "nan"], ["--decay", "51"]]
+    ("arguments", "named"),
+    [
+        (
+            ["--radius", "0.01", "--decided", "explicit"],
+            "radius 0.01, decay 4, decided set Explicit Verdicts only",
+        ),
+        (["--decided", "recent:25"], "radius 0.1, decay 4, decided set the most recent 25 Judgements"),
+        (["--decay", "2", "--decided", "all"], "radius 0.1, decay 2"),
+    ],
+)
+def test_a_candidate_names_its_decided_set_beside_its_radius_and_decay_unless_it_is_every_decided(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str], arguments: list[str], named: str
+) -> None:
+    harness, _ = judged
+
+    main(["evaluate", *arguments], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert f"Candidate: {named}\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--radius", "1.5"],
+        ["--radius", "-0.1"],
+        ["--decay", "nan"],
+        ["--decay", "51"],
+        ["--decided", "recent:0"],
+        ["--decided", "recent:x"],
+        ["--decided", "recent:"],
+        ["--decided", "bogus"],
+    ],
 )
 def test_a_candidate_outside_what_the_settings_allow_is_refused(arguments: list[str]) -> None:
     with pytest.raises(SystemExit):
         main(["evaluate", *arguments], build=never_build, read=never_read, serve=never_serve)
 
 
+@pytest.mark.parametrize("candidate", [["--radius", "0.2"], ["--decided", "recent:1"]])
 def test_evaluate_writes_nothing_and_never_asks_for_the_model(
-    judged: tuple[Harness, Judged], db_path: Path
+    judged: tuple[Harness, Judged], db_path: Path, candidate: list[str]
 ) -> None:
     """Safe beside a running server: the database's files are byte for byte as they were, the model and the
     embed step are never asked for anything, and the server's own connection writes on."""
@@ -287,7 +354,7 @@ def test_evaluate_writes_nothing_and_never_asks_for_the_model(
     before = database_bytes(db_path)
     model_calls, embedded = harness.model.calls, list(harness.embed.seen)
 
-    main(["evaluate", "--radius", "0.2"], build=never_build, read=reading(harness), serve=never_serve)
+    main(["evaluate", *candidate], build=never_build, read=reading(harness), serve=never_serve)
 
     assert database_bytes(db_path) == before
     assert (harness.model.calls, harness.embed.seen) == (model_calls, embedded)
