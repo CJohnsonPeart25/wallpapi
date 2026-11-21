@@ -7,7 +7,8 @@ what follows its commit), for the web and command tests and for the background t
 that list.
 The reaches past the modules here are two. One is the raw connection the migration tests need, because
 nothing the modules offer can produce an older database's rows or a Clearance any more. The other is
-`decided_wallpapers`, an oracle that reads the log in its own SQL so it shares nothing with `evidence_log`.
+`decided_wallpapers`, an oracle that reads the log's tables in its own SQL, sharing no rule with
+`evidence_log`.
 """
 
 from __future__ import annotations

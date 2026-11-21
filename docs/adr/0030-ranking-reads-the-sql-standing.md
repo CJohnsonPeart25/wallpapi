@@ -132,8 +132,9 @@ the run above times `standing` whole at 435 and 2,562 ms at 10k and 50k, against
 `test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_log` checks the Scores against
 `rank(evidence(judgements()))` over every **Instrument**.
 
-**`pool.decided` has no caller in `src/`.** wallpapi-5ug moved it to `tests/conftest.py` as
-`decided_wallpapers`, an oracle spelled in its own SQL so it shares nothing with `evidence_log`.
+**`pool.decided` has no caller in `src/`.** wallpapi-5ug deleted it and replaced it in the tests
+with `decided_wallpapers` (`tests/conftest.py`), an oracle that reads the log's tables in its own SQL and shares
+no rule with `evidence_log`.
 
 ## Alternatives considered
 
