@@ -507,15 +507,6 @@ def wallpapers(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> 
     return {str(row["id"]): wallpaper_from_row(row) for row in rows}
 
 
-def decided(connection: sqlite3.Connection) -> list[Wallpaper]:
-    """Every **Wallpaper** ever decided (`evidence_log.DECIDED`), in or out of the **Pool**, in a fixed order.
-
-    Whole **Wallpapers** because the **Similarity provider** is handed them; ordered so the matrix's columns,
-    and so every **Score**, are reproducible.
-    """
-    return [wallpaper_from_row(row) for row in connection.execute(_SELECT_DECIDED_WALLPAPERS)]
-
-
 def wallpaper_from_row(row: sqlite3.Row) -> Wallpaper:
     """A `wallpapers` row as a **Wallpaper**; the row may carry extra columns. `pool` writes that table, so
     this is where it is read back, for `batches` and **History** too."""
@@ -613,13 +604,6 @@ ON CONFLICT (wallpaper_id) DO NOTHING
 """
 
 _COUNT_BY_SOURCE = "SELECT source, COUNT(*) FROM pool GROUP BY source"
-
-_SELECT_DECIDED_WALLPAPERS = f"""
-SELECT w.*
-FROM wallpapers AS w
-WHERE w.id IN ({evidence_log.DECIDED})
-ORDER BY w.id
-"""
 
 _SELECT_POOL_WALLPAPERS = """
 SELECT w.*
