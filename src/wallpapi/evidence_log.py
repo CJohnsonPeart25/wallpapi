@@ -524,8 +524,8 @@ def explicitly_decided(
     one. The only spelling of "explicit".
 
     Restricted, it resolves the asked-for **Items** alone, so pre-marking a **Batch** under the write lock
-    costs its tiles, not the whole log. The restriction keeps all of an **Item**'s rows, so it changes no
-    answer; ids go through `sql.select_in`, as in `resolve`.
+    costs its tiles, and eviction its cached thumbnails, not the whole log. The restriction keeps all of an
+    **Item**'s rows, so it changes no answer; ids go through `sql.select_in`, as in `resolve`.
     """
     if wallpaper_ids is None:
         rows = connection.execute(_resolution_query(_EXPLICITLY_DECIDED))
