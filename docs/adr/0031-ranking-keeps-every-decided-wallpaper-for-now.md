@@ -51,10 +51,13 @@ of one **Instrument**, the converted log, and every accuracy is near 0.5, so the
 **Items** apart under any decided set. It stays the candidate to try first.
 
 **Revisit when one current Instrument has about 200 tested Judgements of its own.** `evaluate` compares
-per **Instrument**, and the 68 converted tests never grow. Today's ranges put the standard error of a
-difference near 0.011 at 68 tests. Showing a difference of +0.02, the size seen here, across three
-candidates, four times in five, needs it near 0.006: about three times the tests, so about 200, or some 275
-**Judgements** at today's three tested in four past the warm-up. Then rerun the four rows above for that **Instrument**.
+per **Instrument**, and the 68 converted tests never grow. The size is Explicit Verdicts only's, the
+candidate to try first: its range puts the standard error of its difference near 0.011 at 68 tests.
+Showing a difference of +0.02, the size seen here, across three candidates, four times in five, needs it
+near 0.006: about three times the tests, so about 200, or some 275 **Judgements** at today's three tested
+in four past the warm-up. The windows' ranges are wider (standard errors near 0.015 for recent:50 and
+0.025 for recent:25), so telling them apart needs about 400 and 1,000 tests. At 200, rerun the four rows
+above for that **Instrument** to settle Explicit Verdicts only; the windows wait for their own sizes.
 
 ## Consequences
 
@@ -84,13 +87,15 @@ The candidate's whole draw is **derived**, not measured: `ranked` - `measure` - 
 | recent:1000: whole draw, derived | 103 | 604 | 3,743 |
 
 The default rows ran the same code twice: 1,000's 108 -> 124 and 50,000's 6,599 -> 6,323 are run to run
-noise, 4 to 15%, as ADR 0030 found. At 1,000 the noise is the size of the saving, and recent:1000 narrows
-nothing there (its `measure` of 38 against the default's 59 is the same matrix).
+noise, 4 to 15% in this run. ADR 0030 found such noise too, 6 to 7% at 50k between sessions. At 1,000
+the noise is the size of the saving, and recent:1000 narrows nothing there
+(its `measure` of 38 against the default's 59 is the same matrix).
 
 - **The matrix floor goes, the rest of the draw stays.** At 50k any narrowed set takes the draw from about
   6.3 s to 3.7 to 4.2 s, 33 to 42%; the 3.5 s left is the SQL standing (2.2 s), the **Pool** and the
-  **Ban** neighbours among others, which narrowing does not touch. Below 1,000 decided columns the matrix costs a few ms, so the
-  window's length hardly matters: recent:25, recent:50 and recent:1000 all save about 41% at 50k.
+  **Ban** neighbours among others, which narrowing does not touch. Below 1,000 decided columns the matrix
+  costs a few ms, so the window's length hardly matters: recent:25, recent:50 and recent:1000 all save
+  about 41% at 50k.
 - **Explicit Verdicts only saves least**, because it keeps the most columns: 16% of the synthetic log's
   (its mix is **Ignore**-heavy) and 64% of the real log's. Its narrowing here resolves in Python, 331 ms at
   50k; a server would rather filter the SQL standing, as `explicitly_decided` does (573 ms alone at 50k,

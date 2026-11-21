@@ -146,8 +146,8 @@ def main(
     evaluate.add_argument(
         "--decided",
         type=decided_set,
-        help="A candidate decided set to score over: all, explicit (no Ignores) or recent:N (the Wallpapers "
-        "the most recent N Judgements decided).",
+        help="A candidate decided set to score over: all, explicit (the Explicit Verdicts only) or "
+        "recent:N (the Wallpapers the most recent N Judgements decided).",
     )
     commands.add_parser(
         "verify-log",
