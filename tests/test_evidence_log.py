@@ -821,14 +821,16 @@ def test_wallpapers_standing_at_the_same_word_are_answered_with_one_resolved_ver
     connection: sqlite3.Connection,
 ) -> None:
     """A lookup per resolved word, not an object built per decided row: ranking reads one per decided
-    **Wallpaper**, and there are only five words, nothing standing among them."""
+    **Wallpaper**, and there are only five words. The fifth is nothing standing, which resolution leaves as
+    `NULL` after a legacy **Clearance**: two of those, so the `NULL` row goes through the lookup too."""
     marks = (STARRED, LIKED, BANNED, BLANK)
     append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(WALLPAPERS[:8]))))
+    append(connection, converted(("wp0008", LegacyEntry.CLEARED), ("wp0009", LegacyEntry.CLEARED)))
 
-    resolved = evidence_log.resolve(connection, [*WALLPAPERS[:8], "never-seen", "also-never-seen"])
+    resolved = evidence_log.resolve(connection, WALLPAPERS[:10])
 
     assert all(resolved[WALLPAPERS[n]] is resolved[WALLPAPERS[n + 4]] for n in range(4))
-    assert resolved["never-seen"] is resolved["also-never-seen"]
+    assert resolved["wp0008"] is resolved["wp0009"]
 
 
 def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_recorded(
