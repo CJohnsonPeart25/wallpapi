@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
+from wallpapi import sql
 from wallpapi.model import Verdict, Wallpaper, Zone
 from wallpapi.taste.clock import Clock
 from wallpapi.taste.evidence import AbsoluteEvidence
@@ -404,23 +405,23 @@ def resolve(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dic
 
     Nothing standing, a legacy **Clearance** last, and an unknown id all resolve to no **Verdict** worth zero.
 
-    One query per chunk of ids, so no caller can pass SQLite's parameter limit (32,766 by default): the draw
-    asks only about a **Batch**'s tiles, to pre-mark them, and ranking reads `standing` instead, but a
-    caller that hands this many ids still gets an answer. Chunking cannot change a standing, because each
-    **Item**'s rows all fall in its own chunk. Several statements, so a caller that needs one snapshot reads
-    inside a transaction.
+    Ids go through `sql.select_in`, in chunks under the connection's parameter limit: the draw asks only
+    about a **Batch**'s tiles, to pre-mark them, and ranking reads `standing` instead, but a caller that
+    hands more ids than SQLite binds at once still gets an answer. Chunking cannot change a standing, because
+    each **Item**'s rows all fall in its own chunk. Several statements, so a caller that needs one snapshot
+    reads inside a transaction.
     """
     requested = list(dict.fromkeys(wallpaper_ids))
     resolved = dict.fromkeys(requested, _ABSENT)
-    size = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
-    for start in range(0, len(requested), size):
-        chunk = requested[start : start + size]
-        placeholders = ",".join("?" * len(chunk))
-        query = _resolution_query(
-            "SELECT wallpaper_id, resolved FROM resolution", restriction=f"AND i.item IN ({placeholders})"
-        )
-        for row in connection.execute(query, [item_key(w) for w in chunk]).fetchall():
-            resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
+    rows = sql.select_in(
+        connection,
+        map(item_key, requested),
+        lambda marks: _resolution_query(
+            "SELECT wallpaper_id, resolved FROM resolution", restriction=f"AND i.item IN ({marks})"
+        ),
+    )
+    for row in rows:
+        resolved[str(row["wallpaper_id"])] = _resolved_from(row["resolved"])
     return resolved
 
 
@@ -524,21 +525,17 @@ def explicitly_decided(
 
     Restricted, it resolves the asked-for **Items** alone, so pre-marking a **Batch** under the write lock
     costs its tiles, not the whole log. The restriction keeps all of an **Item**'s rows, so it changes no
-    answer; ids go in chunks of the connection's parameter limit, as in `resolve`.
+    answer; ids go through `sql.select_in`, as in `resolve`.
     """
     if wallpaper_ids is None:
         rows = connection.execute(_resolution_query(_EXPLICITLY_DECIDED))
         return {str(row["wallpaper_id"]) for row in rows}
-    requested = list(dict.fromkeys(wallpaper_ids))
-    decided: set[str] = set()
-    size = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
-    for start in range(0, len(requested), size):
-        chunk = requested[start : start + size]
-        placeholders = ",".join("?" * len(chunk))
-        query = _resolution_query(_EXPLICITLY_DECIDED, restriction=f"AND i.item IN ({placeholders})")
-        rows = connection.execute(query, [item_key(w) for w in chunk])
-        decided.update(str(row["wallpaper_id"]) for row in rows)
-    return decided
+    rows = sql.select_in(
+        connection,
+        map(item_key, wallpaper_ids),
+        lambda marks: _resolution_query(_EXPLICITLY_DECIDED, restriction=f"AND i.item IN ({marks})"),
+    )
+    return {str(row["wallpaper_id"]) for row in rows}
 
 
 _ABSENT = ResolvedVerdict(verdict=None, value=0.0)
