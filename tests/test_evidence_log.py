@@ -187,6 +187,15 @@ def resolved(connection: sqlite3.Connection, wallpaper_id: str) -> ResolvedVerdi
     return evidence_log.resolve(connection, [wallpaper_id])[wallpaper_id]
 
 
+def behind_the_log(connection: sqlite3.Connection, statement: str, *parameters: object) -> None:
+    """Change the log as only tampering can: drop the triggers that keep it append-only from this test's
+    database, then run `statement`. `evidence_log` has no way around them, and gains none."""
+    for table in ("judgements", "judgement_items"):
+        for change in ("update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS {table}_{change}_refused")
+    connection.execute(statement, parameters)
+
+
 BLANK = TileResponse()
 LIKED = TileResponse(verdict=GridVerdict.LIKE)
 BANNED = TileResponse(verdict=GridVerdict.BAN)
@@ -387,6 +396,17 @@ def test_a_judgement_whose_rows_no_longer_earn_their_id_is_refused_on_reading(
     connection.execute("UPDATE judgement_items SET verdict = 'ban'")
 
     with pytest.raises(ValueError, match="does not earn"):
+        evidence_log.judgements(connection)
+
+
+def test_a_judgement_whose_rows_will_not_read_back_is_refused_on_reading_naming_its_stored_id(
+    connection: sqlite3.Connection,
+) -> None:
+    judgement = grid(("wp0000", LIKED))
+    append(connection, judgement)
+    behind_the_log(connection, "UPDATE judgements SET context = 'not json'")
+
+    with pytest.raises(ValueError, match=f"the Judgement stored as {judgement.id} cannot be read back: "):
         evidence_log.judgements(connection)
 
 

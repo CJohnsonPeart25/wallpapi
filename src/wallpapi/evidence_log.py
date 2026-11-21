@@ -25,7 +25,7 @@ import importlib.metadata
 import json
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
@@ -203,6 +203,27 @@ class HistoryRefused:
     reason: Reason
 
 
+@dataclass(frozen=True, slots=True)
+class Failure:
+    """Rows of the **Evidence log** that do not hold, only ever made by changing it behind its triggers: the
+    id they are stored under, the recorded time the screen's row holds, as stored, and why. Tiles whose
+    screen is gone have no recorded time."""
+
+    judgement_id: str
+    recorded_at: str | None
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class Verification:
+    """What `verify` found: how many screens it rebuilt, each of those that failed, in `judgements`'s order,
+    and tiles stored under a **Judgement** the log does not hold, one `Failure` per missing screen."""
+
+    checked: int
+    failures: tuple[Failure, ...]
+    orphans: tuple[Failure, ...]
+
+
 def item_key(wallpaper_id: str) -> str:
     """The key `taste/` and the log name a Wallhaven **Wallpaper** by: its id namespaced by source."""
     return f"{ITEM_SOURCE}:{wallpaper_id}"
@@ -300,48 +321,70 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
     """Every **Judgement**, rebuilt from its rows: by recorded time, and on an exact tie the lower id last,
     so the last on an **Item** is the one that decides it.
 
-    Each is hashed again as it is built, and one whose rows no longer earn the id they are stored under
-    raises `ValueError`: a stored id is never trusted.
+    Each is hashed again as it is built, and the first whose rows no longer earn the id they are stored
+    under, or will not read back at all, raises `ValueError` naming that id: a stored id is never trusted.
+    `verify` reads by the same rule and names every one.
 
     The screens are read before their tiles. Outside a transaction the two reads see two snapshots, and
     one appended between them, its tiles read without its screen, is left out whole; never the other way
     about, a screen with no tiles. The log being append-only, every screen read finds all its tiles. To
     agree with anything else read, call it inside `storage.read`.
     """
-    screens = connection.execute(_SELECT_JUDGEMENTS).fetchall()
-    shown: defaultdict[str, list[Shown]] = defaultdict(list)
-    for row in connection.execute(_SELECT_ITEMS):
-        shown[str(row["judgement_id"])].append(
-            Shown(
-                item=str(row["item"]),
-                response=_item_response(_instrument_of(row), row),
-                provenance=_provenance(row["provenance"]),
-            )
-        )
     found: list[Judgement] = []
-    for row in screens:
-        stored = str(row["id"])
-        instrument = _instrument_of(row)
-        judgement = Judgement(
-            instrument=instrument,
-            screen=str(row["screen"]),
-            shown=tuple(shown[stored]),
-            recorded_at=_moment(row["recorded_at"]),
-            app=str(row["app"]),
-            app_version=str(row["app_version"]),
-            response=_judgement_response(instrument, row),
-            utc_offset=None if row["utc_offset"] is None else dt.timedelta(seconds=int(row["utc_offset"])),
-            first_shown_at=None if row["first_shown_at"] is None else _moment(row["first_shown_at"]),
-            ranking=None if row["ranking"] is None else stamp_from_text(row["ranking"]),
-            context=_context(row["context"]),
-            format_version=int(row["format_version"]),
-        )
-        if judgement.id != stored:
-            raise ValueError(
-                f"the Judgement stored as {stored} does not earn that id: it hashes to {judgement.id}"
-            )
-        found.append(judgement)
+    for rebuilt in _rebuilt(connection):
+        if isinstance(rebuilt, Failure):
+            raise ValueError(f"the Judgement stored as {rebuilt.judgement_id} {rebuilt.reason}")
+        found.append(rebuilt)
     return found
+
+
+def _rebuilt(connection: sqlite3.Connection) -> Iterator[Judgement | Failure]:
+    """Each screen's **Judgement** rebuilt from its rows and hashed again, in `judgements`'s order, or the
+    `Failure` its rows are when they will not read back or do not earn the id they are stored under. The
+    one rule `judgements` and `verify` read the log by."""
+    screens = connection.execute(_SELECT_JUDGEMENTS).fetchall()
+    tiles: defaultdict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in connection.execute(_SELECT_ITEMS):
+        tiles[str(row["judgement_id"])].append(row)
+    for row in screens:
+        stored, recorded_at = str(row["id"]), str(row["recorded_at"])
+        try:
+            judgement = _judgement_from(row, tiles[stored])
+        except (ValueError, KeyError, TypeError) as unread:
+            yield Failure(stored, recorded_at, f"cannot be read back: {type(unread).__name__}: {unread}")
+            continue
+        if judgement.id == stored:
+            yield judgement
+        else:
+            yield Failure(stored, recorded_at, f"does not earn that id: it hashes to {judgement.id}")
+
+
+def _judgement_from(screen: sqlite3.Row, tiles: Sequence[sqlite3.Row]) -> Judgement:
+    """One **Judgement** from its screen's row and its tiles' rows in position order, its id derived anew.
+    A row that will not read back raises `ValueError`, `KeyError` or `TypeError`, and a screen with no
+    tiles `ValueError`, as `Judgement` refuses an empty shown set."""
+    instrument = _instrument_of(screen)
+    return Judgement(
+        instrument=instrument,
+        screen=str(screen["screen"]),
+        shown=tuple(
+            Shown(
+                item=str(tile["item"]),
+                response=_item_response(instrument, tile),
+                provenance=_provenance(tile["provenance"]),
+            )
+            for tile in tiles
+        ),
+        recorded_at=_moment(screen["recorded_at"]),
+        app=str(screen["app"]),
+        app_version=str(screen["app_version"]),
+        response=_judgement_response(instrument, screen),
+        utc_offset=None if screen["utc_offset"] is None else dt.timedelta(seconds=int(screen["utc_offset"])),
+        first_shown_at=None if screen["first_shown_at"] is None else _moment(screen["first_shown_at"]),
+        ranking=None if screen["ranking"] is None else stamp_from_text(screen["ranking"]),
+        context=_context(screen["context"]),
+        format_version=int(screen["format_version"]),
+    )
 
 
 def recorded_time(
