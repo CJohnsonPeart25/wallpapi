@@ -52,7 +52,8 @@ choice.
 **The draw no longer verifies Judgement ids, nor raises `UnknownInstrument`.** Both ran inside
 `judgements()` and `evidence()`, which the draw no longer calls. `evaluate` (`main.py`, `_evaluate`) still
 calls `judgements()` and `taste`'s **Reductions**, so it still runs both. Where the id check runs once
-nothing on a request runs it is wallpapi-jep.6.
+nothing on a request runs it is wallpapi-jep.6, since landed as the `verify-log` command
+(`uv run python -m wallpapi verify-log`).
 
 **`Standing` is the object relative Evidence joins later.** `rank` ignores **Relative evidence** today
 (`taste/ranking.py`), so the standing carries none. When the evaluation shows it helps, the compare-screen
@@ -119,7 +120,7 @@ the run above times `standing` whole at 435 and 2,562 ms at 10k and 50k, against
   `_resolved_from` 215 ms, a new `ResolvedVerdict` per row for a handful of distinct words (reusing them is
   wallpapi-j9a); the time and the id 83 ms; and about 325 ms building the `DecidedWallpaper`s and their tuple,
   which is the whole less the SQL and the measured decode parts.
-- **Not split.** The shortfall at 50k, about 0.4 s once runs are taken within a session, is smaller than the
+- **Not split.** The shortfall at 50k, about 0.35 s once runs are taken within a session, is smaller than the
   reader's own 0.6 to 0.75 s, measured in a third session, and moving between sessions shifts a 50k figure by
   about as much as the shortfall itself. Each commit was run once, and `rank(standing.evidence())` alone reads
   1,189, 985 and 1,278 ms at 50k in the runs of `deaa59d`, `0c4a89f` and `121146e`, between which its code

@@ -4,8 +4,8 @@ The latest recorded time decides, whatever it says, and nothing before it counts
 time falls to the lower **Judgement** id, compared as plain strings. Only absolute Evidence is resolved:
 relative Evidence is never resolved, every comparison counting, contradictions included.
 
-The **Evidence log**'s SQL is a second spelling of this rule, the one **History** pages with, and is held to
-it by loading `EXAMPLE_CASES` and checking it reaches the same `standing`.
+The **Evidence log**'s SQL is a second spelling of this rule, the one **History** pages with and ranking
+reads, and is held to it by loading `EXAMPLE_CASES` and checking it reaches the same `standing`.
 """
 
 from __future__ import annotations
