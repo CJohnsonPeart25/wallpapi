@@ -24,6 +24,8 @@ from tests.fakes import FakeClock
 from wallpapi import evidence_log, pool, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict, Zone
+from wallpapi.taste.evaluation import explicit_only
+from wallpapi.taste.evidence import AbsoluteEvidence, Evidence
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Instrument,
@@ -1042,6 +1044,49 @@ def test_explicitly_decided_for_more_ids_than_the_parameter_limit_answers_them_a
     restricted = evidence_log.explicitly_decided(connection, [*WALLPAPERS[:30], "never-seen"])
 
     assert restricted == {w for n, w in enumerate(WALLPAPERS[:20]) if n % 4 != 3}
+
+
+def test_the_evaluations_explicit_cut_by_strength_names_exactly_the_explicitly_decided(
+    connection: sqlite3.Connection,
+) -> None:
+    """`taste.evaluation.explicit_only` tells an **Ignore** by its strength, and `explicitly_decided` by its
+    word. Over every **Instrument**, and every word of both grids left standing (a converted Ignore, Ban
+    and Like, a marked Ignore beside the unmarked ones, a Like and a Ban on a **Batch**), the two name the
+    same **Wallpapers**, whether the cut is fed what ranking reads or taste's own **Reductions** of the
+    log: so a **Reduction** that ever gave an **Ignore** a second weight fails here."""
+    every_word = LATER + dt.timedelta(minutes=10)
+    logged = [
+        *_every_instrument().values(),
+        converted(
+            ("wp0020", LegacyEntry.IGNORE),
+            ("wp0021", LegacyEntry.BAN),
+            ("wp0022", LegacyEntry.LIKE),
+            at=every_word,
+        ),
+        grid(
+            ("wp0023", LIKED),
+            ("wp0024", BANNED),
+            ("wp0025", TileResponse(verdict=GridVerdict.IGNORE)),
+            at=every_word,
+        ),
+    ]
+    append(connection, *logged)
+    read = _standing(connection)
+    assert {each.resolved.value for each in read.decided} == {100.0, 50.0, -10.0, -100.0, 0.0}
+
+    by_sql = evidence_log.explicitly_decided(connection)
+
+    assert _named(explicit_only(read.evidence())) == by_sql
+    assert _named(explicit_only(evidence(logged))) == by_sql
+    assert by_sql == {
+        *("wp0000", "wp0001", "wp0003", "wp0006", "wp0007", "wp0012", "wp0015", "wp0019"),
+        *("wp0021", "wp0022", "wp0023", "wp0024"),
+    }, "worked by hand: the Favourites, then the Bans and Likes; wp0008's Clearance and every Ignore out"
+
+
+def _named(pieces: list[Evidence]) -> set[str]:
+    """The **Wallpapers** absolute Evidence names, by bare id."""
+    return {evidence_log.wallpaper_id(piece.item) for piece in pieces if isinstance(piece, AbsoluteEvidence)}
 
 
 def test_favourites_are_what_resolves_to_favourite_now(connection: sqlite3.Connection) -> None:
