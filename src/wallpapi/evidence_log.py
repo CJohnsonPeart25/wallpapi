@@ -542,15 +542,24 @@ _ABSENT = ResolvedVerdict(verdict=None, value=0.0)
 """A **Wallpaper** with nothing standing: never decided, or a legacy **Clearance** last."""
 
 
-def _resolved_from(resolved: object) -> ResolvedVerdict:
-    """What a resolved word is worth, by `taste/`'s strengths. The rule that *chose* it is
-    `_RESOLUTION_CTE`, never copied here."""
-    if resolved is None:
-        return _ABSENT
-    verdict = Verdict(str(resolved))
+def _strength(verdict: Verdict) -> float:
+    """What a **Verdict** standing is worth, by `taste/`'s strengths."""
     if verdict is Verdict.FAVOURITE:
-        return ResolvedVerdict(verdict=verdict, value=FAVOURITE_STRENGTH)
-    return ResolvedVerdict(verdict=verdict, value=LEGACY_STRENGTHS[LegacyEntry(verdict.value)])
+        return FAVOURITE_STRENGTH
+    return LEGACY_STRENGTHS[LegacyEntry(verdict.value)]
+
+
+_RESOLVED: Final[Mapping[str | None, ResolvedVerdict]] = {
+    None: _ABSENT,
+    **{verdict.value: ResolvedVerdict(verdict=verdict, value=_strength(verdict)) for verdict in Verdict},
+}
+"""Each word resolution can leave, priced once: the four **Verdicts**, and `NULL` for nothing standing.
+Ranking reads one per decided **Wallpaper**, so a row is looked up here, not built."""
+
+
+def _resolved_from(resolved: str | None) -> ResolvedVerdict:
+    """What a resolved word is worth. The rule that *chose* it is `_RESOLUTION_CTE`, never copied here."""
+    return _RESOLVED[resolved]
 
 
 def _history_entry_from(row: sqlite3.Row) -> HistoryEntry:

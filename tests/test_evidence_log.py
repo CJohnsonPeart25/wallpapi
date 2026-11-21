@@ -817,6 +817,20 @@ def test_each_mark_resolves_to_its_own_value(connection: sqlite3.Connection) -> 
     }
 
 
+def test_wallpapers_standing_at_the_same_word_are_answered_with_one_resolved_verdict_object(
+    connection: sqlite3.Connection,
+) -> None:
+    """A lookup per resolved word, not an object built per decided row: ranking reads one per decided
+    **Wallpaper**, and there are only five words, nothing standing among them."""
+    marks = (STARRED, LIKED, BANNED, BLANK)
+    append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(WALLPAPERS[:8]))))
+
+    resolved = evidence_log.resolve(connection, [*WALLPAPERS[:8], "never-seen", "also-never-seen"])
+
+    assert all(resolved[WALLPAPERS[n]] is resolved[WALLPAPERS[n + 4]] for n in range(4))
+    assert resolved["never-seen"] is resolved["also-never-seen"]
+
+
 def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_recorded(
     connection: sqlite3.Connection,
 ) -> None:
