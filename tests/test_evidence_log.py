@@ -473,6 +473,28 @@ def test_verify_names_each_judgement_that_fails_in_log_order_and_passes_over_the
     )
 
 
+@pytest.mark.parametrize(
+    ("statement", "raised"),
+    [
+        ("UPDATE judgement_items SET provenance = 'null' WHERE judgement_id = ?", "AttributeError"),
+        ("UPDATE judgements SET utc_offset = 1000000000000000 WHERE id = ?", "OverflowError"),
+    ],
+    ids=["a tile's provenance null", "a screen's offset past timedelta's range"],
+)
+def test_verify_names_a_row_whose_decode_raises_any_error_a_stored_value_can_and_passes_on(
+    connection: sqlite3.Connection, statement: str, raised: str
+) -> None:
+    """Rows that decode to the wrong type or out of range fail as a row that will not read back does."""
+    log = [grid((f"wp{n:04d}", LIKED), at=minutes(n)) for n in range(3)]
+    append(connection, *log)
+    behind_the_log(connection, statement, log[1].id)
+
+    verified = evidence_log.verify(connection)
+
+    assert (verified.checked, [each.judgement_id for each in verified.failures]) == (3, [log[1].id])
+    assert verified.failures[0].reason.startswith(f"cannot be read back: {raised}: ")
+
+
 def test_verify_names_once_each_judgement_whose_tiles_outlive_its_screen(
     connection: sqlite3.Connection,
 ) -> None:

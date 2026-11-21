@@ -368,7 +368,7 @@ def _rebuilt(connection: sqlite3.Connection) -> Iterator[Judgement | Failure]:
         stored, recorded_at = str(row["id"]), str(row["recorded_at"])
         try:
             judgement = _judgement_from(row, tiles[stored])
-        except (ValueError, KeyError, TypeError) as unread:
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError) as unread:
             yield Failure(stored, recorded_at, f"cannot be read back: {type(unread).__name__}: {unread}")
             continue
         if judgement.id == stored:
@@ -379,8 +379,9 @@ def _rebuilt(connection: sqlite3.Connection) -> Iterator[Judgement | Failure]:
 
 def _judgement_from(screen: sqlite3.Row, tiles: Sequence[sqlite3.Row]) -> Judgement:
     """One **Judgement** from its screen's row and its tiles' rows in position order, its id derived anew.
-    A row that will not read back raises `ValueError`, `KeyError` or `TypeError`, and a screen with no
-    tiles `ValueError`, as `Judgement` refuses an empty shown set."""
+    A row that will not read back raises `ValueError`, `KeyError`, `TypeError`, `AttributeError` (JSON of
+    the wrong shape) or `OverflowError` (a number past its range), and a screen with no tiles `ValueError`,
+    as `Judgement` refuses an empty shown set."""
     instrument = _instrument_of(screen)
     return Judgement(
         instrument=instrument,
