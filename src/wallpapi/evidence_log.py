@@ -338,6 +338,24 @@ def judgements(connection: sqlite3.Connection) -> list[Judgement]:
     return found
 
 
+def verify(connection: sqlite3.Connection) -> Verification:
+    """Every screen rebuilt and hashed again as `judgements` does, naming each whose rows will not read back
+    or do not earn the id they are stored under and going on past it, and every **Judgement** whose tiles
+    are stored without their screen. Reads only. Call it inside `storage.read`, so the screens, their
+    tiles and the tiles with no screen are one snapshot."""
+    checked = 0
+    failures: list[Failure] = []
+    for rebuilt in _rebuilt(connection):
+        checked += 1
+        if isinstance(rebuilt, Failure):
+            failures.append(rebuilt)
+    orphans = tuple(
+        Failure(str(row[0]), None, "tiles of a Judgement the log does not hold")
+        for row in connection.execute(_SELECT_ORPHANED)
+    )
+    return Verification(checked=checked, failures=tuple(failures), orphans=orphans)
+
+
 def _rebuilt(connection: sqlite3.Connection) -> Iterator[Judgement | Failure]:
     """Each screen's **Judgement** rebuilt from its rows and hashed again, in `judgements`'s order, or the
     `Failure` its rows are when they will not read back or do not earn the id they are stored under. The
@@ -814,6 +832,12 @@ SELECT i.*, j.instrument, j.instrument_version
 FROM judgement_items AS i
 JOIN judgements AS j ON j.id = i.judgement_id
 ORDER BY i.judgement_id, i.position
+"""
+
+_SELECT_ORPHANED = """
+SELECT DISTINCT judgement_id FROM judgement_items
+WHERE judgement_id NOT IN (SELECT id FROM judgements)
+ORDER BY judgement_id
 """
 
 

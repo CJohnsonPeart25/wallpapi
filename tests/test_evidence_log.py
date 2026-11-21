@@ -4,8 +4,9 @@ is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and chec
 
 **Judgements** are appended as the grid and **History** append them, and built by hand where a test needs a
 shape nothing writes yet: a **Skip**, a converted (version 0) **Judgement**, a **Ranking stamp**. The
-example-case tests are the ones that write rows behind the seam, because their **Judgement** ids are the
-cases' own and a stored id is otherwise always the hash of its content.
+example-case tests write rows behind the seam, because their **Judgement** ids are the cases' own and a
+stored id is otherwise always the hash of its content; so do the reading and verifying tests that change
+rows behind the log's triggers (`behind_the_log`), to show a stored id is never trusted.
 """
 
 from __future__ import annotations
@@ -408,6 +409,86 @@ def test_a_judgement_whose_rows_will_not_read_back_is_refused_on_reading_naming_
 
     with pytest.raises(ValueError, match=f"the Judgement stored as {judgement.id} cannot be read back: "):
         evidence_log.judgements(connection)
+
+
+# -- verifying the whole log -------------------------------------------------------------------------------
+
+
+def minutes(n: int) -> dt.datetime:
+    return AT + dt.timedelta(minutes=n)
+
+
+def test_verify_rebuilds_a_judgement_of_every_instrument_and_finds_each_earns_its_id(
+    connection: sqlite3.Connection,
+) -> None:
+    append(
+        connection,
+        grid(("wp0001", LIKED), ("wp0002", BLANK), at=minutes(0)),
+        grid(("wp0003", BANNED), at=minutes(1), submitted=False),
+        converted(("wp0004", LegacyEntry.FAVOURITE), at=minutes(2)),
+        pick(("wp0005", PICKED), ("wp0006", PASSED), at=minutes(3)),
+        order(("wp0007", ranked(1)), ("wp0008", UNRANKED), at=minutes(4)),
+        gauntlet(("wp0009", WON), ("wp0010", LOST), at=minutes(5), streak=2),
+    )
+
+    assert evidence_log.verify(connection) == evidence_log.Verification(checked=6, failures=(), orphans=())
+
+
+def test_verify_names_each_judgement_that_fails_in_log_order_and_passes_over_the_sound_ones(
+    connection: sqlite3.Connection,
+) -> None:
+    """Three kinds of failing row, each reported and none stopping the pass: rows that read back but hash to
+    another id, a screen that will not read back, and a screen whose tiles are gone."""
+    log = [grid((f"wp{n:04d}", LIKED), at=minutes(n)) for n in range(5)]
+    append(connection, *log)
+    rehashed, unread, emptied = log[0], log[2], log[3]
+    behind_the_log(
+        connection, "UPDATE judgement_items SET verdict = 'ban' WHERE judgement_id = ?", rehashed.id
+    )
+    behind_the_log(connection, "UPDATE judgements SET instrument = 'nonsense' WHERE id = ?", unread.id)
+    behind_the_log(connection, "DELETE FROM judgement_items WHERE judgement_id = ?", emptied.id)
+
+    verified = evidence_log.verify(connection)
+
+    assert verified == evidence_log.Verification(
+        checked=5,
+        failures=(
+            evidence_log.Failure(
+                rehashed.id,
+                instant(rehashed.recorded_at),
+                f"does not earn that id: it hashes to {grid(('wp0000', BANNED), at=minutes(0)).id}",
+            ),
+            evidence_log.Failure(
+                unread.id,
+                instant(unread.recorded_at),
+                "cannot be read back: ValueError: the Evidence log cannot read nonsense version 1",
+            ),
+            evidence_log.Failure(
+                emptied.id,
+                instant(emptied.recorded_at),
+                "cannot be read back: ValueError: a Judgement's shown set holds at least one Item",
+            ),
+        ),
+        orphans=(),
+    )
+
+
+def test_verify_names_once_each_judgement_whose_tiles_outlive_its_screen(
+    connection: sqlite3.Connection,
+) -> None:
+    """Half of a deletion behind the log: the screen gone, its tiles left. Not among the screens checked."""
+    kept, deleted = grid(("wp0000", LIKED)), grid(("wp0001", LIKED), ("wp0002", BLANK), at=LATER)
+    append(connection, kept, deleted)
+    connection.execute("PRAGMA foreign_keys = OFF")
+    behind_the_log(connection, "DELETE FROM judgements WHERE id = ?", deleted.id)
+
+    verified = evidence_log.verify(connection)
+
+    assert verified == evidence_log.Verification(
+        checked=1,
+        failures=(),
+        orphans=(evidence_log.Failure(deleted.id, None, "tiles of a Judgement the log does not hold"),),
+    )
 
 
 @pytest.mark.parametrize("statement", ["UPDATE judgements SET screen = 'x'", "DELETE FROM judgement_items"])
