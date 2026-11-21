@@ -636,9 +636,9 @@ next being drawn around the winner), replaced by a visit (ADR 0029) or discarded
 _MIGRATION_18 = ("CREATE INDEX judgements_by_recorded_at ON judgements (recorded_at DESC, id)",)
 """Migration 18's schema: `judgements` in recorded time, newest first, and on an exact tie the lower id first.
 The two reads that order the log by time want opposite orders, each the reverse of the other, so one index
-with mixed directions serves both whole: the newest position (newest first, on a tie the lower id) walks it
-forwards and stops at its first row; `judgements()` (oldest first, on a tie the lower id last) walks it
-backwards. An index on `(recorded_at, id)` would leave each a sort on `id` within equal times.
+with mixed directions serves both whole: the query for the newest log position (newest first, on a tie the
+lower id) walks it forwards and stops at its first row; `judgements()` (oldest first, on a tie the lower id
+last) walks it backwards. An index on `(recorded_at, id)` would leave each a sort on `id` within equal times.
 """
 
 

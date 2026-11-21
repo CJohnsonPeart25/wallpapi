@@ -16,19 +16,32 @@ from numpy.typing import NDArray
 
 from wallpapi.taste.evaluation import (
     Accuracy,
+    AllDecided,
     Comparison,
+    ExplicitOnly,
     Marked,
+    MostRecent,
     Outcome,
     Pair,
     Range,
     compare,
+    explicit_only,
     outcome,
     pairwise_accuracy,
     reading,
     replay,
+    since,
 )
+from wallpapi.taste.evidence import AbsoluteEvidence, RelativeEvidence
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
-from wallpapi.taste.judgement import Instrument, ItemResponse, Judgement, JudgementResponse, Shown
+from wallpapi.taste.judgement import (
+    Instrument,
+    ItemResponse,
+    Judgement,
+    JudgementResponse,
+    LogPosition,
+    Shown,
+)
 from wallpapi.taste.order import ORDER_V1, OrderTile
 from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.reductions import UnknownInstrument
@@ -429,6 +442,118 @@ def test_a_candidate_better_on_every_screen_wins_and_worse_on_every_screen_is_wo
 def test_a_comparison_needs_the_same_test_judgements_on_both_sides() -> None:
     with pytest.raises(ValueError, match="same test Judgements"):
         compare(marked(0.5, 1.0), marked(0.5))
+
+
+# -- a narrowed decided set: what reaches `rank` -------------------------------------------------------
+
+
+def said(item: str, strength: float, judgement_id: str, *, second: int) -> AbsoluteEvidence:
+    return AbsoluteEvidence(item, strength, judgement_id, START + dt.timedelta(seconds=second))
+
+
+def test_explicit_only_keeps_like_ban_and_favourite_standings_and_drops_ignore_and_cleared_ones() -> None:
+    """Each Item judged once: the Ignore's -10 and the **Clearance**'s 0 leave the set."""
+    favourite = said("fav", 100.0, "j-1", second=0)
+    like = said("like", 50.0, "j-1", second=0)
+    ban = said("ban", -100.0, "j-1", second=0)
+    ignore = said("ignore", -10.0, "j-1", second=0)
+    cleared = said("cleared", 0.0, "j-1", second=0)
+
+    assert explicit_only([favourite, like, ignore, cleared, ban]) == [favourite, like, ban]
+
+
+def test_explicit_only_resolves_latest_wins_before_it_drops_an_ignore() -> None:
+    """An Ignore after a Like overturns it, so the Item leaves the set rather than falling back to its Like;
+    a Like after an Ignore stands, and stays."""
+    overturned = [said("x", 50.0, "j-1", second=0), said("x", -10.0, "j-2", second=5)]
+    restored = [said("y", -10.0, "j-1", second=0), said("y", 50.0, "j-2", second=5)]
+
+    assert explicit_only(overturned) == []
+    assert explicit_only(restored) == [restored[1]]
+
+
+def test_explicit_only_passes_relative_evidence_through() -> None:
+    preferred = RelativeEvidence("a", "b", 1.0, "j-1", START)
+
+    assert explicit_only([preferred, said("c", -10.0, "j-1", second=0)]) == [preferred]
+
+
+def test_since_keeps_the_evidence_of_the_start_judgement_and_of_every_one_after_it() -> None:
+    before = said("a", 50.0, "j-a", second=0)
+    at_start = said("b", -100.0, "j-b", second=5)
+    preferred = RelativeEvidence("c", "a", 1.0, "j-c", START + dt.timedelta(seconds=9))
+    after = said("a", -10.0, "j-c", second=9)
+
+    start = LogPosition(START + dt.timedelta(seconds=5), "j-b")
+
+    assert since([before, at_start, preferred, after], start) == [at_start, preferred, after]
+
+
+def test_since_on_an_exact_time_tie_counts_the_lower_id_as_later() -> None:
+    """As `in_log_order` and resolution have it: at the start's own time, a lower id is after the start
+    and kept, a higher one before it and dropped."""
+    lower = said("a", 50.0, "j-4", second=5)
+    own = said("b", 50.0, "j-5", second=5)
+    higher = said("c", 50.0, "j-6", second=5)
+
+    start = LogPosition(START + dt.timedelta(seconds=5), "j-5")
+
+    assert since([lower, own, higher], start) == [lower, own]
+
+
+def recent_log() -> list[Judgement]:
+    """A Favourite made from **History**, a **Skip** with marks on it, then a test screen whose Like is
+    near the Favourite."""
+    return [
+        edited("a", FAVOURITE, second=0),
+        judged({"x": LIKE, "y": BAN}, second=1, response=GridResponse()),
+        judged({"near": LIKE, "far": BAN}, second=2),
+    ]
+
+
+def test_the_most_recent_n_judgements_score_a_test_alone_a_skip_counting_as_one() -> None:
+    """The test screen is the third **Judgement**. The most recent one is the **Skip**, which says nothing,
+    so nothing is decided and the pair is a tie, 0.5; the most recent two reach back to the Favourite, so
+    the Like near it is put above the Ban, 1.0."""
+    log = recent_log()
+    one, two = Table({("near", "a"): 0.95}), Table({("near", "a"): 0.95})
+
+    (by_one,) = replay(log, one, radius=RADIUS, decay=DECAY, warm_up=0, decided=MostRecent(1))
+    (by_two,) = replay(log, two, radius=RADIUS, decay=DECAY, warm_up=0, decided=MostRecent(2))
+
+    assert (by_one.accuracy, by_two.accuracy) == (0.5, 1.0)
+    assert (one.calls, two.calls) == ([(("near", "far"), ())], [(("near", "far"), ("a",))])
+
+
+def test_the_most_recent_n_change_nothing_while_n_reaches_back_to_the_first_judgement() -> None:
+    log = recent_log()
+    table = Table({("near", "a"): 0.95})
+
+    everything = replay(log, table, radius=RADIUS, decay=DECAY, warm_up=0)
+
+    assert replay(log, table, radius=RADIUS, decay=DECAY, warm_up=0, decided=MostRecent(2)) == everything
+    assert replay(log, table, radius=RADIUS, decay=DECAY, warm_up=0, decided=MostRecent(50)) == everything
+    assert replay(log, table, radius=RADIUS, decay=DECAY, warm_up=0, decided=AllDecided()) == everything
+
+
+@pytest.mark.parametrize("judgements", [0, -1])
+def test_the_most_recent_n_needs_at_least_one_judgement(judgements: int) -> None:
+    with pytest.raises(ValueError, match="at least one Judgement"):
+        MostRecent(judgements)
+
+
+def test_explicit_verdicts_only_score_a_test_without_the_ignores_before_it() -> None:
+    """An Ignore made from **History**, then a screen whose Ban is near it. Every decided Item counts, so
+    the Ban scores -10 and the Like 0: Like over Ban, 1.0. Without the Ignore nothing is decided: a tie,
+    0.5."""
+    log = [edited("i", IGNORE, second=0), judged({"near": LIKE, "far": BAN}, second=1)]
+    every, explicit = Table({("far", "i"): 0.95}), Table({("far", "i"): 0.95})
+
+    (by_every,) = replay(log, every, radius=RADIUS, decay=DECAY, warm_up=0)
+    (by_explicit,) = replay(log, explicit, radius=RADIUS, decay=DECAY, warm_up=0, decided=ExplicitOnly())
+
+    assert (by_every.accuracy, by_explicit.accuracy) == (1.0, 0.5)
+    assert (every.calls, explicit.calls) == ([(("near", "far"), ("i",))], [(("near", "far"), ())])
 
 
 # -- the Line-up: the pairs its Reductions give ---------------------------------------------------------

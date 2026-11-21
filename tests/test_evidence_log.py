@@ -1,10 +1,12 @@
 """The **Evidence log**, through `evidence_log` alone: a real in-memory database, no `compose`. `standing`
-is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and checked against `pool.decided`.
+is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and checked against
+`decided_wallpapers`, conftest's oracle in its own SQL.
 
 **Judgements** are appended as the grid and **History** append them, and built by hand where a test needs a
 shape nothing writes yet: a **Skip**, a converted (version 0) **Judgement**, a **Ranking stamp**. The
-example-case test is the one that writes rows behind the seam, because its **Judgement** ids are the
-cases' own and a stored id is otherwise always the hash of its content.
+example-case tests write rows behind the seam, because their **Judgement** ids are the cases' own and a
+stored id is otherwise always the hash of its content; so do the reading and verifying tests that change
+rows behind the log's triggers (`behind_the_log`), to show a stored id is never trusted.
 """
 
 from __future__ import annotations
@@ -17,11 +19,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import committing_as
+from tests.conftest import committing_as, decided_wallpapers
 from tests.fakes import FakeClock
 from wallpapi import evidence_log, pool, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
 from wallpapi.model import Verdict, Zone
+from wallpapi.taste.evaluation import explicit_only
+from wallpapi.taste.evidence import AbsoluteEvidence, Evidence
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Instrument,
@@ -184,6 +188,15 @@ def edit(
 
 def resolved(connection: sqlite3.Connection, wallpaper_id: str) -> ResolvedVerdict:
     return evidence_log.resolve(connection, [wallpaper_id])[wallpaper_id]
+
+
+def behind_the_log(connection: sqlite3.Connection, statement: str, *parameters: object) -> None:
+    """Change the log as only tampering can: drop the triggers that keep it append-only from this test's
+    database, then run `statement`. `evidence_log` has no way around them, and gains none."""
+    for table in ("judgements", "judgement_items"):
+        for change in ("update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS {table}_{change}_refused")
+    connection.execute(statement, parameters)
 
 
 BLANK = TileResponse()
@@ -389,6 +402,119 @@ def test_a_judgement_whose_rows_no_longer_earn_their_id_is_refused_on_reading(
         evidence_log.judgements(connection)
 
 
+def test_a_judgement_whose_rows_will_not_read_back_is_refused_on_reading_naming_its_stored_id(
+    connection: sqlite3.Connection,
+) -> None:
+    judgement = grid(("wp0000", LIKED))
+    append(connection, judgement)
+    behind_the_log(connection, "UPDATE judgements SET context = 'not json'")
+
+    with pytest.raises(ValueError, match=f"the Judgement stored as {judgement.id} cannot be read back: "):
+        evidence_log.judgements(connection)
+
+
+# -- verifying the whole log -------------------------------------------------------------------------------
+
+
+def minutes(n: int) -> dt.datetime:
+    return AT + dt.timedelta(minutes=n)
+
+
+def test_verify_rebuilds_a_judgement_of_every_instrument_and_finds_each_earns_its_id(
+    connection: sqlite3.Connection,
+) -> None:
+    append(
+        connection,
+        grid(("wp0001", LIKED), ("wp0002", BLANK), at=minutes(0)),
+        grid(("wp0003", BANNED), at=minutes(1), submitted=False),
+        converted(("wp0004", LegacyEntry.FAVOURITE), at=minutes(2)),
+        pick(("wp0005", PICKED), ("wp0006", PASSED), at=minutes(3)),
+        order(("wp0007", ranked(1)), ("wp0008", UNRANKED), at=minutes(4)),
+        gauntlet(("wp0009", WON), ("wp0010", LOST), at=minutes(5), streak=2),
+    )
+
+    assert evidence_log.verify(connection) == evidence_log.Verification(checked=6, failures=(), orphans=())
+
+
+def test_verify_names_each_judgement_that_fails_in_log_order_and_passes_over_the_sound_ones(
+    connection: sqlite3.Connection,
+) -> None:
+    """Three kinds of failing row, each reported and none stopping the pass: rows that read back but hash to
+    another id, a screen that will not read back, and a screen whose tiles are gone."""
+    log = [grid((f"wp{n:04d}", LIKED), at=minutes(n)) for n in range(5)]
+    append(connection, *log)
+    rehashed, unread, emptied = log[0], log[2], log[3]
+    behind_the_log(
+        connection, "UPDATE judgement_items SET verdict = 'ban' WHERE judgement_id = ?", rehashed.id
+    )
+    behind_the_log(connection, "UPDATE judgements SET instrument = 'nonsense' WHERE id = ?", unread.id)
+    behind_the_log(connection, "DELETE FROM judgement_items WHERE judgement_id = ?", emptied.id)
+
+    verified = evidence_log.verify(connection)
+
+    assert verified == evidence_log.Verification(
+        checked=5,
+        failures=(
+            evidence_log.Failure(
+                rehashed.id,
+                instant(rehashed.recorded_at),
+                f"does not earn that id: it hashes to {grid(('wp0000', BANNED), at=minutes(0)).id}",
+            ),
+            evidence_log.Failure(
+                unread.id,
+                instant(unread.recorded_at),
+                "cannot be read back: ValueError: the Evidence log cannot read nonsense version 1",
+            ),
+            evidence_log.Failure(
+                emptied.id,
+                instant(emptied.recorded_at),
+                "cannot be read back: ValueError: a Judgement's shown set holds at least one Item",
+            ),
+        ),
+        orphans=(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("statement", "raised"),
+    [
+        ("UPDATE judgement_items SET provenance = 'null' WHERE judgement_id = ?", "AttributeError"),
+        ("UPDATE judgements SET utc_offset = 1000000000000000 WHERE id = ?", "OverflowError"),
+    ],
+    ids=["a tile's provenance null", "a screen's offset past timedelta's range"],
+)
+def test_verify_names_a_row_whose_decode_raises_any_error_a_stored_value_can_and_passes_on(
+    connection: sqlite3.Connection, statement: str, raised: str
+) -> None:
+    """Rows that decode to the wrong type or out of range fail as a row that will not read back does."""
+    log = [grid((f"wp{n:04d}", LIKED), at=minutes(n)) for n in range(3)]
+    append(connection, *log)
+    behind_the_log(connection, statement, log[1].id)
+
+    verified = evidence_log.verify(connection)
+
+    assert (verified.checked, [each.judgement_id for each in verified.failures]) == (3, [log[1].id])
+    assert verified.failures[0].reason.startswith(f"cannot be read back: {raised}: ")
+
+
+def test_verify_names_once_each_judgement_whose_tiles_outlive_its_screen(
+    connection: sqlite3.Connection,
+) -> None:
+    """Half of a deletion behind the log: the screen gone, its tiles left. Not among the screens checked."""
+    kept, deleted = grid(("wp0000", LIKED)), grid(("wp0001", LIKED), ("wp0002", BLANK), at=LATER)
+    append(connection, kept, deleted)
+    connection.execute("PRAGMA foreign_keys = OFF")
+    behind_the_log(connection, "DELETE FROM judgements WHERE id = ?", deleted.id)
+
+    verified = evidence_log.verify(connection)
+
+    assert verified == evidence_log.Verification(
+        checked=1,
+        failures=(),
+        orphans=(evidence_log.Failure(deleted.id, None, "tiles of a Judgement the log does not hold"),),
+    )
+
+
 @pytest.mark.parametrize("statement", ["UPDATE judgements SET screen = 'x'", "DELETE FROM judgement_items"])
 def test_nothing_in_the_log_is_updated_or_deleted(connection: sqlite3.Connection, statement: str) -> None:
     append(connection, grid(("wp0000", LIKED)))
@@ -558,6 +684,27 @@ def test_the_sql_resolves_each_of_tastes_example_cases_to_its_standing(
     }
 
 
+@pytest.mark.parametrize("case", EXAMPLE_CASES, ids=[case.name for case in EXAMPLE_CASES])
+def test_ranking_reads_each_of_tastes_example_cases_at_its_standing(
+    connection: sqlite3.Connection, case: ExampleCase
+) -> None:
+    """Invariant 4 as ranking reads it, held to the same cases as **History**, the exact tie in recorded time
+    among them: the deciding **Judgement** and what it said, a **Clearance** last decided and standing at
+    nothing. Its own test, so ranking's read of the rule goes red on its own if it ever stops being
+    **History**'s."""
+    _write_case(connection, case)
+
+    decided = {key(d.wallpaper.id): d for d in _standing(connection).decided}
+
+    assert {item: d.judgement_id for item, d in decided.items()} == {
+        item: standing.judgement_id for item, standing in case.standing.items()
+    }
+    assert {item: d.resolved.verdict for item, d in decided.items()} == {
+        item: None if standing.value is LegacyEntry.CLEARED else Verdict(standing.value.value)
+        for item, standing in case.standing.items()
+    }
+
+
 def _standing_in_sql(connection: sqlite3.Connection) -> dict[str, tuple[str, float]]:
     listing = evidence_log.history(connection)
     assert listing.pages == 1
@@ -678,7 +825,7 @@ def test_ranking_reads_each_decided_wallpaper_at_the_standing_tastes_resolution_
 ) -> None:
     """The SQL spelling again, as ranking reads it: every decided **Wallpaper** whole and in id order, with
     the **Judgement** that decides it, when, and what it stands at, across every **Instrument**. A
-    **Clearance** last is decided and worth nothing, as `pool.decided` and `resolve` have it."""
+    **Clearance** last is decided and worth nothing, as `decided_wallpapers` and `resolve` have it."""
     logged = list(_every_instrument().values())
     append(connection, *logged)
 
@@ -688,7 +835,7 @@ def test_ranking_reads_each_decided_wallpaper_at_the_standing_tastes_resolution_
         item: (piece.judgement_id, piece.recorded_at, piece.strength)
         for item, piece in resolve(evidence(logged)).items()
     }
-    assert [d.wallpaper for d in decided] == pool.decided(connection)
+    assert [d.wallpaper for d in decided] == decided_wallpapers(connection)
     assert {d.wallpaper.id: d.resolved for d in decided} == evidence_log.resolve(
         connection, [d.wallpaper.id for d in decided]
     )
@@ -795,6 +942,22 @@ def test_each_mark_resolves_to_its_own_value(connection: sqlite3.Connection) -> 
     }
 
 
+def test_wallpapers_standing_at_the_same_word_are_answered_with_one_resolved_verdict_object(
+    connection: sqlite3.Connection,
+) -> None:
+    """A lookup per resolved word, not an object built per decided row: ranking reads one per decided
+    **Wallpaper**, and there are only five words. The fifth is nothing standing, which resolution leaves as
+    `NULL` after a legacy **Clearance**: two of those, so the `NULL` row goes through the lookup too."""
+    marks = (STARRED, LIKED, BANNED, BLANK)
+    append(connection, grid(*((w, marks[n % 4]) for n, w in enumerate(WALLPAPERS[:8]))))
+    append(connection, converted(("wp0008", LegacyEntry.CLEARED), ("wp0009", LegacyEntry.CLEARED)))
+
+    resolved = evidence_log.resolve(connection, WALLPAPERS[:10])
+
+    assert all(resolved[WALLPAPERS[n]] is resolved[WALLPAPERS[n + 4]] for n in range(4))
+    assert resolved["wp0008"] is resolved["wp0009"]
+
+
 def test_the_decided_are_every_wallpaper_with_a_verdict_or_favourite_ever_recorded(
     connection: sqlite3.Connection,
 ) -> None:
@@ -881,6 +1044,49 @@ def test_explicitly_decided_for_more_ids_than_the_parameter_limit_answers_them_a
     restricted = evidence_log.explicitly_decided(connection, [*WALLPAPERS[:30], "never-seen"])
 
     assert restricted == {w for n, w in enumerate(WALLPAPERS[:20]) if n % 4 != 3}
+
+
+def test_the_evaluations_explicit_cut_by_strength_names_exactly_the_explicitly_decided(
+    connection: sqlite3.Connection,
+) -> None:
+    """`taste.evaluation.explicit_only` tells an **Ignore** by its strength, and `explicitly_decided` by its
+    word. Over every **Instrument**, and every word of both grids left standing (a converted Ignore, Ban
+    and Like, a marked Ignore beside the unmarked ones, a Like and a Ban on a **Batch**), the two name the
+    same **Wallpapers**, whether the cut is fed what ranking reads or taste's own **Reductions** of the
+    log: so a **Reduction** that ever gave an **Ignore** a second weight fails here."""
+    every_word = LATER + dt.timedelta(minutes=10)
+    logged = [
+        *_every_instrument().values(),
+        converted(
+            ("wp0020", LegacyEntry.IGNORE),
+            ("wp0021", LegacyEntry.BAN),
+            ("wp0022", LegacyEntry.LIKE),
+            at=every_word,
+        ),
+        grid(
+            ("wp0023", LIKED),
+            ("wp0024", BANNED),
+            ("wp0025", TileResponse(verdict=GridVerdict.IGNORE)),
+            at=every_word,
+        ),
+    ]
+    append(connection, *logged)
+    read = _standing(connection)
+    assert {each.resolved.value for each in read.decided} == {100.0, 50.0, -10.0, -100.0, 0.0}
+
+    by_sql = evidence_log.explicitly_decided(connection)
+
+    assert _named(explicit_only(read.evidence())) == by_sql
+    assert _named(explicit_only(evidence(logged))) == by_sql
+    assert by_sql == {
+        *("wp0000", "wp0001", "wp0003", "wp0006", "wp0007", "wp0012", "wp0015", "wp0019"),
+        *("wp0021", "wp0022", "wp0023", "wp0024"),
+    }, "worked by hand: the Favourites, then the Bans and Likes; wp0008's Clearance and every Ignore out"
+
+
+def _named(pieces: list[Evidence]) -> set[str]:
+    """The **Wallpapers** absolute Evidence names, by bare id."""
+    return {evidence_log.wallpaper_id(piece.item) for piece in pieces if isinstance(piece, AbsoluteEvidence)}
 
 
 def test_favourites_are_what_resolves_to_favourite_now(connection: sqlite3.Connection) -> None:

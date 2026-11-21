@@ -24,6 +24,7 @@ from tests.conftest import (
     batches_rig,
     committing_as,
     decide,
+    decided_wallpapers,
     lineup_rig,
     raw_connection,
     record_legacy_clearance,
@@ -412,7 +413,7 @@ def test_ranking_scores_the_pool_exactly_as_taste_ranks_every_judgement_in_the_l
 
         log = evidence_log.judgements(rig.connection)
         members = pool.members(rig.connection)
-        by_id = {w.id: w for w in [*members, *pool.decided(rig.connection)]}
+        by_id = {w.id: w for w in [*members, *decided_wallpapers(rig.connection)]}
         standing = evidence_log.resolve(rig.connection, [w.id for w in members])
         candidates = [w.id for w in members if standing[w.id].verdict is not Verdict.BAN]
 

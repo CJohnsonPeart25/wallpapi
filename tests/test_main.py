@@ -1,11 +1,12 @@
-"""The entry point's commands: `reset-pool`, `evaluate`, and serving when none is named.
+"""The entry point's commands: `reset-pool`, `evaluate`, `verify-log`, and serving when none is named.
 
 Uses `make_harness`, because its subject is an adapter over a workflow, as the web tests are: `main` is handed
 the harness's modules through its builder and a stand-in for serving, so nothing boots, fetches or listens.
-`evaluate` builds no modules: it is handed what it reads, the harness's database opened read-only beside the
-harness's own connection and the harness's stored **Embeddings**, or reads a real home under `tmp_path`.
-What the **Pool reset** removes is `test_pool.py`'s, and what the evaluation computes is
-`test_evaluation.py`'s; this is that each command runs through what it is handed and says so.
+`evaluate` and `verify-log` build no modules: each is handed what it reads, the harness's database opened
+read-only beside the harness's own connection and the harness's stored **Embeddings**, or reads a real home
+under `tmp_path`. What the **Pool reset** removes is `test_pool.py`'s, what the evaluation computes is
+`test_evaluation.py`'s, and which rows fail verification is `test_evidence_log.py`'s; this is that each
+command runs through what it is handed and says so.
 """
 
 from __future__ import annotations
@@ -44,11 +45,11 @@ def never_serve() -> None:
 
 
 def never_build() -> Modules:
-    raise AssertionError("neither evaluate nor a refused command builds the modules")
+    raise AssertionError("no reading command nor a refused command builds the modules")
 
 
 def never_read() -> Stored:
-    raise AssertionError("only evaluate reads")
+    raise AssertionError("only evaluate and verify-log read")
 
 
 def test_reset_pool_resets_through_the_modules_it_builds_and_says_what_it_removed(
@@ -125,8 +126,8 @@ def judged(db_path: Path) -> tuple[Harness, Judged]:
 
 
 def reading(harness: Harness) -> Callable[[], Stored]:
-    """What `evaluate` reads, over the harness: its database file opened as `main` opens one, beside the
-    harness's own connection as beside a running server, and its stored **Embeddings**."""
+    """What a reading command reads, over the harness: its database file opened as `main` opens one, beside
+    the harness's own connection as beside a running server, and its stored **Embeddings**."""
     path = Path(harness.connect().execute("PRAGMA database_list").fetchone()["file"])
     return lambda: Stored(storage.connect_current(path), harness.embeddings)
 
@@ -268,16 +269,83 @@ def test_a_candidate_names_its_radius_or_its_decay_and_takes_the_other_from_the_
     assert "Candidate: radius 0.1, decay 2.5\n" in capsys.readouterr().out
 
 
+def test_a_decided_set_alone_is_a_candidate_at_the_current_radius_and_decay(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Embedded as in the candidate test. The most recent **Judgement** alone: the first test **Batch** sees
+    the last warm-up one, whose **Like** and **Ignore** its tiles sit 0.05 from, so right, 1.0. The second
+    sees only the first test **Batch**, whose **Like** is 0.19 from its own and beyond the radius, its other
+    tile unembedded: a tie, 0.5. Differences 0 and -0.5: the range is -0.5 to 0 and holds zero."""
+    harness, log = judged
+    vectors = harness.store.vector_by_id
+    vectors.update({w: LIKED for w in log.liked[:10]})
+    vectors.update({w: PASSED_OVER for w in log.passed_over[:10]})
+    vectors[log.liked[10]], vectors[log.liked[11]] = NEAR_LIKED, NEAR_LIKED_THE_OTHER_WAY
+    vectors[log.passed_over[10]] = NEAR_PASSED_OVER
+
+    main(["evaluate", "--decided", "recent:1"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert capsys.readouterr().out == (
+        "Evaluation reading 1: 10 warm-up Judgements, 95% ranges from 2000 resamples (seed 20261027).\n"
+        "\n"
+        "Current settings: radius 0.1, decay 4\n"
+        "Instrument       Tests  Accuracy  95% range\n"
+        "verdict grid v1      2     1.000  1.000 to 1.000\n"
+        "\n"
+        "Candidate: radius 0.1, decay 4, decided set the most recent 1 Judgement\n"
+        "Instrument       Tests  Accuracy  95% range\n"
+        "verdict grid v1      2     0.750  0.500 to 1.000\n"
+        "\n"
+        "Candidate minus current\n"
+        "Instrument       Tests  Difference  95% range         Verdict\n"
+        "verdict grid v1      2      -0.250  -0.500 to +0.000  no difference shown\n"
+        "\n"
+        "Tested Wallpapers with no Embedding: 1 of 4\n"
+    )
+
+
 @pytest.mark.parametrize(
-    "arguments", [["--radius", "1.5"], ["--radius", "-0.1"], ["--decay", "nan"], ["--decay", "51"]]
+    ("arguments", "named"),
+    [
+        (
+            ["--radius", "0.01", "--decided", "explicit"],
+            "radius 0.01, decay 4, decided set Explicit Verdicts only",
+        ),
+        (["--decided", "recent:25"], "radius 0.1, decay 4, decided set the most recent 25 Judgements"),
+        (["--decay", "2", "--decided", "all"], "radius 0.1, decay 2"),
+    ],
+)
+def test_a_candidate_names_its_decided_set_beside_its_radius_and_decay_unless_it_is_every_decided(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str], arguments: list[str], named: str
+) -> None:
+    harness, _ = judged
+
+    main(["evaluate", *arguments], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert f"Candidate: {named}\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--radius", "1.5"],
+        ["--radius", "-0.1"],
+        ["--decay", "nan"],
+        ["--decay", "51"],
+        ["--decided", "recent:0"],
+        ["--decided", "recent:x"],
+        ["--decided", "recent:"],
+        ["--decided", "bogus"],
+    ],
 )
 def test_a_candidate_outside_what_the_settings_allow_is_refused(arguments: list[str]) -> None:
     with pytest.raises(SystemExit):
         main(["evaluate", *arguments], build=never_build, read=never_read, serve=never_serve)
 
 
+@pytest.mark.parametrize("candidate", [["--radius", "0.2"], ["--decided", "recent:1"]])
 def test_evaluate_writes_nothing_and_never_asks_for_the_model(
-    judged: tuple[Harness, Judged], db_path: Path
+    judged: tuple[Harness, Judged], db_path: Path, candidate: list[str]
 ) -> None:
     """Safe beside a running server: the database's files are byte for byte as they were, the model and the
     embed step are never asked for anything, and the server's own connection writes on."""
@@ -286,7 +354,7 @@ def test_evaluate_writes_nothing_and_never_asks_for_the_model(
     before = database_bytes(db_path)
     model_calls, embedded = harness.model.calls, list(harness.embed.seen)
 
-    main(["evaluate", "--radius", "0.2"], build=never_build, read=reading(harness), serve=never_serve)
+    main(["evaluate", *candidate], build=never_build, read=reading(harness), serve=never_serve)
 
     assert database_bytes(db_path) == before
     assert (harness.model.calls, harness.embed.seen) == (model_calls, embedded)
@@ -351,9 +419,99 @@ def test_evaluate_with_no_embeddings_file_counts_every_tested_wallpaper_unembedd
     assert not (home / "embeddings.db").exists()
 
 
+# -- verify-log ----------------------------------------------------------------------------------------
+
+
+def screens(harness: Harness) -> list[tuple[str, str]]:
+    """Each stored screen's id and recorded time as stored, in the log's order."""
+    rows = harness.connect().execute("SELECT id, recorded_at FROM judgements ORDER BY recorded_at, id DESC")
+    return [(str(row["id"]), str(row["recorded_at"])) for row in rows]
+
+
+def behind_the_log(harness: Harness, statement: str, *parameters: object) -> None:
+    """Change the harness's log as only tampering can: drop the triggers that keep it append-only from the
+    file, then run `statement` on the server's own connection."""
+    connection = harness.connect()
+    for table in ("judgements", "judgement_items"):
+        for change in ("update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS {table}_{change}_refused")
+    connection.execute(statement, parameters)
+
+
+def test_verify_log_over_an_intact_log_counts_every_judgement_and_writes_nothing(
+    judged: tuple[Harness, Judged], db_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Beside a running server, as `evaluate`: the database's files are as they were and the server's own
+    connection writes on."""
+    harness, _ = judged
+    before = database_bytes(db_path)
+
+    main(["verify-log"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert capsys.readouterr().out == "Every Judgement in the Evidence log earns its id: 12 checked.\n"
+    assert database_bytes(db_path) == before
+    assert isinstance(workflows.save_settings(harness.modules, batch_size=3), settings.Settings)
+
+
+def test_verify_log_over_a_tampered_log_names_each_judgement_that_fails_and_exits_non_zero(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness, _ = judged
+    logged = screens(harness)
+    (first, first_at), (second, second_at) = logged[3], logged[7]
+    behind_the_log(
+        harness, "UPDATE judgement_items SET verdict = 'ban' WHERE judgement_id IN (?, ?)", first, second
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        main(["verify-log"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert exited.value.code == 1
+    heading, *named = capsys.readouterr().out.splitlines()
+    assert heading == "2 of 12 Judgements fail:"
+    assert [line.partition(" it hashes to ")[0] for line in named] == [
+        f"  {first}, recorded {first_at}: does not earn that id:",
+        f"  {second}, recorded {second_at}: does not earn that id:",
+    ]
+
+
+def test_verify_log_names_tiles_whose_screen_is_gone_under_their_own_count_and_exits_non_zero(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Tiles are not a screen checked: the screens that are left all earn their ids, and the tiles stored
+    without theirs are counted on a line of their own."""
+    harness, _ = judged
+    deleted, _ = screens(harness)[5]
+    harness.connect().execute("PRAGMA foreign_keys = OFF")
+    behind_the_log(harness, "DELETE FROM judgements WHERE id = ?", deleted)
+    harness.connect().execute("PRAGMA foreign_keys = ON")
+
+    with pytest.raises(SystemExit) as exited:
+        main(["verify-log"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert exited.value.code == 1
+    assert capsys.readouterr().out == (
+        "0 of 11 Judgements fail.\n"
+        "Judgements with tiles but no screen: 1\n"
+        f"  {deleted}: tiles of a Judgement the log does not hold\n"
+    )
+
+
+# -- the reading commands refuse a database they cannot read as it is ----------------------------------
+
+
+READING_COMMANDS = ("evaluate", "verify-log")
+"""The commands that open the database through `storage.connect_current`: each refuses alike, by name."""
+
+
+@pytest.mark.parametrize("command", READING_COMMANDS)
 @pytest.mark.parametrize("made", [False, True], ids=["no home", "an empty home"])
-def test_evaluate_with_no_database_says_so_exits_non_zero_and_creates_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], made: bool
+def test_a_reading_command_with_no_database_says_so_exits_non_zero_and_creates_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    made: bool,
+    command: str,
 ) -> None:
     home = tmp_path / "home"
     if made:
@@ -361,11 +519,11 @@ def test_evaluate_with_no_database_says_so_exits_non_zero_and_creates_nothing(
     monkeypatch.setenv("WALLPAPI_HOME", str(home))
 
     with pytest.raises(SystemExit) as exited:
-        main(["evaluate"], build=never_build, serve=never_serve)
+        main([command], build=never_build, serve=never_serve)
 
     assert exited.value.code == 1
     assert capsys.readouterr().err == (
-        f"No database at {home / 'wallpapi.db'}, so there is nothing to evaluate. evaluate creates "
+        f"No database at {home / 'wallpapi.db'}, so {command} has nothing to read. {command} creates "
         "nothing: serving wallpapi makes the database.\n"
     )
     if made:
@@ -384,25 +542,34 @@ def schema_and_version(db_path: Path) -> tuple[list[tuple[str, str, str | None]]
     return [(str(row["type"]), str(row["name"]), row["sql"]) for row in rows], version
 
 
+def older_hint(command: str) -> str:
+    return (
+        f"is at schema version {OLDER}, and this wallpapi reads version {storage.SCHEMA_VERSION}. "
+        f"{command} migrates nothing: stop any older server and serve this wallpapi once to migrate it, "
+        f"then run {command} again.\n"
+    )
+
+
+def newer_hint(command: str) -> str:
+    return (
+        f"is at schema version {storage.SCHEMA_VERSION + 1}, newer than the version "
+        f"{storage.SCHEMA_VERSION} this wallpapi reads: run {command} with the wallpapi that migrated it.\n"
+    )
+
+
+@pytest.mark.parametrize("command", READING_COMMANDS)
 @pytest.mark.parametrize(
     ("version", "hint"),
-    [
-        (
-            OLDER,
-            f"is at schema version {OLDER}, and this wallpapi reads version {storage.SCHEMA_VERSION}. "
-            "evaluate migrates nothing: stop any older server and serve this wallpapi once to migrate it, "
-            "then evaluate again.\n",
-        ),
-        (
-            storage.SCHEMA_VERSION + 1,
-            f"is at schema version {storage.SCHEMA_VERSION + 1}, newer than the version "
-            f"{storage.SCHEMA_VERSION} this wallpapi reads: evaluate with the wallpapi that migrated it.\n",
-        ),
-    ],
+    [(OLDER, older_hint), (storage.SCHEMA_VERSION + 1, newer_hint)],
     ids=["older", "newer"],
 )
-def test_evaluate_on_a_database_at_another_version_says_so_exits_non_zero_and_leaves_it_as_it_was(
-    home: Path, db_path: Path, capsys: pytest.CaptureFixture[str], version: int, hint: str
+def test_a_reading_command_on_a_database_at_another_version_says_so_exits_non_zero_and_leaves_it_as_it_was(
+    home: Path,
+    db_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    version: int,
+    hint: Callable[[str], str],
+    command: str,
 ) -> None:
     """The failure the read-only promise is for: code upgraded while the older server still runs. Its
     connection stays open throughout, and its database keeps its version, its tables and its bytes."""
@@ -412,10 +579,10 @@ def test_evaluate_on_a_database_at_another_version_says_so_exits_non_zero_and_le
         before = schema_and_version(db_path), database_bytes(db_path)
 
         with pytest.raises(SystemExit) as exited:
-            main(["evaluate"], build=never_build, serve=never_serve)
+            main([command], build=never_build, serve=never_serve)
 
         assert exited.value.code == 1
-        assert capsys.readouterr().err == f"The database at {db_path} {hint}"
+        assert capsys.readouterr().err == f"The database at {db_path} {hint(command)}"
         assert (schema_and_version(db_path), database_bytes(db_path)) == before
         assert sorted(path.name for path in home.iterdir()) == [
             "wallpapi.db",

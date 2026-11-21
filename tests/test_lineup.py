@@ -16,7 +16,7 @@ from collections.abc import Iterator, Mapping
 
 import pytest
 
-from tests.conftest import FIXED_NOW, LineupRig, lineup_rig
+from tests.conftest import FIXED_NOW, LineupRig, decided_wallpapers, lineup_rig
 from tests.fakes import catalogue_of, wallpaper
 from wallpapi import evidence_log, lineup, pool, settings, storage
 from wallpapi.batches import Batch, Submitted
@@ -377,7 +377,7 @@ def test_answering_takes_nothing_out_of_the_pool_and_decides_nothing(rig: Lineup
     rig.pick(second.id, None)
 
     assert pool.members(rig.connection) == members
-    assert pool.decided(rig.connection) == []
+    assert decided_wallpapers(rig.connection) == []
     assert evidence_log.history(rig.connection).total == 0
     assert len(rig.logged()) == 2
 
@@ -510,7 +510,7 @@ def test_only_the_starred_item_leaves_the_pool(rig: LineupRig) -> None:
     rig.pick(shown.id, winner)
 
     assert pool.members(rig.connection) == [w for w in members if w.id != starred]
-    assert [w.id for w in pool.decided(rig.connection)] == [starred]
+    assert [w.id for w in decided_wallpapers(rig.connection)] == [starred]
     assert starred not in ids(rig.lineup())
 
 
@@ -692,7 +692,7 @@ def test_an_order_takes_nothing_out_of_the_pool_and_decides_nothing(rig: LineupR
     rig.order(third.id)
 
     assert pool.members(rig.connection) == members
-    assert pool.decided(rig.connection) == []
+    assert decided_wallpapers(rig.connection) == []
     assert evidence_log.history(rig.connection).total == 0
     assert [j.instrument for j in rig.logged()] == [ORDER_V1] * 3
 
@@ -931,7 +931,7 @@ def test_a_gauntlet_takes_nothing_out_of_the_pool_but_a_starred_tile(rig: Lineup
     rig.gauntlet(second.id, None)
 
     assert pool.members(rig.connection) == members
-    assert pool.decided(rig.connection) == []
+    assert decided_wallpapers(rig.connection) == []
     assert evidence_log.history(rig.connection).total == 0
 
     third = rig.lineup()
@@ -940,7 +940,7 @@ def test_a_gauntlet_takes_nothing_out_of_the_pool_but_a_starred_tile(rig: Lineup
     _defend(rig, third, ids(third)[0])
 
     assert pool.members(rig.connection) == [w for w in members if w.id != starred]
-    assert [w.id for w in pool.decided(rig.connection)] == [starred]
+    assert [w.id for w in decided_wallpapers(rig.connection)] == [starred]
 
 
 def test_a_winner_starred_on_the_screen_it_won_is_a_favourite_and_its_streak_ends_there(

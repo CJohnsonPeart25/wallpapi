@@ -20,7 +20,7 @@ from typing import Protocol
 
 import httpx2
 
-from wallpapi import evidence_log, storage
+from wallpapi import evidence_log, sql, storage
 from wallpapi.files import url_suffix, write_atomically
 from wallpapi.taste.clock import Clock, iso_utc
 
@@ -258,26 +258,30 @@ class DownloadingLibraryWriter:
 
 def _candidates(connection: sqlite3.Connection) -> tuple[set[str], list[sqlite3.Row]]:
     """The **Favourites**, and every row a reconciliation might act on: a **Favourite**, or one holding a
-    recorded file.
+    recorded file. In id order.
+
+    Two reads merged by id: the rows holding a file, then the **Favourites**' rows, whose ids go through
+    `sql.select_in` because nothing bounds how many there are. One statement binding them all would fail
+    past SQLite's parameter limit, and chunking it whole would return every recorded row once per chunk.
+    A **Favourite** holding a file comes back from both reads as the same row. All in one read transaction,
+    so a write committed meanwhile cannot fall between them; every caller reconciles after its write commits.
     """
-    favourites = evidence_log.favourites(connection)
-    # SQLite's parameter limit is 32,766 here, well above any count of **Favourites**.
-    placeholders = ",".join("?" * len(favourites))
-    rows = connection.execute(_LIBRARY_CANDIDATES.format(favourites=placeholders), favourites).fetchall()
-    return set(favourites), rows
+    with storage.read(connection):
+        favourites = evidence_log.favourites(connection)
+        recorded = connection.execute(f"{_LIBRARY_CANDIDATES} WHERE f.wallpaper_id IS NOT NULL").fetchall()
+        wanted = sql.select_in(
+            connection, favourites, lambda marks: f"{_LIBRARY_CANDIDATES} WHERE w.id IN ({marks})"
+        )
+    by_id = {str(row["wallpaper_id"]): row for row in [*recorded, *wanted]}
+    return set(favourites), [by_id[wallpaper_id] for wallpaper_id in sorted(by_id)]
 
 
 _LIBRARY_CANDIDATES = """
 SELECT w.id AS wallpaper_id, w.full_url AS full_url, f.path AS path
 FROM wallpapers AS w
 LEFT JOIN library_files AS f ON f.wallpaper_id = w.id
-WHERE f.wallpaper_id IS NOT NULL OR w.id IN ({favourites})
-ORDER BY w.id
 """
-"""Everything a reconciliation might act on: a **Favourite** now, or holding a recorded file.
-
-`{favourites}` is placeholders built here; the ids from `evidence_log.favourites` are bound as parameters.
-"""
+"""A **Wallpaper**'s row with its recorded file, if it has one; `_candidates` adds which rows it wants."""
 
 _RECORD_LIBRARY_FILE = """
 INSERT INTO library_files (wallpaper_id, path, written_at) VALUES (?, ?, ?)

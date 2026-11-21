@@ -7,7 +7,9 @@ Each size is a synthetic log of that many **Judgements**, drawn from the seed an
 `storage.migrate`, `pool.admit` and `evidence_log.append` in `--out` (by default the system temp folder),
 never in the repo. **Embeddings** are random unit vectors in a real `EmbeddingCache`, opened through the
 public upkeep with a model and embedder that refuse to run, so no model is loaded and nothing touches the
-network. Each size is built in one fresh process and timed in another, so the peak memory is the timing's.
+network. The **Thumbnail cache** is one empty file for each **Explicit Verdict** and **Pool** member, what a
+submission's eviction keeps, so its eviction is timed as a steady pass that deletes nothing. Each size is
+built in one fresh process and timed in another, so the peak memory is the timing's.
 
 Every figure is the median of `--reps` runs after one warm-up, in milliseconds. The parts are timed apart
 from `ranked`, through the same public calls it makes; a query timed alone is caught as its public call
@@ -17,6 +19,12 @@ figure marked `*` raised "too many SQL variables" as is, and was timed again wit
 patched to send its ids in chunks: the cost the draw would have if it ran. `--json` keeps a run;
 `--baseline` sets a kept run beside this one, so a change is timed on its base commit and on its branch
 with the same seed and sizes, on the same machine.
+
+`--decided explicit recent:25` also times a draw over each narrower decided set `evaluate --decided`
+replays, in the same process after every default figure, which a run without it times alike: the
+narrowing (`evaluation.narrowed` over the standing), then `Embeddings.measure` and `rank` over its columns
+alone. The server never draws so, so no `ranked` is timed for it; its whole draw is `ranked`, less
+`measure` and `rank`, plus the three.
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,13 +54,16 @@ from unittest.mock import patch
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi import evidence_log, pool, settings, storage
+from wallpapi import evidence_log, pool, settings, storage, thumbnails
 from wallpapi.batches import Batches
 from wallpapi.evidence_log import ResolvedVerdict, Theme, item_key, provenance, tile_response
+from wallpapi.main import decided_set
 from wallpapi.model import Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EmbeddingCache, Embeddings
 from wallpapi.taste.clock import SystemClock
+from wallpapi.taste.evaluation import AllDecided, DecidedSet, ExplicitOnly, MostRecent, narrowed
+from wallpapi.taste.evidence import AbsoluteEvidence
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Instrument,
@@ -68,6 +79,8 @@ from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.ranking import rank
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
+from wallpapi.thumbnails import Thumbnails
+from wallpapi.wallhaven import SearchPage
 
 REPO: Final = Path(__file__).resolve().parent.parent
 DIM: Final = 512
@@ -93,7 +106,7 @@ TIMES: Final = (
     ("ranked", "`Batches.ranked`"),
     ("pool.members", "`pool.members`"),
     ("standing", "`evidence_log.standing` (the SQL standing and the newest)"),
-    ("newest", "of which: the newest-position query, caught from `standing`"),
+    ("newest", "of which: the query for the newest log position, caught from `standing`"),
     ("near_duplicates", "`Embeddings.near_duplicates` (Pool x Bans)"),
     ("measure", "`Embeddings.measure` (Pool x decided)"),
     ("vectors_for", "of which: `EmbeddingCache.vectors_for`"),
@@ -103,16 +116,18 @@ TIMES: Final = (
     ("write_lock", "of which: write lock held (pre-marking inside)"),
     ("explicitly_decided", "`evidence_log.explicitly_decided()`"),
     ("resolve_chosen", "`evidence_log.resolve(chosen tiles)` alone"),
+    ("evict", "off the lock: `Thumbnails.evict` (a submission's tail), over the files counted below"),
     ("judgements_sql", "off the draw: `judgements()`'s ordered fetch, caught from it"),
 )
-"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint, then
-the ordered fetch `evaluate` makes through `judgements()`."""
+"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint, then a
+submission's eviction, then the ordered fetch `evaluate` makes through `judgements()`."""
 
 COUNTS: Final = (
     ("judgement_items", "judgement_items rows"),
     ("wallpapers", "wallpapers rows"),
     ("decided_columns", "decided columns in the matrix"),
     ("explicit", "explicitly decided"),
+    ("thumbnails", "cached thumbnails (each explicitly decided or Pool member)"),
     ("peak_rss_mb", "peak RSS of the timing process, MB"),
     ("digest", "ranking digest"),
 )
@@ -123,11 +138,14 @@ COUNTS: Final = (
 class Files:
     log: Path
     embeddings: Path
+    thumbnails: Path
 
 
 def files(out: Path, seed: int, size: int) -> Files:
     folder = out / f"seed-{seed}" / str(size)
-    return Files(log=folder / "wallpapi.db", embeddings=folder / "embeddings.db")
+    return Files(
+        log=folder / "wallpapi.db", embeddings=folder / "embeddings.db", thumbnails=folder / "thumbnails"
+    )
 
 
 # -- the synthetic log ---------------------------------------------------------------------------------------
@@ -339,6 +357,7 @@ def build(out: Path, seed: int, size: int) -> dict[str, int]:
         pool.retire(write, [w.id for w in log.created if w.id not in member_ids])
         for judgement in log.judgements:
             evidence_log.append(write, judgement)
+    write_thumbnails(where.thumbnails, evidence_log.explicitly_decided(connection) | member_ids)
     connection.close()
 
     # `EmbeddingCache.store` commits one vector at a time; the rows go in its own format in one transaction.
@@ -359,6 +378,17 @@ def build(out: Path, seed: int, size: int) -> dict[str, int]:
     return {"wallpapers": len(log.created), "decided": len(set(log.decided))}
 
 
+def write_thumbnails(directory: Path, wallpaper_ids: Iterable[str]) -> None:
+    """The **Thumbnail cache** afresh, one empty file per id: what a submission's eviction leaves, every
+    **Explicit Verdict** and the **Pool**. Empty, because eviction stats each file whatever its size, and a
+    cache over the cap would let the size pass delete **Pool** members between runs."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for stale in directory.iterdir():
+        stale.unlink()
+    for wallpaper_id in wallpaper_ids:
+        (directory / f"{wallpaper_id}.jpg").touch()
+
+
 # -- timing ---------------------------------------------------------------------------------------------
 
 
@@ -367,6 +397,27 @@ class _NoModel:
 
     def ensure(self, stop_event: threading.Event) -> Path:
         return Path("no-model")
+
+
+class _NoWallhaven:
+    """Wallhaven for a **Thumbnail cache** that is only evicted: anything it would fetch is refused."""
+
+    def search(
+        self,
+        *,
+        sorting: str,
+        purity: str,
+        categories: str | None = None,
+        query: str | None = None,
+        page: int = 1,
+        seed: str | None = None,
+        atleast: str | None = None,
+        ratios: str | None = None,
+    ) -> SearchPage:
+        raise RuntimeError("the benchmark searches nothing")
+
+    def fetch_thumbnail(self, url: str) -> bytes:
+        raise RuntimeError("the benchmark fetches nothing: its thumbnails are written already")
 
 
 def _no_embed(images: Sequence[Path]) -> NDArray[np.float32]:
@@ -517,8 +568,10 @@ class Report(TypedDict):
     sizes: dict[str, SizeRun]
 
 
-def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
-    """Time the draw and its parts on the size's databases, which `build` wrote."""
+def measure(out: Path, seed: int, size: int, reps: int, decided_sets: Sequence[DecidedSet] = ()) -> SizeRun:
+    """Time the draw and its parts on the size's databases, which `build` wrote; then, for each of the
+    `decided_sets`, its narrowing, `measure` and `rank` over its columns alone, keyed `narrow[<set>]`
+    and so on."""
     where = files(out, seed, size)
     connection = storage.connect(where.log)
     cache = EmbeddingCache(where.embeddings)
@@ -549,8 +602,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     t["standing"], standing = _median_ms(
         lambda: evidence_log.standing(connection, pool.wallpaper_from_row), reps
     )
-    newest = _ordered_read(connection, lambda: evidence_log.standing(connection, pool.wallpaper_from_row))
-    t["newest"], _ = _median_ms(lambda: connection.execute(newest).fetchone(), reps)
+    newest_sql = _ordered_read(connection, lambda: evidence_log.standing(connection, pool.wallpaper_from_row))
+    t["newest"], _ = _median_ms(lambda: connection.execute(newest_sql).fetchone(), reps)
     decided = sorted(piece.item for piece in standing.evidence())
     counts["decided_columns"] = len(decided)
 
@@ -597,14 +650,65 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     counts["explicit"] = len(explicit)
     chosen = [w.id for w in members[:BATCH]]
     t["resolve_chosen"], _ = _median_ms(lambda: evidence_log.resolve(connection, chosen), reps)
-    fetch = _ordered_read(connection, lambda: evidence_log.judgements(connection))
-    t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch).fetchall(), reps)
+    # After the mint, so the live Batch is there to keep; every file is kept, so each run is the same pass.
+    thumbnail_cache = Thumbnails(where.thumbnails, _NoWallhaven(), SystemClock())
+    cap = thumbnails.cap_bytes(settings.get(connection))
+    written = sum(1 for _ in where.thumbnails.iterdir())
+    t["evict"], _ = _median_ms(lambda: thumbnail_cache.evict(connection, cap), reps)
+    counts["thumbnails"] = sum(1 for _ in where.thumbnails.iterdir())
+    if counts["thumbnails"] != written:
+        raise RuntimeError(
+            f"eviction is not in its steady state: {written} files became {counts['thumbnails']}"
+        )
+    fetch_sql = _ordered_read(connection, lambda: evidence_log.judgements(connection))
+    t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch_sql).fetchall(), reps)
 
     with chunked_resolve():
         counts["digest"] = _digest(batches, connection)
     counts["peak_rss_mb"] = _peak_rss_mb()
+
+    def time_decided_set(candidate: DecidedSet, ordered: Sequence[Judgement]) -> None:
+        """The narrowing, then `measure` and `rank` as above, over the candidate's decided columns only."""
+        name = _spelling(candidate)
+        t[f"narrow[{name}]"], scored_over = _median_ms(
+            lambda: narrowed(standing.evidence(), candidate, ordered, len(ordered)), reps
+        )
+        items = sorted(piece.item for piece in scored_over if isinstance(piece, AbsoluteEvidence))
+        counts[f"decided_columns[{name}]"] = len(items)
+        narrowed_columns = [by_key[key] for key in items]
+        t[f"measure[{name}]"], narrowed_measured = _median_ms(
+            lambda: embeddings.measure(candidates, narrowed_columns), reps
+        )
+        t[f"rank[{name}]"], _ = _median_ms(
+            lambda: rank(
+                scored_over,
+                keys,
+                lambda rows, cols: narrowed_measured.matrix,
+                radius=current.similarity_radius,
+                decay=current.similarity_decay,
+            ),
+            reps,
+        )
+
+    # After every default figure and the peak memory, so a run with `--decided` times the default as one
+    # without it does. The log order is read untimed: a server would find the n-th Judgement back with one
+    # indexed query, costed like `newest`.
+    ordered = evidence_log.judgements(connection) if decided_sets else []
+    for candidate in decided_sets:
+        time_decided_set(candidate, ordered)
     connection.close()
     return SizeRun(times=t, counts=counts, chunked=chunked)
+
+
+def _spelling(decided: DecidedSet) -> str:
+    """The decided set as `--decided` spells it, which names its rows."""
+    match decided:
+        case AllDecided():
+            return "all"
+        case ExplicitOnly():
+            return "explicit"
+        case MostRecent(judgements=n):
+            return f"recent:{n}"
 
 
 # -- the run -------------------------------------------------------------------------------------------
@@ -656,22 +760,45 @@ def _cell(run: SizeRun | None, key: str, *, timed: bool) -> str:
     return f"{count:,}" if isinstance(count, int) else count
 
 
+def _decided_sets(report: Report) -> list[str]:
+    """The decided sets the run timed, as `--decided` spelled them, in the order given."""
+    keys = (key for run in report["sizes"].values() for key in run["times"] if key.endswith("]"))
+    return list(dict.fromkeys(key[key.index("[") + 1 : -1] for key in keys))
+
+
 def table(report: Report, baseline: Report | None = None) -> str:
-    """The run as a Markdown table, one column per size; with a baseline, each cell `before -> now`."""
+    """The run as a Markdown table, one column per size; with a baseline, each cell `before -> now`. Each
+    decided set the run timed brings its rows after the counts. A figure shown starred, in either half,
+    brings the footnote saying what `*` means."""
     sizes = list(report["sizes"])
     lines = [
         "| Judgements | " + " | ".join(f"{int(size):,}" for size in sizes) + " |",
         "|---|" + "---:|" * len(sizes),
     ]
+    starred = False
     rows = [(key, label, True) for key, label in TIMES] + [(key, label, False) for key, label in COUNTS]
+    for name in _decided_sets(report):
+        rows += [
+            (f"narrow[{name}]", f"{name}: the narrowing, `evaluation.narrowed(standing.evidence())`", True),
+            (f"measure[{name}]", f"{name}: `Embeddings.measure` (Pool x narrowed decided)", True),
+            (f"rank[{name}]", f"{name}: `rank`, the narrowed matrix given", True),
+            (f"decided_columns[{name}]", f"{name}: decided columns in the narrowed matrix", False),
+        ]
     for key, label, timed in rows:
         cells: list[str] = []
         for size in sizes:
             now = _cell(report["sizes"][size], key, timed=timed)
             if baseline is not None:
                 now = f"{_cell(baseline['sizes'].get(size), key, timed=timed)} -> {now}"
+            starred = starred or (timed and "*" in now)
             cells.append(now)
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    if starred:
+        lines += [
+            "",
+            "* Failed as is with 'too many SQL variables': timed with evidence_log.resolve chunked at "
+            f"{CHUNK:,}.",
+        ]
     return "\n".join(lines)
 
 
@@ -690,6 +817,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--json", type=Path, help="keep this run here, to set beside a later one")
     parser.add_argument("--baseline", type=Path, help="a run kept with --json, shown as 'before -> now'")
+    parser.add_argument(
+        "--decided",
+        type=decided_set,
+        nargs="+",
+        default=[],
+        help="also time a draw over each decided set (explicit, recent:N), as `evaluate --decided` names it",
+    )
     args = parser.parse_args(argv)
     out: Path = args.out.resolve()
     if out.is_relative_to(REPO):
@@ -707,7 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{size:,} Judgements: building", file=sys.stderr, flush=True)
         built = _in_own_process(build, out, args.seed, size)
         print(f"{size:,} Judgements: timing {built}", file=sys.stderr, flush=True)
-        sizes[str(size)] = _in_own_process(measure, out, args.seed, size, args.reps)
+        sizes[str(size)] = _in_own_process(measure, out, args.seed, size, args.reps, args.decided)
     report = Report(
         commit=_commit(), machine=_machine(), seed=args.seed, reps=args.reps, out=str(out), sizes=sizes
     )
@@ -717,12 +851,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Before -> now: before is {args.baseline}, commit {baseline['commit']}.")
     print()
     print(table(report, baseline))
-    print()
-    print(
-        f"* Failed as is with 'too many SQL variables': timed with evidence_log.resolve chunked at {CHUNK:,}."
-    )
     if args.json is not None:
         args.json.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+        print()
         print(f"Kept in {args.json}.")
     return 0
 

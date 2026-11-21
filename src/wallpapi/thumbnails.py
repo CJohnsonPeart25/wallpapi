@@ -138,7 +138,10 @@ class Thumbnails:
         if not cached:
             return _NOTHING_EVICTED
 
-        decided = evidence_log.explicitly_decided(connection)
+        # Only a cached file's standing is ever asked below, so only the cached ids are resolved.
+        decided = evidence_log.explicitly_decided(
+            connection, [thumbnail.wallpaper_id for thumbnail in cached]
+        )
         # The live **Batch** and **Line-up** are named apart from the **Pool**: a **Filter** change prunes
         # only the **Pool**, and a submission retires a tile the **Line-up** may still show.
         awaiting = (
