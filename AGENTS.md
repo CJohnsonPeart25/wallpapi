@@ -42,8 +42,8 @@ is an htmx trigger on its control, `keydown[key=='0'&&{{ key_guard }}] from:body
 
 Run **single-worker**: `--workers N` is N refill threads and N writers on one SQLite file. The commands
 `reset-pool`, `evaluate` and `verify-log` build without the background loops, so they run beside a server;
-`evaluate` replays the **Evidence log** read-only to test a candidate `--radius`, `--decay` or `--decided` set,
-and `verify-log` re-hashes it read-only to find any **Judgement** edited behind its triggers.
+`evaluate` replays the **Evidence log** read-only to test a candidate `--radius`, `--decay` or `--decided`
+set, and `verify-log` re-hashes it read-only to find any **Judgement** edited behind its triggers.
 
 **Done** means `uv run lefthook run ci` exits 0: `ruff check`, `ruff format`, `pyright` strict and `pytest`,
 the smoke test that serves every page among them. The lefthook hooks and CI run them, so nobody re-runs them
