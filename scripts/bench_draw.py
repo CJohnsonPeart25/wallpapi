@@ -19,6 +19,12 @@ figure marked `*` raised "too many SQL variables" as is, and was timed again wit
 patched to send its ids in chunks: the cost the draw would have if it ran. `--json` keeps a run;
 `--baseline` sets a kept run beside this one, so a change is timed on its base commit and on its branch
 with the same seed and sizes, on the same machine.
+
+`--decided explicit recent:25` also times a draw over each narrower decided set `evaluate --decided`
+replays, in the same process after every default figure, which a run without it times alike: the
+narrowing (`evaluation.narrowed` over the standing), then `Embeddings.measure` and `rank` over its columns
+alone. The server never draws so, so no `ranked` is timed for it; its whole draw is `ranked`, less
+`measure` and `rank`, plus the three.
 """
 
 from __future__ import annotations
@@ -51,10 +57,13 @@ from numpy.typing import NDArray
 from wallpapi import evidence_log, pool, settings, storage, thumbnails
 from wallpapi.batches import Batches
 from wallpapi.evidence_log import ResolvedVerdict, Theme, item_key, provenance, tile_response
+from wallpapi.main import decided_set
 from wallpapi.model import Verdict, Wallpaper, Zone
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EmbeddingCache, Embeddings
 from wallpapi.taste.clock import SystemClock
+from wallpapi.taste.evaluation import AllDecided, DecidedSet, ExplicitOnly, MostRecent, narrowed
+from wallpapi.taste.evidence import AbsoluteEvidence
 from wallpapi.taste.gauntlet import GAUNTLET_V1, GauntletResponse, GauntletTile
 from wallpapi.taste.judgement import (
     Instrument,
@@ -559,8 +568,10 @@ class Report(TypedDict):
     sizes: dict[str, SizeRun]
 
 
-def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
-    """Time the draw and its parts on the size's databases, which `build` wrote."""
+def measure(out: Path, seed: int, size: int, reps: int, decided_sets: Sequence[DecidedSet] = ()) -> SizeRun:
+    """Time the draw and its parts on the size's databases, which `build` wrote; then, for each of the
+    `decided_sets`, its narrowing, `measure` and `rank` over its columns alone, keyed `narrow[<set>]`
+    and so on."""
     where = files(out, seed, size)
     connection = storage.connect(where.log)
     cache = EmbeddingCache(where.embeddings)
@@ -655,8 +666,49 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     with chunked_resolve():
         counts["digest"] = _digest(batches, connection)
     counts["peak_rss_mb"] = _peak_rss_mb()
+
+    def time_decided_set(candidate: DecidedSet, ordered: Sequence[Judgement]) -> None:
+        """The narrowing, then `measure` and `rank` as above, over the candidate's decided columns only."""
+        name = _spelling(candidate)
+        t[f"narrow[{name}]"], scored_over = _median_ms(
+            lambda: narrowed(standing.evidence(), candidate, ordered, len(ordered)), reps
+        )
+        items = sorted(piece.item for piece in scored_over if isinstance(piece, AbsoluteEvidence))
+        counts[f"decided_columns[{name}]"] = len(items)
+        narrowed_columns = [by_key[key] for key in items]
+        t[f"measure[{name}]"], narrowed_measured = _median_ms(
+            lambda: embeddings.measure(candidates, narrowed_columns), reps
+        )
+        t[f"rank[{name}]"], _ = _median_ms(
+            lambda: rank(
+                scored_over,
+                keys,
+                lambda rows, cols: narrowed_measured.matrix,
+                radius=current.similarity_radius,
+                decay=current.similarity_decay,
+            ),
+            reps,
+        )
+
+    # After every default figure and the peak memory, so a run with `--decided` times the default as one
+    # without it does. The log order is read untimed: a server would find the n-th Judgement back with one
+    # indexed query, costed like `newest`.
+    ordered = evidence_log.judgements(connection) if decided_sets else []
+    for candidate in decided_sets:
+        time_decided_set(candidate, ordered)
     connection.close()
     return SizeRun(times=t, counts=counts, chunked=chunked)
+
+
+def _spelling(decided: DecidedSet) -> str:
+    """The decided set as `--decided` spells it, which names its rows."""
+    match decided:
+        case AllDecided():
+            return "all"
+        case ExplicitOnly():
+            return "explicit"
+        case MostRecent(judgements=n):
+            return f"recent:{n}"
 
 
 # -- the run -------------------------------------------------------------------------------------------
@@ -708,9 +760,16 @@ def _cell(run: SizeRun | None, key: str, *, timed: bool) -> str:
     return f"{count:,}" if isinstance(count, int) else count
 
 
+def _decided_sets(report: Report) -> list[str]:
+    """The decided sets the run timed, as `--decided` spelled them, in the order given."""
+    keys = (key for run in report["sizes"].values() for key in run["times"] if key.endswith("]"))
+    return list(dict.fromkeys(key[key.index("[") + 1 : -1] for key in keys))
+
+
 def table(report: Report, baseline: Report | None = None) -> str:
-    """The run as a Markdown table, one column per size; with a baseline, each cell `before -> now`. A
-    figure shown starred, in either half, brings the footnote saying what `*` means."""
+    """The run as a Markdown table, one column per size; with a baseline, each cell `before -> now`. Each
+    decided set the run timed brings its rows after the counts. A figure shown starred, in either half,
+    brings the footnote saying what `*` means."""
     sizes = list(report["sizes"])
     lines = [
         "| Judgements | " + " | ".join(f"{int(size):,}" for size in sizes) + " |",
@@ -718,6 +777,13 @@ def table(report: Report, baseline: Report | None = None) -> str:
     ]
     starred = False
     rows = [(key, label, True) for key, label in TIMES] + [(key, label, False) for key, label in COUNTS]
+    for name in _decided_sets(report):
+        rows += [
+            (f"narrow[{name}]", f"{name}: the narrowing, `evaluation.narrowed(standing.evidence())`", True),
+            (f"measure[{name}]", f"{name}: `Embeddings.measure` (Pool x narrowed decided)", True),
+            (f"rank[{name}]", f"{name}: `rank`, the narrowed matrix given", True),
+            (f"decided_columns[{name}]", f"{name}: decided columns in the narrowed matrix", False),
+        ]
     for key, label, timed in rows:
         cells: list[str] = []
         for size in sizes:
@@ -751,6 +817,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--json", type=Path, help="keep this run here, to set beside a later one")
     parser.add_argument("--baseline", type=Path, help="a run kept with --json, shown as 'before -> now'")
+    parser.add_argument(
+        "--decided",
+        type=decided_set,
+        nargs="+",
+        default=[],
+        help="also time a draw over each decided set (explicit, recent:N), as `evaluate --decided` names it",
+    )
     args = parser.parse_args(argv)
     out: Path = args.out.resolve()
     if out.is_relative_to(REPO):
@@ -768,7 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{size:,} Judgements: building", file=sys.stderr, flush=True)
         built = _in_own_process(build, out, args.seed, size)
         print(f"{size:,} Judgements: timing {built}", file=sys.stderr, flush=True)
-        sizes[str(size)] = _in_own_process(measure, out, args.seed, size, args.reps)
+        sizes[str(size)] = _in_own_process(measure, out, args.seed, size, args.reps, args.decided)
     report = Report(
         commit=_commit(), machine=_machine(), seed=args.seed, reps=args.reps, out=str(out), sizes=sizes
     )

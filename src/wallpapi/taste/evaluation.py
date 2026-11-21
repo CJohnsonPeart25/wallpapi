@@ -307,17 +307,18 @@ def replay(
     for index, judgement in enumerate(ordered):
         pairs = reading(judgement) if index >= warm_up else ()
         if pairs:
-            narrowed = _narrowed(earlier, decided, ordered, index)
-            tested.append(_tested(judgement, pairs, narrowed, similarity, radius, decay))
+            scored_over = narrowed(earlier, decided, ordered, index)
+            tested.append(_tested(judgement, pairs, scored_over, similarity, radius, decay))
         earlier.extend(evidence([judgement]))
     return tuple(tested)
 
 
-def _narrowed(
-    earlier: list[Evidence], decided: DecidedSet, ordered: Sequence[Judgement], index: int
-) -> list[Evidence]:
-    """`earlier`, the Evidence of the **Judgements** before `ordered[index]`, narrowed to the `decided` set.
-    The most recent n start at the n-th **Judgement** back, and narrow nothing until there are more."""
+def narrowed(
+    earlier: Sequence[Evidence], decided: DecidedSet, ordered: Sequence[Judgement], index: int
+) -> Sequence[Evidence]:
+    """`earlier`, the Evidence of the **Judgements** before `ordered[index]`, raw or resolved, narrowed to the
+    `decided` set; `index` may be `len(ordered)`, for a draw after the last. The most recent n start at the
+    n-th **Judgement** back, and narrow nothing until there are more."""
     match decided:
         case AllDecided():
             return earlier

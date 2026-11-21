@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from scripts import bench_draw
+
+from wallpapi.taste.evaluation import ExplicitOnly, MostRecent
 
 
 def test_a_tiny_log_is_built_and_every_figure_is_timed(tmp_path: Path) -> None:
@@ -24,6 +27,42 @@ def test_a_tiny_log_is_built_and_every_figure_is_timed(tmp_path: Path) -> None:
     assert run["chunked"] == []
     report = bench_draw.Report(commit=None, machine={}, seed=0, reps=1, out=str(tmp_path), sizes={"20": run})
     assert bench_draw.table(report).count("\n") == 1 + len(bench_draw.TIMES) + len(bench_draw.COUNTS)
+
+
+def test_a_tiny_log_times_each_decided_set_after_the_default_figures(tmp_path: Path) -> None:
+    bench_draw.build(tmp_path, 0, 20)
+    run = bench_draw.measure(tmp_path, 0, 20, 1, decided_sets=[ExplicitOnly(), MostRecent(5)])
+
+    rows = {f"{row}[{name}]" for row in ("narrow", "measure", "rank") for name in ("explicit", "recent:5")}
+    assert set(run["times"]) == {key for key, _ in bench_draw.TIMES} | rows
+    assert set(run["counts"]) == {"judgements"} | {key for key, _ in bench_draw.COUNTS} | {
+        "decided_columns[explicit]",
+        "decided_columns[recent:5]",
+    }
+    assert run["counts"]["decided_columns[explicit]"] == run["counts"]["explicit"]
+    recent, every = run["counts"]["decided_columns[recent:5]"], run["counts"]["decided_columns"]
+    assert isinstance(recent, int) and isinstance(every, int)
+    assert 0 < recent < every
+    report = bench_draw.Report(commit=None, machine={}, seed=0, reps=1, out=str(tmp_path), sizes={"20": run})
+    table = bench_draw.table(report)
+    assert table.count("\n") == 1 + len(bench_draw.TIMES) + len(bench_draw.COUNTS) + 2 * 4
+    assert table.index("| recent:5: ") > table.index("| explicit: ") > table.index("| ranking digest |")
+
+
+def test_a_decided_set_the_baseline_did_not_time_shows_a_dash_before() -> None:
+    report = _report({"1000": []})
+    report["sizes"]["1000"]["times"]["rank[explicit]"] = 2.0
+
+    assert "| explicit: `rank`, the narrowed matrix given | - -> 2.0 |" in bench_draw.table(
+        report, _report({"1000": []})
+    )
+
+
+def test_a_decided_set_is_refused_as_evaluate_refuses_it(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        bench_draw.main(["--decided", "recent:0"])
+
+    assert "a decided set is all, explicit, or recent:N" in capsys.readouterr().err
 
 
 def test_one_seed_builds_one_log_and_another_seed_another(tmp_path: Path) -> None:
