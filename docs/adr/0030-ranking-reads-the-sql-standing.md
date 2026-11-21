@@ -133,8 +133,8 @@ the run above times `standing` whole at 435 and 2,562 ms at 10k and 50k, against
 `rank(evidence(judgements()))` over every **Instrument**.
 
 **`pool.decided` has no caller in `src/`.** wallpapi-5ug deleted it and replaced it in the tests
-with `decided_wallpapers` (`tests/conftest.py`), an oracle that reads the log's tables in its own SQL and shares
-no rule with `evidence_log`.
+with `decided_wallpapers` (`tests/conftest.py`), an oracle that reads the log's tables in its own SQL and
+shares no rule with `evidence_log`.
 
 ## Alternatives considered
 
