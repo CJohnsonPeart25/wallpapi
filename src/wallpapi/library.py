@@ -263,13 +263,15 @@ def _candidates(connection: sqlite3.Connection) -> tuple[set[str], list[sqlite3.
     Two reads merged by id: the rows holding a file, then the **Favourites**' rows, whose ids go through
     `sql.select_in` because nothing bounds how many there are. One statement binding them all would fail
     past SQLite's parameter limit, and chunking it whole would return every recorded row once per chunk.
-    A **Favourite** holding a file comes back from both reads as the same row.
+    A **Favourite** holding a file comes back from both reads as the same row. All in one read transaction,
+    so a write committed meanwhile cannot fall between them; every caller reconciles after its write commits.
     """
-    favourites = evidence_log.favourites(connection)
-    recorded = connection.execute(f"{_LIBRARY_CANDIDATES} WHERE f.wallpaper_id IS NOT NULL").fetchall()
-    wanted = sql.select_in(
-        connection, favourites, lambda marks: f"{_LIBRARY_CANDIDATES} WHERE w.id IN ({marks})"
-    )
+    with storage.read(connection):
+        favourites = evidence_log.favourites(connection)
+        recorded = connection.execute(f"{_LIBRARY_CANDIDATES} WHERE f.wallpaper_id IS NOT NULL").fetchall()
+        wanted = sql.select_in(
+            connection, favourites, lambda marks: f"{_LIBRARY_CANDIDATES} WHERE w.id IN ({marks})"
+        )
     by_id = {str(row["wallpaper_id"]): row for row in [*recorded, *wanted]}
     return set(favourites), [by_id[wallpaper_id] for wallpaper_id in sorted(by_id)]
 

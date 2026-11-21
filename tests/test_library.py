@@ -238,7 +238,7 @@ def test_a_download_that_fails_is_reported_and_retried_by_the_next_run(
     assert sorted(second.written) == [ONE, TWO]
 
 
-def test_more_favourites_than_sqlite_binds_in_one_statement_are_all_reconciled_in_id_order(
+def test_past_the_parameter_limit_favourites_download_in_id_order_and_reconciling_removes_the_unfavoured(
     tmp_path: Path, writer: FakeLibraryWriter
 ) -> None:
     """Every **Favourite** is bound by id, so their count is not bounded by anything the **Library** holds.
