@@ -1,7 +1,9 @@
 """The entry point: `uv run python -m wallpapi`, wiring the real dependencies together. Bound to `127.0.0.1`
 and single-worker (`--workers N` is N writers and N refill threads). `uv run python -m wallpapi reset-pool`
 runs a **Pool reset** instead of serving (ADR 0025); `uv run python -m wallpapi evaluate` prints the
-evaluation, optionally against a candidate `--radius` and `--decay`, reading and never writing.
+evaluation, optionally against a candidate `--radius` and `--decay`, and
+`uv run python -m wallpapi verify-log` names each **Judgement** that no longer earns its id, both reading
+and never writing.
 """
 
 from __future__ import annotations
@@ -77,8 +79,8 @@ def build_modules(home: Path | None = None) -> Modules:
 
 @dataclass(frozen=True, slots=True)
 class Stored:
-    """What `evaluate` reads: a read-only connection to a database at the current schema, and the
-    **Similarity provider** over the stored **Embeddings**, which it asks only for those."""
+    """What a reading command reads: a read-only connection to a database at the current schema, and the
+    **Similarity provider** over the stored **Embeddings**, which only `evaluate` asks, and only for those."""
 
     connection: sqlite3.Connection
     embeddings: Embeddings
@@ -114,8 +116,9 @@ def main(
 ) -> None:
     """Serve, or run the command named; each is safe beside a running server. `reset-pool` builds the modules
     without the background loops, migrating as serving does, and every write takes `BEGIN IMMEDIATE`.
-    `evaluate` builds nothing and writes nothing: it reads what `read` opens, and a database it cannot read
-    as it is, missing or at another schema version, ends it with a message and exit status 1.
+    `evaluate` and `verify-log` build nothing and write nothing: each reads what `read` opens, and a database
+    it cannot read as it is, missing or at another schema version, ends it with a message and exit status 1.
+    `verify-log` ends with exit status 1 too when any **Judgement** fails.
     """
     parser = argparse.ArgumentParser(prog="wallpapi", description="Serve wallpapi, or run one command.")
     commands = parser.add_subparsers(dest="command", metavar="command")
@@ -133,15 +136,26 @@ def main(
     evaluate.add_argument(
         "--decay", type=_decay, help=f"A candidate Similarity decay, 0 to {settings.MAX_SIMILARITY_DECAY:g}."
     )
+    commands.add_parser(
+        "verify-log",
+        help="Check that every Judgement in the Evidence log still earns its id, rehashing each from its "
+        "rows; name each that does not. Reads only.",
+    )
     arguments = parser.parse_args(argv)
     if arguments.command is None:
         serve()
         return
-    if arguments.command == "evaluate":
+    if arguments.command in ("evaluate", "verify-log"):
         try:
             stored = read()
         except storage.NotCurrent as refused:
             parser.exit(1, _not_current(refused, arguments.command))
+        if arguments.command == "verify-log":
+            with closing(stored.connection), storage.read_only(stored.connection) as connection:
+                verified = evidence_log.verify(connection)
+            if not _print_verification(verified):
+                raise SystemExit(1)
+            return
         with closing(stored.connection):
             evaluated = _evaluate(stored, radius=arguments.radius, decay=arguments.decay)
         _print_evaluation(evaluated)
@@ -289,6 +303,24 @@ def _instrument(instrument: Instrument) -> str:
 
 def _instrument_width(instruments: Iterable[Instrument]) -> int:
     return max(len("Instrument"), *(len(_instrument(each)) for each in instruments))
+
+
+def _print_verification(verified: evidence_log.Verification) -> bool:
+    """Print what `verify` found, and say whether the log held: every screen earning its id, and no tiles
+    without their screen. Those tiles are not a screen checked, so they are counted on a line of their own.
+    """
+    failures, orphans = verified.failures, verified.orphans
+    if not failures and not orphans:
+        print(f"Every Judgement in the Evidence log earns its id: {verified.checked} checked.")
+        return True
+    print(f"{len(failures)} of {verified.checked} Judgements fail{':' if failures else '.'}")
+    for failure in failures:
+        print(f"  {failure.judgement_id}, recorded {failure.recorded_at}: {failure.reason}")
+    if orphans:
+        print(f"Judgements with tiles but no screen: {len(orphans)}")
+        for orphan in orphans:
+            print(f"  {orphan.judgement_id}: {orphan.reason}")
+    return False
 
 
 def _radius(text: str) -> float:

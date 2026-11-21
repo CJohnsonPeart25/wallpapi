@@ -21,11 +21,12 @@ Environment variables:
 | `WALLPAPI_HOME` | Data folder for the **Evidence log**, **Thumbnail cache** and models (default `~/.wallpapi`) |
 | `WALLPAPI_SEED` | Pin the random source for a reproducible session |
 
-Two commands run instead of serving, and are safe beside a running server:
+Three commands run instead of serving, and are safe beside a running server:
 
 ```
 uv run python -m wallpapi reset-pool                         # empty the Pool, discard the live screens
 uv run python -m wallpapi evaluate [--radius R] [--decay D]  # replay the Evidence log, read-only
+uv run python -m wallpapi verify-log                         # re-hash the Evidence log, read-only
 ```
 
 To run under uvicorn directly, use the factory. Never pass `--workers`: more than one process means several

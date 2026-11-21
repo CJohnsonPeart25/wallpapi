@@ -1,11 +1,12 @@
-"""The entry point's commands: `reset-pool`, `evaluate`, and serving when none is named.
+"""The entry point's commands: `reset-pool`, `evaluate`, `verify-log`, and serving when none is named.
 
 Uses `make_harness`, because its subject is an adapter over a workflow, as the web tests are: `main` is handed
 the harness's modules through its builder and a stand-in for serving, so nothing boots, fetches or listens.
-`evaluate` builds no modules: it is handed what it reads, the harness's database opened read-only beside the
-harness's own connection and the harness's stored **Embeddings**, or reads a real home under `tmp_path`.
-What the **Pool reset** removes is `test_pool.py`'s, and what the evaluation computes is
-`test_evaluation.py`'s; this is that each command runs through what it is handed and says so.
+`evaluate` and `verify-log` build no modules: each is handed what it reads, the harness's database opened
+read-only beside the harness's own connection and the harness's stored **Embeddings**, or reads a real home
+under `tmp_path`. What the **Pool reset** removes is `test_pool.py`'s, what the evaluation computes is
+`test_evaluation.py`'s, and which rows fail verification is `test_evidence_log.py`'s; this is that each
+command runs through what it is handed and says so.
 """
 
 from __future__ import annotations
@@ -44,11 +45,11 @@ def never_serve() -> None:
 
 
 def never_build() -> Modules:
-    raise AssertionError("neither evaluate nor a refused command builds the modules")
+    raise AssertionError("no reading command nor a refused command builds the modules")
 
 
 def never_read() -> Stored:
-    raise AssertionError("only evaluate reads")
+    raise AssertionError("only evaluate and verify-log read")
 
 
 def test_reset_pool_resets_through_the_modules_it_builds_and_says_what_it_removed(
@@ -125,8 +126,8 @@ def judged(db_path: Path) -> tuple[Harness, Judged]:
 
 
 def reading(harness: Harness) -> Callable[[], Stored]:
-    """What `evaluate` reads, over the harness: its database file opened as `main` opens one, beside the
-    harness's own connection as beside a running server, and its stored **Embeddings**."""
+    """What a reading command reads, over the harness: its database file opened as `main` opens one, beside
+    the harness's own connection as beside a running server, and its stored **Embeddings**."""
     path = Path(harness.connect().execute("PRAGMA database_list").fetchone()["file"])
     return lambda: Stored(storage.connect_current(path), harness.embeddings)
 
@@ -351,10 +352,88 @@ def test_evaluate_with_no_embeddings_file_counts_every_tested_wallpaper_unembedd
     assert not (home / "embeddings.db").exists()
 
 
+# -- verify-log ----------------------------------------------------------------------------------------
+
+
+def screens(harness: Harness) -> list[tuple[str, str]]:
+    """Each stored screen's id and recorded time as stored, in the log's order."""
+    rows = harness.connect().execute("SELECT id, recorded_at FROM judgements ORDER BY recorded_at, id DESC")
+    return [(str(row["id"]), str(row["recorded_at"])) for row in rows]
+
+
+def behind_the_log(harness: Harness, statement: str, *parameters: object) -> None:
+    """Change the harness's log as only tampering can: drop the triggers that keep it append-only from the
+    file, then run `statement` on the server's own connection."""
+    connection = harness.connect()
+    for table in ("judgements", "judgement_items"):
+        for change in ("update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS {table}_{change}_refused")
+    connection.execute(statement, parameters)
+
+
+def test_verify_log_over_an_intact_log_counts_every_judgement_and_writes_nothing(
+    judged: tuple[Harness, Judged], db_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Beside a running server, as `evaluate`: the database's files are as they were and the server's own
+    connection writes on."""
+    harness, _ = judged
+    before = database_bytes(db_path)
+
+    main(["verify-log"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert capsys.readouterr().out == "Every Judgement in the Evidence log earns its id: 12 checked.\n"
+    assert database_bytes(db_path) == before
+    assert isinstance(workflows.save_settings(harness.modules, batch_size=3), settings.Settings)
+
+
+def test_verify_log_over_a_tampered_log_names_each_judgement_that_fails_and_exits_non_zero(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness, _ = judged
+    logged = screens(harness)
+    (first, first_at), (second, second_at) = logged[3], logged[7]
+    behind_the_log(
+        harness, "UPDATE judgement_items SET verdict = 'ban' WHERE judgement_id IN (?, ?)", first, second
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        main(["verify-log"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert exited.value.code == 1
+    heading, *named = capsys.readouterr().out.splitlines()
+    assert heading == "2 of 12 Judgements fail:"
+    assert [line.partition(" it hashes to ")[0] for line in named] == [
+        f"  {first}, recorded {first_at}: does not earn that id:",
+        f"  {second}, recorded {second_at}: does not earn that id:",
+    ]
+
+
+def test_verify_log_names_tiles_whose_screen_is_gone_under_their_own_count_and_exits_non_zero(
+    judged: tuple[Harness, Judged], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Tiles are not a screen checked: the screens that are left all earn their ids, and the tiles stored
+    without theirs are counted on a line of their own."""
+    harness, _ = judged
+    deleted, _ = screens(harness)[5]
+    harness.connect().execute("PRAGMA foreign_keys = OFF")
+    behind_the_log(harness, "DELETE FROM judgements WHERE id = ?", deleted)
+    harness.connect().execute("PRAGMA foreign_keys = ON")
+
+    with pytest.raises(SystemExit) as exited:
+        main(["verify-log"], build=never_build, read=reading(harness), serve=never_serve)
+
+    assert exited.value.code == 1
+    assert capsys.readouterr().out == (
+        "0 of 11 Judgements fail.\n"
+        "Judgements with tiles but no screen: 1\n"
+        f"  {deleted}: tiles of a Judgement the log does not hold\n"
+    )
+
+
 # -- the reading commands refuse a database they cannot read as it is ----------------------------------
 
 
-READING_COMMANDS = ("evaluate",)
+READING_COMMANDS = ("evaluate", "verify-log")
 """The commands that open the database through `storage.connect_current`: each refuses alike, by name."""
 
 
