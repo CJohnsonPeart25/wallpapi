@@ -17,6 +17,9 @@ def test_a_tiny_log_is_built_and_every_figure_is_timed(tmp_path: Path) -> None:
 
     assert run["counts"]["judgements"] == 20
     assert run["counts"]["wallpapers"] == built["wallpapers"]
+    explicit = run["counts"]["explicit"]
+    assert isinstance(explicit, int)
+    assert run["counts"]["thumbnails"] == explicit + bench_draw.POOL, "each Explicit Verdict and Pool member"
     assert set(run["times"]) == {key for key, _ in bench_draw.TIMES}
     assert run["chunked"] == []
     report = bench_draw.Report(commit=None, machine={}, seed=0, reps=1, out=str(tmp_path), sizes={"20": run})

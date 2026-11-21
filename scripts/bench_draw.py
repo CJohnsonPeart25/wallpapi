@@ -7,7 +7,9 @@ Each size is a synthetic log of that many **Judgements**, drawn from the seed an
 `storage.migrate`, `pool.admit` and `evidence_log.append` in `--out` (by default the system temp folder),
 never in the repo. **Embeddings** are random unit vectors in a real `EmbeddingCache`, opened through the
 public upkeep with a model and embedder that refuse to run, so no model is loaded and nothing touches the
-network. Each size is built in one fresh process and timed in another, so the peak memory is the timing's.
+network. The **Thumbnail cache** is one empty file for each **Explicit Verdict** and **Pool** member, what a
+submission's eviction keeps, so its eviction is timed as a steady pass that deletes nothing. Each size is
+built in one fresh process and timed in another, so the peak memory is the timing's.
 
 Every figure is the median of `--reps` runs after one warm-up, in milliseconds. The parts are timed apart
 from `ranked`, through the same public calls it makes; a query timed alone is caught as its public call
@@ -36,7 +38,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,7 +48,7 @@ from unittest.mock import patch
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi import evidence_log, pool, settings, storage
+from wallpapi import evidence_log, pool, settings, storage, thumbnails
 from wallpapi.batches import Batches
 from wallpapi.evidence_log import ResolvedVerdict, Theme, item_key, provenance, tile_response
 from wallpapi.model import Verdict, Wallpaper, Zone
@@ -68,6 +70,8 @@ from wallpapi.taste.pick import PICK_V1, PickResponse, PickTile
 from wallpapi.taste.ranking import rank
 from wallpapi.taste.rng import SeededRandom
 from wallpapi.taste.verdict_grid import VERDICT_GRID_V1, GridResponse, TileResponse
+from wallpapi.thumbnails import Thumbnails
+from wallpapi.wallhaven import SearchPage
 
 REPO: Final = Path(__file__).resolve().parent.parent
 DIM: Final = 512
@@ -103,16 +107,18 @@ TIMES: Final = (
     ("write_lock", "of which: write lock held (pre-marking inside)"),
     ("explicitly_decided", "`evidence_log.explicitly_decided()`"),
     ("resolve_chosen", "`evidence_log.resolve(chosen tiles)` alone"),
+    ("evict", "off the lock: `Thumbnails.evict` (a submission's tail), over the files counted below"),
     ("judgements_sql", "off the draw: `judgements()`'s ordered fetch, caught from it"),
 )
-"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint, then
-the ordered fetch `evaluate` makes through `judgements()`."""
+"""Each timed figure's key and its line in the table: `ranked`, then each part of it, then the mint, then a
+submission's eviction, then the ordered fetch `evaluate` makes through `judgements()`."""
 
 COUNTS: Final = (
     ("judgement_items", "judgement_items rows"),
     ("wallpapers", "wallpapers rows"),
     ("decided_columns", "decided columns in the matrix"),
     ("explicit", "explicitly decided"),
+    ("thumbnails", "cached thumbnails (each explicitly decided or Pool member)"),
     ("peak_rss_mb", "peak RSS of the timing process, MB"),
     ("digest", "ranking digest"),
 )
@@ -123,11 +129,14 @@ COUNTS: Final = (
 class Files:
     log: Path
     embeddings: Path
+    thumbnails: Path
 
 
 def files(out: Path, seed: int, size: int) -> Files:
     folder = out / f"seed-{seed}" / str(size)
-    return Files(log=folder / "wallpapi.db", embeddings=folder / "embeddings.db")
+    return Files(
+        log=folder / "wallpapi.db", embeddings=folder / "embeddings.db", thumbnails=folder / "thumbnails"
+    )
 
 
 # -- the synthetic log ---------------------------------------------------------------------------------------
@@ -339,6 +348,7 @@ def build(out: Path, seed: int, size: int) -> dict[str, int]:
         pool.retire(write, [w.id for w in log.created if w.id not in member_ids])
         for judgement in log.judgements:
             evidence_log.append(write, judgement)
+    write_thumbnails(where.thumbnails, evidence_log.explicitly_decided(connection) | member_ids)
     connection.close()
 
     # `EmbeddingCache.store` commits one vector at a time; the rows go in its own format in one transaction.
@@ -359,6 +369,17 @@ def build(out: Path, seed: int, size: int) -> dict[str, int]:
     return {"wallpapers": len(log.created), "decided": len(set(log.decided))}
 
 
+def write_thumbnails(directory: Path, wallpaper_ids: Iterable[str]) -> None:
+    """The **Thumbnail cache** afresh, one empty file per id: what a submission's eviction leaves, every
+    **Explicit Verdict** and the **Pool**. Empty, because eviction stats each file whatever its size, and a
+    cache over the cap would let the size pass delete **Pool** members between runs."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for stale in directory.iterdir():
+        stale.unlink()
+    for wallpaper_id in wallpaper_ids:
+        (directory / f"{wallpaper_id}.jpg").touch()
+
+
 # -- timing ---------------------------------------------------------------------------------------------
 
 
@@ -367,6 +388,27 @@ class _NoModel:
 
     def ensure(self, stop_event: threading.Event) -> Path:
         return Path("no-model")
+
+
+class _NoWallhaven:
+    """Wallhaven for a **Thumbnail cache** that is only evicted: anything it would fetch is refused."""
+
+    def search(
+        self,
+        *,
+        sorting: str,
+        purity: str,
+        categories: str | None = None,
+        query: str | None = None,
+        page: int = 1,
+        seed: str | None = None,
+        atleast: str | None = None,
+        ratios: str | None = None,
+    ) -> SearchPage:
+        raise RuntimeError("the benchmark searches nothing")
+
+    def fetch_thumbnail(self, url: str) -> bytes:
+        raise RuntimeError("the benchmark fetches nothing: its thumbnails are written already")
 
 
 def _no_embed(images: Sequence[Path]) -> NDArray[np.float32]:
@@ -597,6 +639,16 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     counts["explicit"] = len(explicit)
     chosen = [w.id for w in members[:BATCH]]
     t["resolve_chosen"], _ = _median_ms(lambda: evidence_log.resolve(connection, chosen), reps)
+    # After the mint, so the live Batch is there to keep; every file is kept, so each run is the same pass.
+    thumbnail_cache = Thumbnails(where.thumbnails, _NoWallhaven(), SystemClock())
+    cap = thumbnails.cap_bytes(settings.get(connection))
+    written = sum(1 for _ in where.thumbnails.iterdir())
+    t["evict"], _ = _median_ms(lambda: thumbnail_cache.evict(connection, cap), reps)
+    counts["thumbnails"] = sum(1 for _ in where.thumbnails.iterdir())
+    if counts["thumbnails"] != written:
+        raise RuntimeError(
+            f"eviction is not in its steady state: {written} files became {counts['thumbnails']}"
+        )
     fetch = _ordered_read(connection, lambda: evidence_log.judgements(connection))
     t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch).fetchall(), reps)
 
