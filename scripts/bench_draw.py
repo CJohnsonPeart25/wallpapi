@@ -780,6 +780,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(table(report, baseline))
     if args.json is not None:
         args.json.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+        print()
         print(f"Kept in {args.json}.")
     return 0
 
