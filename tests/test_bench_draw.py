@@ -34,3 +34,35 @@ def test_one_seed_builds_one_log_and_another_seed_another(tmp_path: Path) -> Non
         digests.append(bench_draw.measure(tmp_path / str(run), seed, 20, 1)["counts"]["digest"])
 
     assert digests[0] == digests[1] != digests[2]
+
+
+def _report(chunked: dict[str, list[str]]) -> bench_draw.Report:
+    """A report with a figure for every row at each size given, those listed timed with `resolve` chunked."""
+    sizes = {
+        size: bench_draw.SizeRun(
+            times={key: 1.0 for key, _ in bench_draw.TIMES},
+            counts={key: 1 for key, _ in bench_draw.COUNTS},
+            chunked=keys,
+        )
+        for size, keys in chunked.items()
+    }
+    return bench_draw.Report(commit=None, machine={}, seed=0, reps=1, out="", sizes=sizes)
+
+
+FOOTNOTE = "\n\n* Failed as is"
+
+
+def test_a_table_without_a_starred_figure_has_no_footnote() -> None:
+    assert FOOTNOTE not in bench_draw.table(_report({"1000": []}), _report({"1000": []}))
+
+
+def test_a_starred_figure_brings_the_footnote_under_the_table() -> None:
+    assert FOOTNOTE in bench_draw.table(_report({"1000": [], "10000": ["ranked"]}))
+
+
+def test_a_starred_figure_in_the_baselines_half_brings_the_footnote() -> None:
+    assert FOOTNOTE in bench_draw.table(_report({"10000": []}), _report({"10000": ["ranked"]}))
+
+
+def test_a_starred_baseline_size_the_table_does_not_show_brings_no_footnote() -> None:
+    assert FOOTNOTE not in bench_draw.table(_report({"1000": []}), _report({"1000": [], "50000": ["ranked"]}))

@@ -709,12 +709,14 @@ def _cell(run: SizeRun | None, key: str, *, timed: bool) -> str:
 
 
 def table(report: Report, baseline: Report | None = None) -> str:
-    """The run as a Markdown table, one column per size; with a baseline, each cell `before -> now`."""
+    """The run as a Markdown table, one column per size; with a baseline, each cell `before -> now`. A
+    figure shown starred, in either half, brings the footnote saying what `*` means."""
     sizes = list(report["sizes"])
     lines = [
         "| Judgements | " + " | ".join(f"{int(size):,}" for size in sizes) + " |",
         "|---|" + "---:|" * len(sizes),
     ]
+    starred = False
     rows = [(key, label, True) for key, label in TIMES] + [(key, label, False) for key, label in COUNTS]
     for key, label, timed in rows:
         cells: list[str] = []
@@ -722,8 +724,15 @@ def table(report: Report, baseline: Report | None = None) -> str:
             now = _cell(report["sizes"][size], key, timed=timed)
             if baseline is not None:
                 now = f"{_cell(baseline['sizes'].get(size), key, timed=timed)} -> {now}"
+            starred = starred or (timed and "*" in now)
             cells.append(now)
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    if starred:
+        lines += [
+            "",
+            "* Failed as is with 'too many SQL variables': timed with evidence_log.resolve chunked at "
+            f"{CHUNK:,}.",
+        ]
     return "\n".join(lines)
 
 
@@ -769,10 +778,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Before -> now: before is {args.baseline}, commit {baseline['commit']}.")
     print()
     print(table(report, baseline))
-    print()
-    print(
-        f"* Failed as is with 'too many SQL variables': timed with evidence_log.resolve chunked at {CHUNK:,}."
-    )
     if args.json is not None:
         args.json.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
         print(f"Kept in {args.json}.")
