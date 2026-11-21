@@ -344,6 +344,22 @@ def test_any_recorded_wallpaper_is_looked_up_member_or_not(connection: sqlite3.C
     assert pool.wallpapers(connection, []) == {}
 
 
+def test_more_wallpapers_than_sqlite_binds_in_one_statement_are_all_looked_up(
+    connection: sqlite3.Connection,
+) -> None:
+    """The refill looks up every **Lookalike** subject at once, every **Favourite** and **Like** ever
+    recorded. SQLite's limit is lowered here below the ids asked about, so they span several statements."""
+    catalogue = catalogue_of(10)
+    rig_over(connection, catalogue=catalogue, steps=1)
+    with storage.write(connection) as write:
+        pool.retire(write, ["wp0003"])
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 3)
+
+    found = pool.wallpapers(connection, [*(w.id for w in catalogue), "never-admitted"])
+
+    assert found == {w.id: w for w in catalogue}
+
+
 def test_a_settings_change_that_touches_no_filter_prunes_nothing(rig: Rig) -> None:
     before = rig.members()
 

@@ -21,7 +21,7 @@ from enum import StrEnum
 import numpy as np
 from numpy.typing import NDArray
 
-from wallpapi import evidence_log, storage
+from wallpapi import evidence_log, sql, storage
 from wallpapi import settings as settings_module
 from wallpapi.model import Wallpaper
 from wallpapi.settings import Settings
@@ -501,9 +501,11 @@ def members(connection: sqlite3.Connection) -> list[Wallpaper]:
 
 
 def wallpapers(connection: sqlite3.Connection, wallpaper_ids: Sequence[str]) -> dict[str, Wallpaper]:
-    """Every **Wallpaper** named that this database has recorded, in the **Pool** or not, by id."""
-    placeholders = ",".join("?" * len(wallpaper_ids))
-    rows = connection.execute(f"SELECT * FROM wallpapers WHERE id IN ({placeholders})", list(wallpaper_ids))
+    """Every **Wallpaper** named that this database has recorded, in the **Pool** or not, by id. As many
+    ids as asked: they go through `sql.select_in`, under the connection's parameter limit."""
+    rows = sql.select_in(
+        connection, wallpaper_ids, lambda marks: f"SELECT * FROM wallpapers WHERE id IN ({marks})"
+    )
     return {str(row["id"]): wallpaper_from_row(row) for row in rows}
 
 
