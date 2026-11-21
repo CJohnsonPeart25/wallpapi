@@ -588,7 +588,7 @@ def test_a_lineup_live_across_migration_17_has_no_champion_and_a_lineup_holds_at
 
 def _ordered_reads(connection: sqlite3.Connection) -> list[str]:
     """The statements `standing` and `judgements` send that read `judgements` by recorded time, caught as
-    they run: the newest position, then the ordered fetch."""
+    they run: the query for the newest log position, then the ordered fetch."""
     caught: list[str] = []
     connection.set_trace_callback(caught.append)
     try:
@@ -602,9 +602,10 @@ def _ordered_reads(connection: sqlite3.Connection) -> list[str]:
 def test_migration_18_indexes_a_populated_log_so_both_ordered_reads_walk_it_with_no_sort(
     db_path: Path,
 ) -> None:
-    """The newest position and the ordered fetch read `judgements` in opposite orders, and one index on
-    `(recorded_at DESC, id)` serves each whole, walked one way or the other. What they read back is the same
-    before and after, an exact tie in recorded time included (the lower id is newest and fetched last)."""
+    """The query for the newest log position and the ordered fetch read `judgements` in opposite orders, and
+    one index on `(recorded_at DESC, id)` serves each whole, walked one way or the other. What they read back
+    is the same before and after, an exact tie in recorded time included (the lower id is newest and fetched
+    last)."""
     ids = [f"wp{n:04d}" for n in range(4)]
     # Appended out of recorded order, and two at one time to the microsecond.
     times = [T, T + dt.timedelta(minutes=2), T + dt.timedelta(minutes=2), T - dt.timedelta(minutes=1)]

@@ -97,7 +97,7 @@ TIMES: Final = (
     ("ranked", "`Batches.ranked`"),
     ("pool.members", "`pool.members`"),
     ("standing", "`evidence_log.standing` (the SQL standing and the newest)"),
-    ("newest", "of which: the newest-position query, caught from `standing`"),
+    ("newest", "of which: the query for the newest log position, caught from `standing`"),
     ("near_duplicates", "`Embeddings.near_duplicates` (Pool x Bans)"),
     ("measure", "`Embeddings.measure` (Pool x decided)"),
     ("vectors_for", "of which: `EmbeddingCache.vectors_for`"),
@@ -591,8 +591,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
     t["standing"], standing = _median_ms(
         lambda: evidence_log.standing(connection, pool.wallpaper_from_row), reps
     )
-    newest = _ordered_read(connection, lambda: evidence_log.standing(connection, pool.wallpaper_from_row))
-    t["newest"], _ = _median_ms(lambda: connection.execute(newest).fetchone(), reps)
+    newest_sql = _ordered_read(connection, lambda: evidence_log.standing(connection, pool.wallpaper_from_row))
+    t["newest"], _ = _median_ms(lambda: connection.execute(newest_sql).fetchone(), reps)
     decided = sorted(piece.item for piece in standing.evidence())
     counts["decided_columns"] = len(decided)
 
@@ -649,8 +649,8 @@ def measure(out: Path, seed: int, size: int, reps: int) -> SizeRun:
         raise RuntimeError(
             f"eviction is not in its steady state: {written} files became {counts['thumbnails']}"
         )
-    fetch = _ordered_read(connection, lambda: evidence_log.judgements(connection))
-    t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch).fetchall(), reps)
+    fetch_sql = _ordered_read(connection, lambda: evidence_log.judgements(connection))
+    t["judgements_sql"], _ = _median_ms(lambda: connection.execute(fetch_sql).fetchall(), reps)
 
     with chunked_resolve():
         counts["digest"] = _digest(batches, connection)
