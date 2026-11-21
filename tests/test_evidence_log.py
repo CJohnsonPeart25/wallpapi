@@ -3,7 +3,7 @@ is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and chec
 
 **Judgements** are appended as the grid and **History** append them, and built by hand where a test needs a
 shape nothing writes yet: a **Skip**, a converted (version 0) **Judgement**, a **Ranking stamp**. The
-example-case test is the one that writes rows behind the seam, because its **Judgement** ids are the
+example-case tests are the ones that write rows behind the seam, because their **Judgement** ids are the
 cases' own and a stored id is otherwise always the hash of its content.
 """
 
@@ -553,6 +553,27 @@ def test_the_sql_resolves_each_of_tastes_example_cases_to_its_standing(
         item: standing.judgement_id for item, standing in case.standing.items()
     }
     assert {item: line.resolved.verdict for item, line in lines.items()} == {
+        item: None if standing.value is LegacyEntry.CLEARED else Verdict(standing.value.value)
+        for item, standing in case.standing.items()
+    }
+
+
+@pytest.mark.parametrize("case", EXAMPLE_CASES, ids=[case.name for case in EXAMPLE_CASES])
+def test_ranking_reads_each_of_tastes_example_cases_at_its_standing(
+    connection: sqlite3.Connection, case: ExampleCase
+) -> None:
+    """Invariant 4 as ranking reads it, held to the same cases as **History**, the exact tie in recorded time
+    among them: the deciding **Judgement** and what it said, a **Clearance** last decided and standing at
+    nothing. Its own test, so ranking's read of the rule goes red on its own if it ever stops being
+    **History**'s."""
+    _write_case(connection, case)
+
+    decided = {key(d.wallpaper.id): d for d in _standing(connection).decided}
+
+    assert {item: d.judgement_id for item, d in decided.items()} == {
+        item: standing.judgement_id for item, standing in case.standing.items()
+    }
+    assert {item: d.resolved.verdict for item, d in decided.items()} == {
         item: None if standing.value is LegacyEntry.CLEARED else Verdict(standing.value.value)
         for item, standing in case.standing.items()
     }
