@@ -1,5 +1,6 @@
 """The **Evidence log**, through `evidence_log` alone: a real in-memory database, no `compose`. `standing`
-is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and checked against `pool.decided`.
+is handed `pool.wallpaper_from_row`, the one decoder it is ever handed, and checked against
+`decided_wallpapers`, conftest's oracle in its own SQL.
 
 **Judgements** are appended as the grid and **History** append them, and built by hand where a test needs a
 shape nothing writes yet: a **Skip**, a converted (version 0) **Judgement**, a **Ranking stamp**. The
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import committing_as
+from tests.conftest import committing_as, decided_wallpapers
 from tests.fakes import FakeClock
 from wallpapi import evidence_log, pool, storage
 from wallpapi.evidence_log import HISTORY_PAGE_SIZE, HistoryEntry, HistoryRefused, ResolvedVerdict
@@ -699,7 +700,7 @@ def test_ranking_reads_each_decided_wallpaper_at_the_standing_tastes_resolution_
 ) -> None:
     """The SQL spelling again, as ranking reads it: every decided **Wallpaper** whole and in id order, with
     the **Judgement** that decides it, when, and what it stands at, across every **Instrument**. A
-    **Clearance** last is decided and worth nothing, as `pool.decided` and `resolve` have it."""
+    **Clearance** last is decided and worth nothing, as `decided_wallpapers` and `resolve` have it."""
     logged = list(_every_instrument().values())
     append(connection, *logged)
 
@@ -709,7 +710,7 @@ def test_ranking_reads_each_decided_wallpaper_at_the_standing_tastes_resolution_
         item: (piece.judgement_id, piece.recorded_at, piece.strength)
         for item, piece in resolve(evidence(logged)).items()
     }
-    assert [d.wallpaper for d in decided] == pool.decided(connection)
+    assert [d.wallpaper for d in decided] == decided_wallpapers(connection)
     assert {d.wallpaper.id: d.resolved for d in decided} == evidence_log.resolve(
         connection, [d.wallpaper.id for d in decided]
     )

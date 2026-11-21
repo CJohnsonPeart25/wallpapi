@@ -5,8 +5,9 @@ collaborator (invariant 14, ADR 0019), as `library_rig` and `batches_rig` do. `m
 module the way the routes do, and is for tests whose subject is a workflow (a transaction across modules, or
 what follows its commit), for the web and command tests and for the background threads; `test_rigs.py` holds
 that list.
-The only reach past the modules here is the raw connection the migration tests need, because nothing the
-modules offer can produce an older database's rows or a Clearance any more.
+The reaches past the modules here are two. One is the raw connection the migration tests need, because
+nothing the modules offer can produce an older database's rows or a Clearance any more. The other is
+`decided_wallpapers`, an oracle that reads the log in its own SQL so it shares nothing with `evidence_log`.
 """
 
 from __future__ import annotations
@@ -50,9 +51,12 @@ from wallpapi.model import Verdict, Wallpaper
 from wallpapi.pool import RefillStatus, RefillStrategy
 from wallpapi.similarity import EMBED_BATCH, Embeddings
 from wallpapi.taste.clock import Clock
+from wallpapi.taste.gauntlet import GAUNTLET_V1
 from wallpapi.taste.judgement import Judgement, Shown
+from wallpapi.taste.order import ORDER_V1
+from wallpapi.taste.pick import PICK_V1
 from wallpapi.taste.rng import SeededRandom
-from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, LegacyEntry, LegacyTileResponse
+from wallpapi.taste.verdict_grid import VERDICT_GRID_V0, VERDICT_GRID_V1, LegacyEntry, LegacyTileResponse
 from wallpapi.web.app import create_app
 
 FIXED_NOW = dt.datetime(2026, 9, 24, 11, 30, 0, tzinfo=dt.UTC)
@@ -589,6 +593,35 @@ def record_legacy_clearance(write: sqlite3.Connection, wallpaper_id: str, at: dt
             app_version=evidence_log.APP_VERSION,
         ),
     )
+
+
+_DECIDED_WALLPAPERS = """
+SELECT w.*
+FROM wallpapers AS w
+WHERE 'wallhaven:' || w.id IN (
+    SELECT i.item
+    FROM judgement_items AS i
+    JOIN judgements AS j ON j.id = i.judgement_id
+    WHERE (j.instrument, j.instrument_version) = (?, ?)
+        OR ((j.instrument, j.instrument_version) = (?, ?) AND j.submitted = 1)
+        OR ((j.instrument, j.instrument_version) IN (VALUES (?, ?), (?, ?), (?, ?)) AND i.favourite = 1)
+)
+ORDER BY w.id
+"""
+"""Every tile of a converted grid, every tile of a submitted grid and a starred **Line-up** tile: written
+apart from `evidence_log`'s spelling, matching whole keys where it takes a substring."""
+
+
+def decided_wallpapers(connection: sqlite3.Connection) -> list[Wallpaper]:
+    """Every **Wallpaper** ever given a **Verdict** or a **Favourite**, in or out of the **Pool**, by id.
+
+    The oracle a test checks `evidence_log` against, so it reads the log in its own SQL and never through
+    `evidence_log`: a **Skip** decides nothing, nor a **Line-up** tile left unstarred, and a legacy
+    **Clearance** counts. The **Instruments** are taste's, bound as parameters.
+    """
+    instruments = (VERDICT_GRID_V0, VERDICT_GRID_V1, PICK_V1, ORDER_V1, GAUNTLET_V1)
+    parameters = [value for each in instruments for value in (each.name, each.version)]
+    return [pool.wallpaper_from_row(row) for row in connection.execute(_DECIDED_WALLPAPERS, parameters)]
 
 
 @contextmanager
