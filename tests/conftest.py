@@ -635,6 +635,22 @@ def raw_connection(db_path: Path) -> Generator[sqlite3.Connection]:
 
 
 @contextmanager
+def tracing(connection: sqlite3.Connection, holding: str, each: Callable[[str], None]) -> Generator[None]:
+    """Call `each` with every statement `connection` begins whose SQL holds `holding`, until the block ends,
+    raise or not. `sqlite3` swallows what `each` raises, so a caller that must see it keeps it."""
+
+    def hook(statement: str) -> None:
+        if holding in statement:
+            each(statement)
+
+    connection.set_trace_callback(hook)
+    try:
+        yield
+    finally:
+        connection.set_trace_callback(None)
+
+
+@contextmanager
 def committing_as(
     reader: sqlite3.Connection, begins: str, commit: Callable[[], None], *, nth: int = 1
 ) -> Generator[None]:
@@ -649,8 +665,6 @@ def committing_as(
     failed: list[BaseException] = []
 
     def hook(statement: str) -> None:
-        if begins not in statement:
-            return
         seen.append(statement)
         if len(seen) != nth:
             return
@@ -659,11 +673,8 @@ def committing_as(
         except BaseException as error:
             failed.append(error)
 
-    reader.set_trace_callback(hook)
-    try:
+    with tracing(reader, begins, hook):
         yield
-    finally:
-        reader.set_trace_callback(None)
     if failed:
         raise failed[0]
     assert len(seen) >= nth, f"{len(seen)} statements holding {begins!r} began, not {nth}"

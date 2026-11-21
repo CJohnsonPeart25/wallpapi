@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import BatchesRig, batches_rig, raw_connection, write_log_entries, write_old_pool
+from tests.conftest import (
+    BatchesRig,
+    batches_rig,
+    raw_connection,
+    tracing,
+    write_log_entries,
+    write_old_pool,
+)
 from tests.fakes import catalogue_of
 from wallpapi import evidence_log, lineup, pool, settings, storage
 from wallpapi.batches import zone_of
@@ -590,13 +597,10 @@ def _ordered_reads(connection: sqlite3.Connection) -> list[str]:
     """The statements `standing` and `judgements` send that read `judgements` by recorded time, caught as
     they run: the query for the newest log position, then the ordered fetch."""
     caught: list[str] = []
-    connection.set_trace_callback(caught.append)
-    try:
+    with tracing(connection, "FROM judgements ORDER BY recorded_at", caught.append):
         evidence_log.standing(connection, pool.wallpaper_from_row)
         evidence_log.judgements(connection)
-    finally:
-        connection.set_trace_callback(None)
-    return [statement for statement in caught if "FROM judgements ORDER BY recorded_at" in statement]
+    return caught
 
 
 def test_migration_18_indexes_a_populated_log_so_both_ordered_reads_walk_it_with_no_sort(
