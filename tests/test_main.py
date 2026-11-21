@@ -351,9 +351,21 @@ def test_evaluate_with_no_embeddings_file_counts_every_tested_wallpaper_unembedd
     assert not (home / "embeddings.db").exists()
 
 
+# -- the reading commands refuse a database they cannot read as it is ----------------------------------
+
+
+READING_COMMANDS = ("evaluate",)
+"""The commands that open the database through `storage.connect_current`: each refuses alike, by name."""
+
+
+@pytest.mark.parametrize("command", READING_COMMANDS)
 @pytest.mark.parametrize("made", [False, True], ids=["no home", "an empty home"])
-def test_evaluate_with_no_database_says_so_exits_non_zero_and_creates_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], made: bool
+def test_a_reading_command_with_no_database_says_so_exits_non_zero_and_creates_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    made: bool,
+    command: str,
 ) -> None:
     home = tmp_path / "home"
     if made:
@@ -361,11 +373,11 @@ def test_evaluate_with_no_database_says_so_exits_non_zero_and_creates_nothing(
     monkeypatch.setenv("WALLPAPI_HOME", str(home))
 
     with pytest.raises(SystemExit) as exited:
-        main(["evaluate"], build=never_build, serve=never_serve)
+        main([command], build=never_build, serve=never_serve)
 
     assert exited.value.code == 1
     assert capsys.readouterr().err == (
-        f"No database at {home / 'wallpapi.db'}, so there is nothing to evaluate. evaluate creates "
+        f"No database at {home / 'wallpapi.db'}, so {command} has nothing to read. {command} creates "
         "nothing: serving wallpapi makes the database.\n"
     )
     if made:
@@ -384,25 +396,34 @@ def schema_and_version(db_path: Path) -> tuple[list[tuple[str, str, str | None]]
     return [(str(row["type"]), str(row["name"]), row["sql"]) for row in rows], version
 
 
+def older_hint(command: str) -> str:
+    return (
+        f"is at schema version {OLDER}, and this wallpapi reads version {storage.SCHEMA_VERSION}. "
+        f"{command} migrates nothing: stop any older server and serve this wallpapi once to migrate it, "
+        f"then run {command} again.\n"
+    )
+
+
+def newer_hint(command: str) -> str:
+    return (
+        f"is at schema version {storage.SCHEMA_VERSION + 1}, newer than the version "
+        f"{storage.SCHEMA_VERSION} this wallpapi reads: run {command} with the wallpapi that migrated it.\n"
+    )
+
+
+@pytest.mark.parametrize("command", READING_COMMANDS)
 @pytest.mark.parametrize(
     ("version", "hint"),
-    [
-        (
-            OLDER,
-            f"is at schema version {OLDER}, and this wallpapi reads version {storage.SCHEMA_VERSION}. "
-            "evaluate migrates nothing: stop any older server and serve this wallpapi once to migrate it, "
-            "then evaluate again.\n",
-        ),
-        (
-            storage.SCHEMA_VERSION + 1,
-            f"is at schema version {storage.SCHEMA_VERSION + 1}, newer than the version "
-            f"{storage.SCHEMA_VERSION} this wallpapi reads: evaluate with the wallpapi that migrated it.\n",
-        ),
-    ],
+    [(OLDER, older_hint), (storage.SCHEMA_VERSION + 1, newer_hint)],
     ids=["older", "newer"],
 )
-def test_evaluate_on_a_database_at_another_version_says_so_exits_non_zero_and_leaves_it_as_it_was(
-    home: Path, db_path: Path, capsys: pytest.CaptureFixture[str], version: int, hint: str
+def test_a_reading_command_on_a_database_at_another_version_says_so_exits_non_zero_and_leaves_it_as_it_was(
+    home: Path,
+    db_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    version: int,
+    hint: Callable[[str], str],
+    command: str,
 ) -> None:
     """The failure the read-only promise is for: code upgraded while the older server still runs. Its
     connection stays open throughout, and its database keeps its version, its tables and its bytes."""
@@ -412,10 +433,10 @@ def test_evaluate_on_a_database_at_another_version_says_so_exits_non_zero_and_le
         before = schema_and_version(db_path), database_bytes(db_path)
 
         with pytest.raises(SystemExit) as exited:
-            main(["evaluate"], build=never_build, serve=never_serve)
+            main([command], build=never_build, serve=never_serve)
 
         assert exited.value.code == 1
-        assert capsys.readouterr().err == f"The database at {db_path} {hint}"
+        assert capsys.readouterr().err == f"The database at {db_path} {hint(command)}"
         assert (schema_and_version(db_path), database_bytes(db_path)) == before
         assert sorted(path.name for path in home.iterdir()) == [
             "wallpapi.db",

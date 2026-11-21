@@ -141,7 +141,7 @@ def main(
         try:
             stored = read()
         except storage.NotCurrent as refused:
-            parser.exit(1, _not_current(refused))
+            parser.exit(1, _not_current(refused, arguments.command))
         with closing(stored.connection):
             evaluated = _evaluate(stored, radius=arguments.radius, decay=arguments.decay)
         _print_evaluation(evaluated)
@@ -176,22 +176,22 @@ class _Evaluated:
     unembedded: int
 
 
-def _not_current(refused: storage.NotCurrent) -> str:
-    """What `evaluate` says of a database it will not read, and what to do about it."""
+def _not_current(refused: storage.NotCurrent, command: str) -> str:
+    """What a reading command says of a database it will not read, and what to do about it, by its name."""
     if refused.version is None:
         return (
-            f"No database at {refused.path}, so there is nothing to evaluate. evaluate creates nothing: "
+            f"No database at {refused.path}, so {command} has nothing to read. {command} creates nothing: "
             "serving wallpapi makes the database.\n"
         )
     found = f"The database at {refused.path} is at schema version {refused.version}"
     if refused.version < storage.SCHEMA_VERSION:
         return (
-            f"{found}, and this wallpapi reads version {storage.SCHEMA_VERSION}. evaluate migrates nothing: "
-            "stop any older server and serve this wallpapi once to migrate it, then evaluate again.\n"
+            f"{found}, and this wallpapi reads version {storage.SCHEMA_VERSION}. {command} migrates nothing: "
+            f"stop any older server and serve this wallpapi once to migrate it, then run {command} again.\n"
         )
     return (
-        f"{found}, newer than the version {storage.SCHEMA_VERSION} this wallpapi reads: evaluate with the "
-        "wallpapi that migrated it.\n"
+        f"{found}, newer than the version {storage.SCHEMA_VERSION} this wallpapi reads: run {command} with "
+        "the wallpapi that migrated it.\n"
     )
 
 
