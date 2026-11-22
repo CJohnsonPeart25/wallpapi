@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wallpapi: the system as it stands, and where it is heading</title>
+<style>
+  :root {
+    --bg: #0f0f0f; --panel: #161616; --text: #fff; --muted: #888; --line: #444;
+    --blue: #3B82F6; --green: #10B981; --amber: #F59E0B; --red: #EF4444; --indigo: #6366F1; --purple: #A855F7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  header { padding: 24px 32px 8px; }
+  h1 { margin: 0 0 6px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; max-width: 1100px; line-height: 1.5; }
+  nav { display: flex; gap: 8px; padding: 16px 32px 0; flex-wrap: wrap; }
+  nav button { background: #1f1f1f; color: #ccc; border: 1px solid #333; border-radius: 8px;
+    padding: 8px 14px; font-size: 14px; cursor: pointer; }
+  nav button.active { background: #2a2a2a; color: #fff; border-color: #666; }
+  .view { display: none; padding: 16px 32px 32px; }
+  .view.active { display: block; }
+  .intro { color: #bbb; font-size: 14px; line-height: 1.55; max-width: 1100px; margin: 0 0 12px; }
+  .frame { background: var(--panel); border: 1px solid #222; border-radius: 14px; overflow: hidden;
+    position: relative; }
+  .stage { position: relative; transform-origin: 0 0; }
+  svg.edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+  .node { position: absolute; width: 200px; padding: 14px 16px; border-radius: 12px; border: 2px solid;
+    cursor: pointer; transition: transform .15s, box-shadow .15s, opacity .2s; user-select: none; }
+  .node:hover { transform: scale(1.05); z-index: 5; }
+  .node .stereo { font-size: 11px; color: #aaa; font-style: italic; margin-bottom: 4px; }
+  .node .icon { font-size: 20px; line-height: 1; margin-bottom: 6px; }
+  .node .label { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+  .node .sub { font-size: 12px; color: #cfcfcf; line-height: 1.35; }
+  .node .badge { position: absolute; top: 8px; right: 10px; font-size: 10px; letter-spacing: .04em;
+    text-transform: uppercase; padding: 2px 6px; border-radius: 6px; background: #000a; color: #ddd; }
+  .node.planned { border-style: dashed; }
+  .node.later { border-style: dotted; }
+  .t-entry { background: #1e3a5f; border-color: var(--blue); --accent: var(--blue); }
+  .t-proc { background: #1a3d2e; border-color: var(--green); --accent: var(--green); }
+  .t-tool { background: #3d2e1a; border-color: var(--amber); --accent: var(--amber); }
+  .t-out { background: #3d1a1a; border-color: var(--red); --accent: var(--red); }
+  .t-store { background: #1a1a2e; border-color: var(--indigo); --accent: var(--indigo); }
+  .t-decide { background: #2e1a3d; border-color: var(--purple); --accent: var(--purple); }
+  .node:hover, .node.hl { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent) 50%, transparent); }
+  .dim { opacity: .18; }
+  path.edge { fill: none; stroke: var(--line); stroke-width: 2; transition: opacity .2s; }
+  path.edge.planned { stroke-dasharray: 7 6; }
+  path.edge.hl { stroke-width: 3; stroke-dasharray: 8 6; animation: flow 0.8s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -28; } }
+  .elabel { position: absolute; transform: translate(-50%, -50%); font-size: 11px; color: #bbb;
+    background: #161616e6; padding: 2px 6px; border-radius: 6px; max-width: 124px; text-align: center; pointer-events: none;
+    border: 1px solid #2a2a2a; transition: opacity .2s; }
+  .elabel.hl { color: #fff; border-color: #555; }
+  #tip { position: fixed; z-index: 50; max-width: 360px; background: #0b0b0b; border: 1px solid #444;
+    border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.45; color: #ddd;
+    pointer-events: none; display: none; box-shadow: 0 8px 30px #000a; }
+  #tip b { color: #fff; }
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; font-size: 13px; color: #bbb; }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .sw { width: 16px; height: 16px; border-radius: 4px; border: 2px solid; display: inline-block; }
+  .sw.dash { border-style: dashed; background: transparent; }
+  .sw.dot { border-style: dotted; background: transparent; }
+  .notes { max-width: 1100px; font-size: 14px; line-height: 1.6; color: #ccc; }
+  .notes h2 { font-size: 17px; color: #fff; margin: 24px 0 8px; }
+  .notes li { margin-bottom: 8px; }
+  .notes code { background: #222; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .q { color: #fbbf24; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>wallpapi: how I understand the system</h1>
+  <p>A UML-style component view, to check we agree. <b>Today</b> is the app as it is on <code>main</code>.
+    <b>Heading towards</b> is the idea we've talked about but not specified: a desktop program that also
+    manages the wallpaper. Hover over a component for detail; click one to trace what connects to it, and
+    click the background to reset. Solid borders exist, dashed are planned next, dotted are planned later.</p>
+</header>
+<nav>
+  <button data-view="v-today" class="active">1 · Today</button>
+  <button data-view="v-future">2 · Heading towards</button>
+  <button data-view="v-notes">3 · Assumptions to check</button>
+</nav>
+
+<section class="view active" id="v-today">
+  <p class="intro">One Python process, bound to <code>127.0.0.1</code>, single worker. <code>compose.py</code>
+    builds every module over one SQLite file and the web layer, the workflows and three background loops use
+    what it builds. <code>taste/</code> is pure: data in, data out, no I/O. The Library is a folder that
+    Windows' own slideshow rotates through; wallpapi never touches the desktop.</p>
+  <div class="frame"><div class="stage" data-w="1760" data-h="1250"></div></div>
+</section>
+
+<section class="view" id="v-future">
+  <p class="intro">Today's app becomes the "taste core" inside a tray program. Qt owns the main thread; the
+    server and the loops (today's three, plus a new <b>rotator</b>) run on threads. The core decides
+    <i>screen → wallpaper</i> and crops each image to its screen; a small <b>Desktop</b> interface hides the
+    operating system, with one thin adapter per platform. Windows first, the others later, and a fake for
+    tests.</p>
+  <div class="frame"><div class="stage" data-w="1960" data-h="1200"></div></div>
+</section>
+
+<section class="view" id="v-notes">
+  <div class="notes">
+    <h2>What I'm assuming about where it's heading. Correct anything that's wrong.</h2>
+    <ul>
+      <li><b>The rotation source is the Library</b>, meaning your Favourites. <span class="q">Should Likes
+        count too, or a separate "rotation set"?</span></li>
+      <li><b>The journey orders the whole rotation set once</b> (nearest-neighbour then 2-opt over the CLIP
+        embeddings), and the rotator walks it. <span class="q">Should a new Favourite be inserted next to its
+        closest match, or trigger a full re-order?</span></li>
+      <li><b>Each screen walks its own journey</b>, drawing only wallpapers whose shape fits it, so a portrait
+        screen gets portrait images. <span class="q">Or should the two screens be visually linked and move
+        together?</span></li>
+      <li><b>Portrait wallpapers need to enter the Pool.</b> Today the Filters allow one set of ratios. That's
+        the open design question with real options (one Pool with shape tags, or one Pool per screen shape).
+      </li>
+      <li><b>Day/night chooses from the rotation set</b> by brightness measured from the thumbnail, switched
+        by the clock on Windows and macOS, and by GNOME's own light/dark wallpaper keys on Linux.</li>
+      <li><b>A change of wallpaper is fire-and-forget.</b> If wallpapi stops, the last wallpaper stays. No
+        autostart, no state kept in the adapter.</li>
+      <li><b>Every control lives in the web UI</b> (Next, Pause, interval, per-screen settings). The tray is a
+        shortcut to them, because stock Fedora shows no tray.</li>
+      <li><b>Nothing changes about learning:</b> Batches, Line-ups, the Evidence log, the Refill and scoring
+        stay as they are. The desktop work sits beside them and reads the Library and the embeddings.</li>
+      <li><b>Packaging:</b> PyInstaller one-folder plus Inno Setup on Windows, built in CI per OS; unsigned
+        for now.</li>
+    </ul>
+    <h2>Things I've left out of the diagrams</h2>
+    <ul>
+      <li>The Settings and Mixes tables, History paging, the draft Batch, and the preview's full-resolution
+        load straight from Wallhaven (ADR 0003). They're in the tooltips where they matter.</li>
+      <li>The commands' detail: <code>reset-pool</code> writes, while <code>evaluate</code> and
+        <code>verify-log</code> only read.</li>
+      <li>Thumbnail eviction after a submission, and the rate limiter's internals (ADR 0020).</li>
+    </ul>
+  </div>
+</section>
+
+<div style="padding: 0 32px 32px">
+  <div class="legend">
+    <span><i class="sw" style="background:#1e3a5f;border-color:var(--blue)"></i>Entry / trigger</span>
+    <span><i class="sw" style="background:#1a3d2e;border-color:var(--green)"></i>Processing module</span>
+    <span><i class="sw" style="background:#3d2e1a;border-color:var(--amber)"></i>External service / OS</span>
+    <span><i class="sw" style="background:#3d1a1a;border-color:var(--red)"></i>Outcome</span>
+    <span><i class="sw" style="background:#1a1a2e;border-color:var(--indigo)"></i>Data store</span>
+    <span><i class="sw" style="background:#2e1a3d;border-color:var(--purple)"></i>Decision / interface</span>
+    <span><i class="sw dash" style="border-color:#aaa"></i>Planned next</span>
+    <span><i class="sw dot" style="border-color:#aaa"></i>Planned later</span>
+  </div>
+</div>
+<div id="tip"></div>
+
+<script>
+let X = [30, 330, 630, 930, 1230, 1530];
+
+const TODAY = {
+  nodes: [
+    { id: 'browser', t: 'entry', x: X[0], y: 300, icon: '🖥️', st: '«actor» browser', label: 'Web UI',
+      sub: 'Batches · Compare · History · Settings',
+      d: 'Jinja pages with htmx for every server interaction, Pico for styling and four small Alpine islands. Keys (F, the numbers, 0, Enter) are htmx triggers. The preview loads the full-resolution image straight from Wallhaven (ADR 0003).' },
+    { id: 'cli', t: 'entry', x: X[0], y: 760, icon: '⌨️', st: '«actor» terminal', label: 'Commands',
+      sub: 'serve · reset-pool · evaluate · verify-log',
+      d: '<b>python -m wallpapi</b> serves. reset-pool empties the Pool (ADR 0025). evaluate replays the Evidence log read-only against a candidate radius, decay or decided set. verify-log re-hashes every Judgement to find one edited behind its triggers.' },
+    { id: 'web', t: 'proc', x: X[1], y: 300, icon: '⚡', st: '«component» web/app.py', label: 'FastAPI routes',
+      sub: 'sync handlers in the threadpool, 127.0.0.1',
+      d: 'Routes for /batch, /submit, /skip, /draft, /history, /compare (pick, order, gauntlet, star), /settings, /thumb. Reads go to the modules; every write goes through workflows.py.' },
+    { id: 'compose', t: 'proc', x: X[1], y: 760, icon: '🧩', st: '«component» main.py + compose.py', label: 'Composition root',
+      sub: 'the only place that knows the whole graph',
+      d: 'Opens and migrates wallpapi.db (user_version), builds each module with its collaborators and random sources, and, only in build_app, starts the three background loops (refill=True).' },
+    { id: 'workflows', t: 'proc', x: X[1], y: 40, icon: '🔁', st: '«component» workflows.py', label: 'Workflows',
+      sub: 'one write transaction each, then its tail',
+      d: 'Every write the page or a command makes, as one BEGIN IMMEDIATE transaction across the modules. After commit: reconcile the Library, then evict thumbnails. Decides nothing about the data.' },
+    { id: 'library', t: 'proc', x: X[2], y: 40, icon: '⭐', st: '«component» library.py', label: 'Library',
+      sub: 'reconcile with the Evidence log; confined, atomic',
+      d: 'Downloads each Favourite at full resolution from Wallhaven into the library folder, and removes ones overturned in History. Every write passes confined_to_library (inv. 9) and write_atomically (inv. 10). Owns library_files.' },
+    { id: 'batches', t: 'proc', x: X[2], y: 270, icon: '🔲', st: '«component» batches.py + allocation.py', label: 'Batches',
+      sub: 'draw a Batch by Mix; submit as one Judgement',
+      d: 'Drawn afresh on each visit (ADR 0029): classify the Pool into Zones, allocate slots by the active Mix, order each Zone. Submitting records one Judgement and retires everything shown from the Pool (ADR 0016).' },
+    { id: 'lineups', t: 'proc', x: X[2], y: 500, icon: '🏁', st: '«component» lineup.py', label: 'Line-ups',
+      sub: 'Pick · Order · Gauntlet, drawn by Mix and Wear',
+      d: "The compare tab. Uses the Batches' ranking so both tabs draw from one classification. Answered as one Judgement; leaves its wallpapers in the Pool, except Favourites." },
+    { id: 'refill', t: 'proc', x: X[2], y: 1040, icon: '🔄', st: '«thread» pool.py', label: 'Refill loop',
+      sub: 'random and lookalike walks, ≤35 calls/min',
+      d: 'Keeps the Pool at its target size (500). Random and lookalike strategies take strict turns. Paces at the API budget and holds back when Wallhaven says the remaining count is used (ADR 0020). Every wait is stop_event.wait (inv. 12).' },
+    { id: 'taste', t: 'proc', x: X[3], y: 230, icon: '🧠', st: '«package» taste/', label: 'Taste engine',
+      sub: 'pure: data in, data out',
+      d: 'Judgements, Instruments and their Reductions to Evidence, latest-wins resolution, ranking (Score from similarity within a radius, decayed), evaluation, CLIP maths. Imports nothing from wallpapi; an ast test enforces it.' },
+    { id: 'similarity', t: 'proc', x: X[3], y: 480, icon: '🔍', st: '«component + thread» similarity.py', label: 'Similarity provider',
+      sub: 'CLIP image embeddings; one Pool × decided matrix',
+      d: 'Upkeep loop embeds every thumbnail with the ONNX CLIP image tower on CPU. similarities(pool, decided) is one array operation, never pairwise (inv. 2). A metadata baseline stands in until the model is open.' },
+    { id: 'evlog', t: 'proc', x: X[3], y: 720, icon: '📜', st: '«component» evidence_log.py', label: 'Evidence log',
+      sub: 'append-only; the latest Judgement decides',
+      d: 'The one piece of data wallpapi cannot rebuild. One row per Judgement, one per shown Item. One SQL fragment resolves standings; History pages with it and ranking reads it (inv. 4, ADR 0027, ADR 0030).' },
+    { id: 'thumbs', t: 'proc', x: X[3], y: 940, icon: '🖼️', st: '«component + thread» thumbnails.py', label: 'Thumbnail cache',
+      sub: 'downloads every Pool thumbnail; evicts by Verdict',
+      d: 'Background downloader fetches each Pool member’s thumbnail (ADR 0017); eviction by Verdict with a size cap behind it (ADR 0009). Serves /thumb/{id}.' },
+    { id: 'db', t: 'store', x: X[4], y: 720, icon: '🗄️', st: '«store» wallpapi.db', label: 'SQLite database',
+      sub: 'Evidence log · Pool · Batches · Line-ups · settings',
+      d: 'One file in ~/.wallpapi. Each module owns its tables and nothing else touches them. Scores are never stored (inv. 2). Migrations: user_version plus numbered steps.' },
+    { id: 'emb', t: 'store', x: X[4], y: 480, icon: '📦', st: '«store» embeddings.db + models/', label: 'Embeddings & model',
+      sub: 'CLIP B/32 int8 ONNX, ~85 MB',
+      d: 'The model is fetched once and checksummed; embeddings are cached per wallpaper so each thumbnail is embedded only once.' },
+    { id: 'thumbdir', t: 'store', x: X[4], y: 940, icon: '🗂️', st: '«store» thumbnails/', label: 'Thumbnail files',
+      sub: 'one file per Wallpaper id',
+      d: 'Written atomically; the file name is the whole map from Wallpaper to file.' },
+    { id: 'hf', t: 'tool', x: X[5], y: 480, icon: '🤗', st: '«external»', label: 'Hugging Face',
+      sub: 'model download, first boot only',
+      d: 'A pinned revision of the quantized CLIP image tower.' },
+    { id: 'wallhaven', t: 'tool', x: X[5], y: 1040, icon: '🌐', st: '«external»', label: 'Wallhaven',
+      sub: 'search API (45/min per IP) + image hosts',
+      d: 'Only wallhaven.py knows its URLs and fields. API calls spend the budget; thumbnails and full-resolution images come from image hosts and do not.' },
+    { id: 'libdir', t: 'store', x: X[5], y: 40, icon: '📁', st: '«store» ~/Pictures/wallpapi', label: 'Library folder',
+      sub: 'your Favourites at full resolution',
+      d: 'A setting (an absolute path). Derived from the Evidence log (ADR 0006): it is never read back.' },
+    { id: 'slideshow', t: 'out', x: X[5], y: 270, icon: '🪟', st: '«outside wallpapi»', label: 'Windows slideshow',
+      sub: 'rotates the folder at random',
+      d: 'Not part of wallpapi: Windows itself picks from the folder. This is what the desktop-manager idea replaces.' },
+  ],
+  edges: [
+    { f: 'browser', t: 'web', l: 'htmx ⇄ HTML fragments' },
+    { f: 'web', t: 'workflows', l: 'every write' },
+    { f: 'web', t: 'batches', l: 'draw on visit' },
+    { f: 'web', t: 'lineups', l: 'draw on visit' },
+    { f: 'workflows', t: 'library', l: 'reconcile after commit' },
+    { f: 'workflows', t: 'batches', l: 'submit' },
+    { f: 'library', t: 'libdir', l: 'Favourites, atomic + confined' },
+    { f: 'libdir', t: 'slideshow', l: 'Windows reads the folder' },
+    { f: 'batches', t: 'taste', l: 'classify & rank the Pool' },
+    { f: 'lineups', t: 'taste', l: 'rank, Wear' },
+    { f: 'similarity', t: 'taste', l: 'Pool × decided matrix' },
+    { f: 'batches', t: 'evlog', l: 'one Judgement', fs: 'right', ts: 'top', via: [[880, 344], [880, 690], [1030, 690]] },
+    { f: 'lineups', t: 'evlog', l: 'one Judgement', fs: 'bottom', ts: 'left', via: [[730, 786]] },
+    { f: 'evlog', t: 'db', l: 'append-only rows' },
+    { f: 'similarity', t: 'emb', l: 'embeddings' },
+    { f: 'hf', t: 'emb', l: 'ONNX model, once' },
+    { f: 'similarity', t: 'thumbdir', l: 'embeds each thumbnail', fs: 'right', ts: 'top',
+      via: [[1180, 554], [1180, 912], [1330, 912]] },
+    { f: 'thumbs', t: 'thumbdir', l: 'cache files' },
+    { f: 'wallhaven', t: 'thumbs', l: 'thumbnails', fs: 'bottom', ts: 'bottom', via: [[1630, 1215], [1030, 1215]] },
+    { f: 'refill', t: 'wallhaven', l: 'searches ≤35/min' },
+    { f: 'refill', t: 'db', l: 'admit to the Pool', fs: 'top', ts: 'bottom', via: [[730, 890], [1330, 890]] },
+    { f: 'cli', t: 'compose', l: 'builds modules' },
+    { f: 'compose', t: 'web', l: 'Modules' },
+    { f: 'compose', t: 'refill', l: 'starts 3 loops', fs: 'bottom', ts: 'left', via: [[430, 1106]] },
+  ],
+};
+
+X = [30, 300, 570, 840, 1110, 1380, 1680];
+
+const FUTURE = {
+  nodes: [
+    { id: 'tray', t: 'entry', s: 'planned', x: X[0], y: 60, icon: '🔔', st: '«component» PySide6, main thread', label: 'Tray icon',
+      sub: 'Open · Next · Pause · Quit',
+      d: 'Qt owns the main thread on every OS; uvicorn and the loops run on threads. macOS wants wallpaper calls on the main thread, which Qt already has.' },
+    { id: 'trayok', t: 'decide', s: 'planned', x: X[1], y: 60, icon: '❓', st: '«decision»', label: 'Tray available?',
+      sub: 'stock Fedora GNOME: no',
+      d: 'QSystemTrayIcon.isSystemTrayAvailable(). If not, open the browser on every launch; the web UI holds every control anyway.' },
+    { id: 'browser', t: 'entry', x: X[0], y: 470, icon: '🖥️', st: '«actor» browser', label: 'Web UI',
+      sub: "today's pages + rotation controls",
+      d: 'Unchanged for learning. Gains the rotation settings (interval, per-screen options, day/night) and Next / Pause.' },
+    { id: 'server', t: 'proc', x: X[1], y: 470, icon: '⚡', st: '«thread» uvicorn', label: 'FastAPI server',
+      sub: 'today’s routes, now off the main thread',
+      d: 'uvicorn 0.53 skips signal handling off the main thread, so this needs no workaround. Quit sets should_exit and the stop_event.' },
+    { id: 'core', t: 'proc', x: X[2], y: 470, icon: '🧠', st: '«subsystem» today’s wallpapi', label: 'Taste core',
+      sub: 'Batches · Line-ups · Evidence log · Refill · Similarity',
+      d: 'Everything in view 1, unchanged. The desktop work reads from it: the Library and the embeddings.' },
+    { id: 'libdir', t: 'store', x: X[2], y: 800, icon: '📁', st: '«store»', label: 'Library folder',
+      sub: 'Favourites at full resolution',
+      d: 'Becomes the rotation source rather than a folder Windows reads.' },
+    { id: 'journey', t: 'proc', s: 'planned', x: X[3], y: 140, icon: '🧭', st: '«function» taste/', label: 'Journey order',
+      sub: 'nearest neighbour + 2-opt over embeddings',
+      d: 'Orders the rotation set so each next wallpaper is close to the last. Pure numpy, milliseconds for hundreds of images; belongs in taste/.' },
+    { id: 'rotator', t: 'proc', s: 'planned', x: X[3], y: 470, icon: '⏱️', st: '«thread» 4th background loop', label: 'Rotator',
+      sub: 'every N minutes, or on Next',
+      d: 'Walks the journey and picks what each screen shows next. Fire-and-forget: if it stops, the last wallpaper stays. Waits with stop_event.wait (inv. 12).' },
+    { id: 'daynight', t: 'proc', s: 'later', x: X[3], y: 800, icon: '🌗', st: '«function» taste/', label: 'Day / night',
+      sub: 'brightness from the thumbnail',
+      d: 'Chooses the day or night subset. Clock-driven on Windows and macOS; on GNOME, wallpapi fills both picture-uri and picture-uri-dark and GNOME switches.' },
+    { id: 'plan', t: 'proc', s: 'planned', x: X[4], y: 470, icon: '🗺️', st: '«value» Screen plan', label: 'Screen plan',
+      sub: 'screen id → wallpaper',
+      d: 'Built from the screens the Desktop reports (id, position, size, so orientation) and the rotator’s picks, matching shape to screen.' },
+    { id: 'fit', t: 'proc', s: 'planned', x: X[4], y: 800, icon: '✂️', st: '«function» pillow', label: 'Fit to screen',
+      sub: 'crop to each screen’s exact pixels',
+      d: 'The core does the fitting, because Windows applies fill/fit to every monitor at once. Adapters then only show a ready-made image.' },
+    { id: 'desktop', t: 'decide', s: 'planned', x: X[5], y: 470, icon: '🔌', st: '«interface» Desktop', label: 'Desktop port',
+      sub: 'screens() · show(screen, image)',
+      d: 'The seam (inv. 14). compose.py picks the adapter by sys.platform. If the platform has no per-screen wallpaper, the plan goes through the stitch fallback.' },
+    { id: 'stitch', t: 'proc', s: 'later', x: X[5], y: 800, icon: '🧵', st: '«function» pillow', label: 'Stitch & span',
+      sub: 'one image across the virtual desktop',
+      d: 'For GNOME 51, which still has no per-monitor wallpaper: lay the cropped images side by side and set the result spanned. How it handles mixed scaling and a portrait screen is untested.' },
+    { id: 'win', t: 'tool', s: 'planned', x: X[6], y: 60, icon: '🪟', st: '«adapter» comtypes', label: 'Windows adapter',
+      sub: 'IDesktopWallpaper, per monitor',
+      d: 'About 40 lines of COM declarations. Filter detached monitors (GetMonitorRECT returns S_FALSE). Open question: every virtual desktop or only the current one.' },
+    { id: 'mac', t: 'tool', s: 'later', x: X[6], y: 300, icon: '🍎', st: '«adapter» pyobjc', label: 'macOS adapter',
+      sub: 'NSWorkspace, per screen',
+      d: 'Current Space only; there is no API for all Spaces. Must run on the main thread.' },
+    { id: 'gnome', t: 'tool', s: 'later', x: X[6], y: 560, icon: '🐧', st: '«adapter» gsettings + D-Bus', label: 'GNOME adapter',
+      sub: 'Fedora / Ubuntu, Wayland',
+      d: 'Screens from Mutter’s DisplayConfig over D-Bus; sets picture-uri and picture-uri-dark with picture-options spanned.' },
+    { id: 'fake', t: 'tool', s: 'planned', x: X[6], y: 820, icon: '🧪', st: '«fake» tests', label: 'Fake Desktop',
+      sub: 'records what would be shown',
+      d: 'The core is tested on Linux CI with this, as the Wallhaven client is faked today. Each real adapter gets a short contract test on its own OS.' },
+    { id: 'shown', t: 'out', s: 'planned', x: X[6], y: 1020, icon: '🖼️', st: '«outcome»', label: 'Each monitor shows its wallpaper',
+      sub: 'the last one stays if wallpapi stops',
+      d: 'No autostart needed: a missed start just leaves the previous wallpaper in place.' },
+  ],
+  edges: [
+    { f: 'tray', t: 'trayok', l: 'on launch', p: 1 },
+    { f: 'trayok', t: 'browser', l: 'no: open the browser', p: 1, tdx: 45 },
+    { f: 'tray', t: 'browser', l: 'Open', p: 1, fs: 'bottom', ts: 'top', fdx: -45, tdx: -45 },
+    { f: 'tray', t: 'rotator', l: 'Next · Pause', p: 1, fs: 'right', ts: 'top', tdx: -40,
+      via: [[262, 125], [262, 340], [900, 340]] },
+    { f: 'browser', t: 'server', l: 'htmx' },
+    { f: 'server', t: 'core', l: 'routes' },
+    { f: 'core', t: 'libdir', l: 'downloads Favourites' },
+    { f: 'core', t: 'journey', l: 'embeddings', p: 1 },
+    { f: 'libdir', t: 'rotator', l: 'rotation set', p: 1, ts: 'bottom', tdx: -45 },
+    { f: 'journey', t: 'rotator', l: 'next in order', p: 1 },
+    { f: 'daynight', t: 'rotator', l: 'day or night subset', p: 1, tdx: 30, fdx: 30 },
+    { f: 'rotator', t: 'plan', l: 'picks', p: 1, fdy: 25, tdy: 25 },
+    { f: 'desktop', t: 'plan', l: 'screens()', p: 1, fs: 'left', ts: 'right', fdy: -25, tdy: -25 },
+    { f: 'plan', t: 'fit', l: 'image + geometry', p: 1 },
+    { f: 'fit', t: 'desktop', l: 'show(screen, image)', p: 1, fs: 'right', ts: 'bottom', tdx: -50 },
+    { f: 'desktop', t: 'stitch', l: 'no per-screen support', p: 1, fdx: 40, tdx: 40 },
+    { f: 'desktop', t: 'win', l: 'per screen', p: 1, fs: 'top', ts: 'left' },
+    { f: 'desktop', t: 'mac', l: 'per screen', p: 1, fs: 'right', ts: 'left', fdy: -30 },
+    { f: 'stitch', t: 'gnome', l: 'one spanned image', p: 1 },
+    { f: 'desktop', t: 'fake', l: 'tests', p: 1, fs: 'right', ts: 'left', fdy: 30 },
+    { f: 'win', t: 'shown', l: 'sets the OS wallpaper', p: 1, fs: 'right', ts: 'right', via: [[1925, 125], [1925, 1090]] },
+    { f: 'mac', t: 'shown', l: '', p: 1, fs: 'right', ts: 'right', via: [[1925, 357], [1925, 1090]] },
+    { f: 'gnome', t: 'shown', l: '', p: 1, fs: 'right', ts: 'right', via: [[1925, 625], [1925, 1090]] },
+  ],
+};
+
+const tip = document.getElementById('tip');
+
+function anchor(r, side) {
+  switch (side) {
+    case 'left': return [r.x, r.y + r.h / 2];
+    case 'right': return [r.x + r.w, r.y + r.h / 2];
+    case 'top': return [r.x + r.w / 2, r.y];
+    default: return [r.x + r.w / 2, r.y + r.h];
+  }
+}
+
+function autoSides(a, b) {
+  const dx = (b.x + b.w / 2) - (a.x + a.w / 2), dy = (b.y + b.h / 2) - (a.y + a.h / 2);
+  if (Math.abs(dx) > Math.abs(dy) * 0.9) return dx > 0 ? ['right', 'left'] : ['left', 'right'];
+  return dy > 0 ? ['bottom', 'top'] : ['top', 'bottom'];
+}
+
+function build(stage, spec) {
+  const W = +stage.dataset.w, H = +stage.dataset.h;
+  stage.style.width = W + 'px';
+  stage.style.height = H + 'px';
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('class', 'edges');
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+  const defs = document.createElementNS(svgNS, 'defs');
+  svg.appendChild(defs);
+  stage.appendChild(svg);
+
+  const colour = { entry: '#3B82F6', proc: '#10B981', tool: '#F59E0B', out: '#EF4444', store: '#6366F1', decide: '#A855F7' };
+  const els = {}, rects = {};
+  for (const n of spec.nodes) {
+    const el = document.createElement('div');
+    el.className = `node t-${n.t} ${n.s || ''}`;
+    el.style.left = n.x + 'px';
+    el.style.top = n.y + 'px';
+    const badge = n.s === 'planned' ? 'next' : n.s === 'later' ? 'later' : (spec === FUTURE ? 'exists' : '');
+    el.innerHTML = (badge ? `<span class="badge">${badge}</span>` : '') +
+      `<div class="icon">${n.icon}</div><div class="stereo">${n.st}</div>` +
+      `<div class="label">${n.label}</div><div class="sub">${n.sub}</div>`;
+    el.dataset.id = n.id;
+    el.addEventListener('mousemove', e => {
+      tip.innerHTML = `<b>${n.label}</b><br>${n.d}`;
+      tip.style.display = 'block';
+      const tx = Math.min(e.clientX + 16, window.innerWidth - 380);
+      tip.style.left = tx + 'px';
+      tip.style.top = (e.clientY + 16) + 'px';
+    });
+    el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    stage.appendChild(el);
+    els[n.id] = el;
+  }
+  for (const n of spec.nodes) {
+    rects[n.id] = { x: n.x, y: n.y, w: els[n.id].offsetWidth, h: els[n.id].offsetHeight };
+  }
+
+  const edgeEls = [];
+  spec.edges.forEach((e, i) => {
+    const a = rects[e.f], b = rects[e.t];
+    const [as, bs] = autoSides(a, b);
+    const p0 = anchor(a, e.fs || as), p1 = anchor(b, e.ts || bs);
+    p0[0] += e.fdx || 0; p0[1] += e.fdy || 0; p1[0] += e.tdx || 0; p1[1] += e.tdy || 0;
+    const pts = [p0, ...(e.via || []), p1];
+    const src = spec.nodes.find(n => n.id === e.f);
+    const c = colour[src.t];
+    const mid = `m${stage.parentElement.parentElement.id}${i}`;
+    const marker = document.createElementNS(svgNS, 'marker');
+    marker.setAttribute('id', mid);
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '9');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '8');
+    marker.setAttribute('orient', 'auto-start-reverse');
+    marker.innerHTML = '<path d="M0,0 L10,5 L0,10 z" fill="#666"></path>';
+    defs.appendChild(marker);
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', 'M' + pts.map(p => p.join(',')).join(' L'));
+    path.setAttribute('class', 'edge' + (e.p ? ' planned' : ''));
+    path.setAttribute('marker-end', `url(#${mid})`);
+    svg.appendChild(path);
+    let label = null;
+    if (e.l) {
+      const k = Math.floor((pts.length - 1) / 2);
+      const q0 = pts[k], q1 = pts[k + 1];
+      label = document.createElement('div');
+      label.className = 'elabel';
+      label.textContent = e.l;
+      label.style.left = ((q0[0] + q1[0]) / 2) + 'px';
+      label.style.top = ((q0[1] + q1[1]) / 2) + 'px';
+      stage.appendChild(label);
+    }
+    edgeEls.push({ e, path, label, marker, c });
+  });
+
+  function reset() {
+    Object.values(els).forEach(el => el.classList.remove('dim', 'hl'));
+    edgeEls.forEach(({ path, label, marker }) => {
+      path.classList.remove('dim', 'hl');
+      path.style.stroke = '';
+      marker.firstChild.setAttribute('fill', '#666');
+      if (label) label.classList.remove('dim', 'hl');
+    });
+  }
+  function focus(id) {
+    reset();
+    const keep = new Set([id]);
+    edgeEls.forEach(({ e }) => { if (e.f === id) keep.add(e.t); if (e.t === id) keep.add(e.f); });
+    Object.entries(els).forEach(([k, el]) => el.classList.add(keep.has(k) ? 'hl' : 'dim'));
+    els[id].classList.remove('dim');
+    edgeEls.forEach(({ e, path, label, marker, c }) => {
+      const on = e.f === id || e.t === id;
+      path.classList.add(on ? 'hl' : 'dim');
+      if (on) { path.style.stroke = c; marker.firstChild.setAttribute('fill', c); }
+      if (label) label.classList.add(on ? 'hl' : 'dim');
+    });
+  }
+  Object.entries(els).forEach(([id, el]) => el.addEventListener('click', ev => { ev.stopPropagation(); focus(id); }));
+  stage.parentElement.addEventListener('click', reset);
+}
+
+function fit() {
+  document.querySelectorAll('.view.active .frame').forEach(frame => {
+    const stage = frame.querySelector('.stage');
+    const W = +stage.dataset.w, H = +stage.dataset.h;
+    const s = Math.min(1, frame.clientWidth / (W + 40));
+    stage.style.transform = `scale(${s})`;
+    frame.style.height = (H * s + 10) + 'px';
+  });
+}
+
+const stages = document.querySelectorAll('.stage');
+build(stages[0], TODAY);
+document.getElementById('v-future').classList.add('active');
+build(stages[1], FUTURE);
+document.getElementById('v-future').classList.remove('active');
+
+document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === b.dataset.view));
+  fit();
+}));
+window.addEventListener('resize', fit);
+const start = document.querySelector(`nav button[data-view="v-${location.hash.slice(1)}"]`);
+if (start) start.click(); else fit();
+</script>
+</body>
+</html>
