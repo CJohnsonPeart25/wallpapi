@@ -1,11 +1,22 @@
-# Handoff: desktop-manager spec (`/mattpocock-skills:to-spec`) → next session
+# Handoff: desktop-manager idea → grilling, then a spec draft for review
 
-Stopped on the context budget during the to-spec skill, after step 1 (explore) and before step 2's check
-with the human. No spec has been written or published.
+For `spec-desktop`, started by `solo-wallpapi` in Herdr. Your approver is `solo-wallpapi`; the human (Cameron)
+works with you directly in your pane. Your role is spec author: grill, then draft the spec. No code changes.
 
-Last green commit: see `git log -1` on `research/stack-review` (pushed; this file is its newest commit)
-Living plan: none yet; this file is it
-Uncommitted work: none
+The plan, in order:
+
+1. **Grill** the human on the idea with `mattpocock-skills:grilling`, before any spec. Start from the open
+   questions and the assumptions below and in the diagram's third tab, then follow where the human takes it.
+   Record each answer as you go in `docs/research/stack-review-2026-11/grilling.md`.
+2. **Confirm the test seams** with the human (to-spec step 2), revised by what the grilling settled.
+3. **Draft the spec** with `mattpocock-skills:to-spec`, using its template and `CONTEXT.md`'s vocabulary, into
+   `docs/research/stack-review-2026-11/spec-desktop-manager.md`. **Do not publish it to beads yet**: the
+   human sends it to `solo-wallpapi` for review first. When the draft is committed, tell the human and send
+   `solo-wallpapi` one line with the file's path.
+4. After the review, apply what it settles; publish the bead only when the human says so.
+
+Work on branch `spec/desktop-manager`, cut from `research/stack-review` (which holds the research, the diagram
+and this file). Commit through the hooks and push. Wrap text at 110 columns (`docs/agents/environment.md`).
 
 ## State
 
@@ -15,7 +26,7 @@ Uncommitted work: none
   `vectors_for`, `similarities`), `background.py` (`BackgroundLoop`), the Filters in `pool.py`
   (`_matches_an_allowed_ratio`, `RATIO_TOLERANCE`) and ADR 0006.
 - to-spec step 2 (seams): drafted below, **not yet confirmed by the human**. The skill requires that check.
-- to-spec step 3 (write and publish): not started. Publish as a bead per `docs/agents/issue-tracker.md`
+- to-spec step 3 (write and publish): not started. After review, publish as a bead per `docs/agents/issue-tracker.md`
   (`bd create ... -t epic` or `feature`, with `--labels ready-for-agent`), then `bd dolt push`.
 
 ## Context the next session needs (read these, don't re-derive)
@@ -66,6 +77,6 @@ Uncommitted work: none
 
 ## Next
 
-Present the four proposed seams to the human and ask whether they match expectations (to-spec step 2). Then
-write the spec from the template and publish it with the `ready-for-agent` label. Re-check the four open
-questions with the human only if they raise them; otherwise state them as assumptions in the spec.
+Read `AGENTS.md`, `CONTEXT.md`, this file, the research README and the diagram (all three tabs). Cut the
+branch, load the grilling skill and open with the open questions. The seam proposal above is a starting
+point: let the grilling change it.
