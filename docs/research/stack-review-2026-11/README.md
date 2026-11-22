@@ -13,9 +13,9 @@ listed in each report. Versions and dates are as of 2026-11-22.
 
 | Area | Report | Verdict |
 |---|---|---|
-| Packaging | [packaging.md](packaging.md) | PyInstaller one-folder, one native runner per OS; Inno Setup on Windows |
+| Packaging | [packaging.md](packaging.md) | PyInstaller one-folder, built per OS; Inno Setup on Windows |
 | Desktop shell | [shell.md](shell.md) | PySide6 (Essentials) tray icon, the UI in the default browser |
-| Wallpaper setting | [wallpaper.md](wallpaper.md) | Thin adapters per platform; GNOME 51 has no per-monitor, so stitch |
+| Wallpaper setting | [wallpaper.md](wallpaper.md) | Thin adapters per platform; GNOME 51 has no per-monitor: stitch |
 | Similarity model | [model.md](model.md) | Keep CLIP B/32 on onnxruntime; SigLIP 2 B/32 the one candidate |
 | Web UI | [web.md](web.md) | Keep all; htmx 2.0.4 to 2.0.11; Pico archived but vendored |
 | Tooling | [tooling.md](tooling.md) | Keep; add `required-environments`; pyright still the strict checker |
