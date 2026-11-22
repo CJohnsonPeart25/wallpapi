@@ -26,7 +26,8 @@ and this file). Commit through the hooks and push. Wrap text at 110 columns (`do
   `vectors_for`, `similarities`), `background.py` (`BackgroundLoop`), the Filters in `pool.py`
   (`_matches_an_allowed_ratio`, `RATIO_TOLERANCE`) and ADR 0006.
 - to-spec step 2 (seams): drafted below, **not yet confirmed by the human**. The skill requires that check.
-- to-spec step 3 (write and publish): not started. After review, publish as a bead per `docs/agents/issue-tracker.md`
+- to-spec step 3 (write and publish): not started. After review, publish as a bead per
+  `docs/agents/issue-tracker.md`
   (`bd create ... -t epic` or `feature`, with `--labels ready-for-agent`), then `bd dolt push`.
 
 ## Context the next session needs (read these, don't re-derive)
